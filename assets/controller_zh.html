@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VibeKeys 控制器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        h1 {
+            text-align: center;
+            color: #fff;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: rgba(255, 255, 255, 0.6);
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .status {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            color: #fff;
+            font-size: 14px;
+            word-break: break-word;
+        }
+
+        .status.connected {
+            background: rgba(76, 175, 80, 0.2);
+            color: #81c784;
+        }
+
+        .status.error {
+            background: rgba(244, 67, 54, 0.2);
+            color: #ef5350;
+        }
+
+        .status.updating {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 15px;
+        }
+
+        .btn-connect {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-connect:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-connect:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-ota {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .btn-ota:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(245, 87, 108, 0.4);
+        }
+
+        .btn-ota:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #fff;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        input[type="text"],
+        textarea {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+
+        input[type="text"]:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        input[type="text"]::placeholder,
+        textarea::placeholder {
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+            font-family: monospace;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .info {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.5);
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .notification-log {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 20px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .notification-log h3 {
+            color: #fff;
+            font-size: 12px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .log-entry {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 12px;
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .log-entry .time {
+            color: rgba(255, 255, 255, 0.4);
+            margin-right: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>VibeKeys 控制器</h1>
+        <p class="subtitle">控制您的 VibeKeys MAX 设备</p>
+
+        <div id="status" class="status">点击下方按钮连接设备</div>
+
+        <button id="connectBtn" class="btn btn-connect">连接 VibeKeys</button>
+
+        <div id="controlPanel" class="hidden">
+            <button id="otaBtn" class="btn btn-ota">切换到 OTA 模式</button>
+
+            <div class="form-group">
+                <label for="displayText">在键盘上显示文字</label>
+                <textarea id="displayText" placeholder="输入要在键盘上显示的文字..."></textarea>
+            </div>
+
+            <button id="displayBtn" class="btn btn-connect" disabled>发送到键盘</button>
+        </div>
+
+        <div id="notificationLog" class="notification-log hidden">
+            <h3>设备通知</h3>
+            <div id="logEntries"></div>
+        </div>
+
+        <p class="info">请确保您的浏览器支持 Web Bluetooth</p>
+    </div>
+
+    <script>
+        // Controller Service UUIDs - 与 bt_keyboard.rs 中的定义一致
+        const CONTROLLER_SERVICE_UUID = '9c80ffb6-affa-4083-944a-91e34c88bd76';
+        const GOTO_OTA_ID = '703df7cd-1fec-4126-b3df-a6a8858c1e5e';
+        const KEYBOARD_DISPLAY_ID = 'cdaa6472-67a8-4241-93cf-145051608573';
+        const KEYBOARD_NOTIFY_ID = 'd4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f';
+
+        let device = null;
+        let server = null;
+        let otaCharacteristic = null;
+        let displayCharacteristic = null;
+        let notifyCharacteristic = null;
+
+        const statusEl = document.getElementById('status');
+        const connectBtn = document.getElementById('connectBtn');
+        const otaBtn = document.getElementById('otaBtn');
+        const displayBtn = document.getElementById('displayBtn');
+        const controlPanel = document.getElementById('controlPanel');
+        const displayText = document.getElementById('displayText');
+        const notificationLog = document.getElementById('notificationLog');
+        const logEntries = document.getElementById('logEntries');
+
+        function setStatus(text, type = '') {
+            statusEl.textContent = text;
+            statusEl.className = 'status ' + type;
+        }
+
+        function addLogEntry(message) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            const time = new Date().toLocaleTimeString();
+            entry.innerHTML = `<span class="time">[${time}]</span>${message}`;
+            logEntries.insertBefore(entry, logEntries.firstChild);
+
+            // 只保留最近 20 条
+            while (logEntries.children.length > 20) {
+                logEntries.removeChild(logEntries.lastChild);
+            }
+        }
+
+        connectBtn.addEventListener('click', async () => {
+            try {
+                setStatus('正在搜索 VibeKeys 设备...', 'updating');
+
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [CONTROLLER_SERVICE_UUID] }],
+                    optionalServices: [CONTROLLER_SERVICE_UUID]
+                });
+
+                setStatus('正在连接...', 'updating');
+                server = await device.gatt.connect();
+
+                const service = await server.getPrimaryService(CONTROLLER_SERVICE_UUID);
+                otaCharacteristic = await service.getCharacteristic(GOTO_OTA_ID);
+                displayCharacteristic = await service.getCharacteristic(KEYBOARD_DISPLAY_ID);
+                notifyCharacteristic = await service.getCharacteristic(KEYBOARD_NOTIFY_ID);
+
+                // 订阅通知
+                await notifyCharacteristic.startNotifications();
+                notifyCharacteristic.addEventListener('characteristicvaluechanged', (e) => {
+                    const text = new TextDecoder().decode(e.target.value);
+                    console.log('设备通知:', text);
+                    addLogEntry(text);
+                });
+
+                connectBtn.textContent = '已连接';
+                connectBtn.disabled = true;
+                controlPanel.classList.remove('hidden');
+                notificationLog.classList.remove('hidden');
+                setStatus('已连接到 VibeKeys MAX', 'connected');
+                addLogEntry('已连接到设备');
+
+                device.addEventListener('gattserverdisconnected', () => {
+                    setStatus('设备已断开连接', 'error');
+                    connectBtn.textContent = '重新连接';
+                    connectBtn.disabled = false;
+                    controlPanel.classList.add('hidden');
+                    otaBtn.disabled = false;
+                    displayBtn.disabled = true;
+                    otaCharacteristic = null;
+                    displayCharacteristic = null;
+                    notifyCharacteristic = null;
+                });
+
+            } catch (error) {
+                console.error('连接错误:', error);
+                setStatus('连接失败: ' + error.message, 'error');
+            }
+        });
+
+        otaBtn.addEventListener('click', async () => {
+            try {
+                if (!otaCharacteristic) {
+                    setStatus('未连接到设备', 'error');
+                    return;
+                }
+
+                otaBtn.disabled = true;
+                setStatus('正在切换到 OTA 模式...', 'updating');
+
+                // 发送任意数据触发 GoToOta 命令
+                const data = new TextEncoder().encode('OTA');
+                await otaCharacteristic.writeValue(data);
+
+                setStatus('OTA 命令已发送，设备将以 OTA 模式重启', 'connected');
+                addLogEntry('OTA 命令已发送');
+
+                setTimeout(() => {
+                    controlPanel.classList.add('hidden');
+                    connectBtn.textContent = '连接';
+                    connectBtn.disabled = false;
+                    setStatus('已断开连接，设备现在处于 OTA 模式', 'connected');
+                }, 2000);
+
+            } catch (error) {
+                console.error('OTA 错误:', error);
+                setStatus('切换到 OTA 失败: ' + error.message, 'error');
+                otaBtn.disabled = false;
+            }
+        });
+
+        displayText.addEventListener('input', () => {
+            displayBtn.disabled = !displayText.value.trim() || !displayCharacteristic;
+        });
+
+        displayBtn.addEventListener('click', async () => {
+            const text = displayText.value.trim();
+
+            if (!text) {
+                setStatus('请输入文字', 'error');
+                return;
+            }
+
+            try {
+                displayBtn.disabled = true;
+                setStatus('正在发送文字到键盘...', 'updating');
+
+                const data = new TextEncoder().encode(text);
+                await displayCharacteristic.writeValue(data);
+
+                setStatus('文字发送成功！', 'connected');
+                addLogEntry(`显示: "${text}"`);
+
+                displayBtn.disabled = false;
+
+            } catch (error) {
+                console.error('显示错误:', error);
+                setStatus('发送文字失败: ' + error.message, 'error');
+                displayBtn.disabled = false;
+            }
+        });
+
+        // 检查浏览器支持
+        if (!navigator.bluetooth) {
+            setStatus('您的浏览器不支持 Web Bluetooth', 'error');
+            connectBtn.disabled = true;
+        }
+    </script>
+</body>
+
+</html>

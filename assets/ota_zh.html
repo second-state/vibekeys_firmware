@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 OTA Updater</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 24px;
+        }
+
+        .status {
+            background: #f5f5f5;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            word-break: break-word;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status.updating {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 15px;
+        }
+
+        .btn-connect {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-connect:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-connect:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-start {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+        }
+
+        .btn-start:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(17, 153, 142, 0.4);
+        }
+
+        .btn-start:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-reboot {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .btn-reboot:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(245, 87, 108, 0.4);
+        }
+
+        .btn-reboot:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        input[type="password"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .info {
+            font-size: 12px;
+            color: #999;
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>ESP32 OTA Updater</h1>
+
+        <div id="status" class="status">点击下方按钮连接设备</div>
+
+        <button id="connectBtn" class="btn btn-connect">连接蓝牙设备</button>
+
+        <div id="configForm" class="hidden">
+            <div class="form-group">
+                <label for="ssid">WiFi SSID</label>
+                <input type="text" id="ssid" placeholder="请输入 WiFi 名称">
+            </div>
+
+            <div class="form-group">
+                <label for="password">WiFi 密码</label>
+                <input type="password" id="password" placeholder="请输入 WiFi 密码">
+            </div>
+
+            <div class="form-group">
+                <label for="url">固件 URL</label>
+                <input type="text" id="url" placeholder="https://example.com/firmware.bin">
+            </div>
+
+            <button id="startBtn" class="btn btn-start" disabled>开始 OTA 更新</button>
+            <button id="rebootBtn" class="btn btn-reboot" disabled>重启到另一个固件</button>
+        </div>
+
+
+        <p class="info">请确保您的浏览器支持 Web Bluetooth</p>
+    </div>
+
+    <script>
+        // UUIDs - 与 ota.rs 中定义的一致
+        const SERVICE_UUID = '2eb410d4-b1f2-4634-b34f-e183cd4974f0';
+        const FIRMWARE_UPDATE_ID = 'c0ffee00-1234-5678-9abc-def012345678';
+        const STATE_CHAR_UUID = 'bb50a00b-499c-4f47-b24f-b5dd08850121';
+
+        let device = null;
+        let server = null;
+        let firmwareUpdateCharacteristic = null;
+        let stateCharacteristic = null;
+
+        const statusEl = document.getElementById('status');
+        const connectBtn = document.getElementById('connectBtn');
+        const startBtn = document.getElementById('startBtn');
+        const rebootBtn = document.getElementById('rebootBtn');
+        const configForm = document.getElementById('configForm');
+        const ssidInput = document.getElementById('ssid');
+        const passwordInput = document.getElementById('password');
+        const urlInput = document.getElementById('url');
+
+        function setStatus(text, type = '') {
+            statusEl.textContent = text;
+            statusEl.className = 'status ' + type;
+        }
+
+        function validateForm() {
+            return !!stateCharacteristic;
+        }
+
+        function validateOTAForm() {
+            const ssid = ssidInput.value.trim();
+            const password = passwordInput.value.trim();
+            const url = urlInput.value.trim();
+            return ssid && password && url;
+        }
+
+        [ssidInput, passwordInput, urlInput].forEach(input => {
+            input.addEventListener('input', () => {
+                startBtn.disabled = !validateOTAForm();
+            });
+        });
+
+        connectBtn.addEventListener('click', async () => {
+            try {
+                setStatus('正在搜索设备...', 'updating');
+
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [SERVICE_UUID] }],
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                setStatus('正在连接...', 'updating');
+                server = await device.gatt.connect();
+
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                firmwareUpdateCharacteristic = await service.getCharacteristic(FIRMWARE_UPDATE_ID);
+                stateCharacteristic = await service.getCharacteristic(STATE_CHAR_UUID);
+
+                // 订阅状态通知
+                await stateCharacteristic.startNotifications();
+                stateCharacteristic.addEventListener('characteristicvaluechanged', (e) => {
+                    const text = new TextDecoder().decode(e.target.value);
+                    console.log('Device state:', text);
+                    handleDeviceState(text);
+                });
+
+                // 读取初始状态
+                const initialState = await stateCharacteristic.readValue();
+                const initialStateText = new TextDecoder().decode(initialState);
+                handleDeviceState(initialStateText);
+
+                connectBtn.textContent = '已连接';
+                connectBtn.disabled = true;
+                configForm.classList.remove('hidden');
+
+                startBtn.disabled = !validateOTAForm();
+                rebootBtn.disabled = false;
+
+                device.addEventListener('gattserverdisconnected', () => {
+                    setStatus('设备已断开连接', 'error');
+                    connectBtn.textContent = '重新连接';
+                    connectBtn.disabled = false;
+                    configForm.classList.add('hidden');
+                    startBtn.disabled = true;
+                    rebootBtn.disabled = true;
+                });
+
+            } catch (error) {
+                console.error('Connection error:', error);
+                setStatus('连接失败: ' + error.message, 'error');
+            }
+        });
+
+        function handleDeviceState(text) {
+            if (text.includes('Connected to WiFi')) {
+                setStatus('WiFi 已连接，正在下载固件...', 'connected');
+            } else if (text.includes('finalized successfully')) {
+                setStatus('OTA 完成，设备正在重启...', 'connected');
+            } else if (text.includes('Failed')) {
+                setStatus('错误: ' + text, 'error');
+                // 失败后恢复配置页面
+                configForm.classList.remove('hidden');
+                startBtn.disabled = !validateOTAForm();
+                rebootBtn.disabled = false;
+                connectBtn.disabled = false;
+            } else if (text.includes('Rebooting to next firmware')) {
+                setStatus('设备正在重启到另一个固件分区...', 'connected');
+            } else {
+                setStatus('设备状态: ' + text, 'connected');
+            }
+        }
+
+        startBtn.addEventListener('click', async () => {
+            const ssid = ssidInput.value.trim();
+            const password = passwordInput.value.trim();
+            const url = urlInput.value.trim();
+
+            if (!ssid || !password || !url) {
+                setStatus('请填写完整的 WiFi 信息和固件 URL', 'error');
+                return;
+            }
+
+            try {
+                startBtn.disabled = true;
+                connectBtn.disabled = true;
+                configForm.classList.add('hidden');
+
+                setStatus('正在发送 WiFi 配置...', 'updating');
+
+                // 格式: ssid\npassword\nurl
+                const data = new TextEncoder().encode(`${ssid}\n${password}\n${url}`);
+                await firmwareUpdateCharacteristic.writeValue(data);
+
+                setStatus('配置已发送，等待设备连接 WiFi...', 'updating');
+
+            } catch (error) {
+                console.error('Start OTA error:', error);
+                setStatus('启动 OTA 失败: ' + error.message, 'error');
+                startBtn.disabled = false;
+                connectBtn.disabled = false;
+                configForm.classList.remove('hidden');
+            }
+        });
+
+        // 重启到另一个固件按钮 - 发送空数据触发 JustReboot
+        rebootBtn.addEventListener('click', async () => {
+            try {
+                rebootBtn.disabled = true;
+                startBtn.disabled = true;
+                connectBtn.disabled = true;
+                configForm.classList.add('hidden');
+
+                setStatus('正在发送重启命令...', 'updating');
+
+                // 发送空数据触发 JustReboot
+                const data = new TextEncoder().encode('');
+                await firmwareUpdateCharacteristic.writeValue(data);
+
+                setStatus('重启命令已发送，设备正在重启...', 'updating');
+
+            } catch (error) {
+                console.error('Reboot error:', error);
+                setStatus('重启失败: ' + error.message, 'error');
+                rebootBtn.disabled = false;
+                startBtn.disabled = !validateOTAForm();
+                connectBtn.disabled = false;
+                configForm.classList.remove('hidden');
+            }
+        });
+
+
+        // 检查浏览器支持
+        if (!navigator.bluetooth) {
+            setStatus('您的浏览器不支持 Web Bluetooth', 'error');
+            connectBtn.disabled = true;
+        }
+    </script>
+</body>
+
+</html>

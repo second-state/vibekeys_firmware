@@ -146,7 +146,6 @@ pub fn lcd_display_text(buffer: &mut FramebufferType, text: &str) -> anyhow::Res
 
     const STYLE: MonoTextStyle<'_, BinaryColor> = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
 
-    buffer.clear(BinaryColor::Off)?;
     embedded_graphics::text::Text::with_alignment(
         text,
         buffer.bounding_box().center(),

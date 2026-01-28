@@ -1,8 +1,17 @@
+use embedded_graphics::prelude::DrawTarget;
 use esp_idf_svc::hal::i2c::I2C0;
 
 mod bt_keyboard;
+mod crab_img;
 mod i2c;
 mod wifi;
+
+enum State {
+    Working,
+    Pending,
+    Stopped,
+    OnlyDisplay,
+}
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -90,37 +99,80 @@ fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("OTA mark running slot valid failed"));
     }
 
-    while let Ok(event) = controller_service.rx.recv() {
-        match event {
-            bt_keyboard::ControllerCommand::GoToOta => {
-                ota.mark_running_slot_invalid_and_reboot();
-            }
-            bt_keyboard::ControllerCommand::DisplayKeyboard(text) => {
-                println!("Display on LCD: {}", text);
-                i2c::lcd_display_text(&mut framebuffer, &text)?;
-            }
-            bt_keyboard::ControllerCommand::KeyboardPress(keycode) => {
-                {
-                    let mut adv = ble_device.get_advertising().lock();
-                    log::info!("Checking advertising state... {}", adv.is_advertising());
-                    if !adv.is_advertising() {
-                        adv.start()?;
-                    }
-                }
+    let mut state = State::Stopped;
+    let mut tick = 0;
 
-                // keyboard_and_mouse.press_key(keycode)?;
-                println!("Key Pressed: {}", keycode);
-                handle_key_event(&mut keyboard_and_mouse, keycode, true)?;
+    loop {
+        if let Ok(event) = controller_service
+            .rx
+            .recv_timeout(std::time::Duration::from_millis(1000))
+        {
+            match event {
+                bt_keyboard::ControllerCommand::GoToOta => {
+                    ota.mark_running_slot_invalid_and_reboot();
+                }
+                bt_keyboard::ControllerCommand::DisplayKeyboard(text) => {
+                    println!("Display on LCD: {}", text);
+                    match text.as_str() {
+                        "[working]" => state = State::Working,
+                        "[pending]" => state = State::Pending,
+                        "[stopped]" => state = State::Stopped,
+                        _ => state = State::OnlyDisplay,
+                    }
+                    framebuffer.clear(i2c::Color::Off)?;
+                    i2c::lcd_display_text(&mut framebuffer, &text)?;
+                }
+                bt_keyboard::ControllerCommand::KeyboardPress(keycode) => {
+                    {
+                        let mut adv = ble_device.get_advertising().lock();
+                        log::info!("Checking advertising state... {}", adv.is_advertising());
+                        if !adv.is_advertising() {
+                            adv.start()?;
+                        }
+                    }
+
+                    // keyboard_and_mouse.press_key(keycode)?;
+                    println!("Key Pressed: {}", keycode);
+                    handle_key_event(&mut keyboard_and_mouse, keycode, true)?;
+                }
+                bt_keyboard::ControllerCommand::KeyboardRelease(keycode) => {
+                    // keyboard_and_mouse.release_key(keycode)?;
+                    println!("Key Released: {}", keycode);
+                    handle_key_event(&mut keyboard_and_mouse, keycode, false)?;
+                }
             }
-            bt_keyboard::ControllerCommand::KeyboardRelease(keycode) => {
-                // keyboard_and_mouse.release_key(keycode)?;
-                println!("Key Released: {}", keycode);
-                handle_key_event(&mut keyboard_and_mouse, keycode, false)?;
+        } else {
+            tick = (tick + 1) % 2;
+            let crab = crab_img::crab_pixels();
+
+            match state {
+                State::Working => {
+                    framebuffer.clear(i2c::Color::Off)?;
+                    framebuffer.draw_iter(crab.into_iter().map(|mut p| {
+                        p.0.y += tick * 4;
+                        p
+                    }))?;
+                    i2c::lcd_display_text(&mut framebuffer, "Working")?;
+                    i2c::lcd_display_bitmap(&framebuffer)?;
+                }
+                State::Pending => {
+                    framebuffer.clear(i2c::Color::Off)?;
+                    framebuffer.draw_iter(crab.into_iter())?;
+                    i2c::lcd_display_text(&mut framebuffer, "Pending")?;
+                    i2c::lcd_display_bitmap(&framebuffer)?;
+                }
+                State::Stopped => {
+                    framebuffer.clear(i2c::Color::Off)?;
+                    framebuffer.draw_iter(crab.into_iter())?;
+                    i2c::lcd_display_text(&mut framebuffer, "Stopped")?;
+                    i2c::lcd_display_bitmap(&framebuffer)?;
+                }
+                State::OnlyDisplay => {
+                    // Do nothing
+                }
             }
         }
     }
-
-    Ok(())
 }
 
 pub fn handle_key_event(

@@ -4,6 +4,10 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=30720
 # Use this to set FreeRTOS kernel tick frequency to 1000 Hz (100 Hz by default).
 # This allows to use 1 ms granularity for thread sleeps (10 ms by default).
 CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
 
 # Workaround for https://github.com/espressif/esp-idf/issues/7631
 #CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n

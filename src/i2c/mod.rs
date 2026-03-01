@@ -1,6 +1,5 @@
 use embedded_graphics::{
-    framebuffer::{buffer_size, Framebuffer},
-    pixelcolor::{raw::RawU1, BinaryColor},
+    pixelcolor::BinaryColor,
     prelude::{Dimensions, DrawTarget, Point},
     text::Alignment,
 };

@@ -117,6 +117,8 @@ pub fn ota_main() -> anyhow::Result<()> {
 
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
 
+    log_heap();
+
     let ota_device_name = std::option_env!("OTA_DEVICE_NAME").unwrap_or("OTADevice");
     let ble_device = esp32_nimble::BLEDevice::take();
 

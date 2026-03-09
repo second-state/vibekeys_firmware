@@ -1132,7 +1132,7 @@ impl UI {
             let message = message.clone();
             let color = *color;
 
-            const LINE_HEIGHT: i32 = 10;
+            const LINE_HEIGHT: i32 = 14;
 
             // 绘制顶部颜色条表示级别
             let bounding_box = self.display.bounding_box();

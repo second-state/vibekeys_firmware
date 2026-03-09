@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use embedded_graphics::prelude::RgbColor;
 use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver};
 
@@ -6,8 +8,8 @@ use crate::lcd::DisplayTargetDrive;
 mod ansi_plugin;
 mod app;
 mod audio;
-mod bt_keyboard;
-mod crab_img;
+mod bt_keyboard_mode;
+mod bt_wifi_mode;
 mod i2c;
 mod lcd;
 mod protocol;
@@ -41,7 +43,7 @@ fn main() -> anyhow::Result<()> {
     // let mut backlight = lcd::backlight_init(peripherals.pins.gpio11.into())?;
     // lcd::set_backlight(&mut backlight, 40).unwrap();
 
-    let mut btn0 = new_btn(
+    let btn0 = new_btn(
         peripherals.pins.gpio0.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -61,10 +63,98 @@ fn main() -> anyhow::Result<()> {
         peripherals.pins.gpio14,
     )?;
 
-    let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::BLACK);
+    let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::WHITE);
     target.flush()?;
+    lcd::display_text(&mut target, "VibeKeys Starting...\n Read setting", 0)?;
 
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
+    let mac = wifi.sta_netif().get_mac().unwrap();
+    let dev_id = format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    );
+
+    let btn4 = new_btn(
+        peripherals.pins.gpio4.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    let nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
+
+    let setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
+
+    if btn4.is_low() || setting.need_init() {
+        esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let setting_arc = Arc::new(Mutex::new((setting, nvs)));
+        lcd::display_text(&mut target, "Setting Mode", 0)?;
+        bt_wifi_mode::bt(&dev_id, setting_arc.clone(), tx)?;
+
+        match rx.recv() {
+            Ok(bt_wifi_mode::BTevent::Reset) => {
+                let mut lock = setting_arc.lock().unwrap();
+
+                {
+                    let (png, b) = &mut lock.0.background_png;
+                    if *b {
+                        lcd::display_png(&mut target, png, std::time::Duration::from_secs(3))
+                            .unwrap();
+                        let png = std::mem::take(png);
+                        if let Err(_) = lock.1.set_blob("background_png", &png) {
+                            lcd::display_text(
+                                &mut target,
+                                &format!("Failed to save background PNG"),
+                                0,
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+                for i in 1..=3 {
+                    lcd::display_text(
+                        &mut target,
+                        &format!("Received Setting from BLE\n SSID:{}\n SERVER_URL:{}\n Restarting in {}s", lock.0.ssid, lock.0.server_url, i),
+                        0,
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                unsafe {
+                    esp_idf_svc::sys::esp_restart();
+                }
+            }
+            Ok(bt_wifi_mode::BTevent::GoToOta) => {
+                for i in 1..=5 {
+                    lcd::display_text(
+                        &mut target,
+                        &format!("OTA is not yet supported.\n Restarting in {}s", i),
+                        0,
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+            Err(e) => {
+                log::error!("Error receiving BLE event: {:?}", e);
+                for i in (1..=5).rev() {
+                    lcd::display_text(
+                        &mut target,
+                        &format!("Error receiving from BLE\n Restarting in {}s", i),
+                        0,
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+
+                unsafe {
+                    esp_idf_svc::sys::esp_restart();
+                }
+            }
+        }
+
+        unsafe {
+            esp_idf_svc::sys::esp_restart();
+        }
+    }
 
     log::info!("Displaying PNG image on LCD...");
 
@@ -73,12 +163,11 @@ fn main() -> anyhow::Result<()> {
         lcd::DEFAULT_BACKGROUND,
         std::time::Duration::from_secs(2),
     )?;
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
     lcd::display_text(&mut target, "VibeKeys Ready", 0)?;
 
-    let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
-    let ssid = std::env!("SSID");
-    let password = std::env!("PASSWORD");
-    wifi::connect(&mut wifi, ssid, password, sysloop.clone())?;
+    wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone())?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
 
@@ -91,14 +180,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     const AUDIO_STACK_SIZE: usize = 15 * 1024;
-    let mac = wifi.sta_netif().get_mac().unwrap();
-    let dev_id = format!(
-        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-    );
 
     let audio_tx = tx.clone();
-    let r = std::thread::Builder::new()
+    let _ = std::thread::Builder::new()
         .stack_size(AUDIO_STACK_SIZE)
         .spawn(move || {
             log::info!(
@@ -130,12 +214,6 @@ fn main() -> anyhow::Result<()> {
             tx.clone(),
             app::Event::UltraThink,
         ));
-
-        let btn4 = new_btn(
-            peripherals.pins.gpio4.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
 
         runtime.spawn(app::key_task::listen_key_event(
             btn4,
@@ -202,51 +280,12 @@ fn main() -> anyhow::Result<()> {
 
     let mut ui = lcd::UI::new_with_target(target);
 
-    let app_fut = app::run(format!("ws://192.168.1.28:3000/ws"), &mut ui, rx);
+    let app_fut = app::run(setting.server_url, &mut ui, rx);
     let r = runtime.block_on(app_fut);
     if let Err(e) = r {
         log::error!("App error: {:?}", e);
     } else {
         log::info!("App exited successfully");
-    }
-
-    Ok(())
-}
-
-pub fn handle_key_event(
-    keyboard: &mut bt_keyboard::KeyboardAndMouse,
-    code: u8,
-    pressed: bool,
-) -> anyhow::Result<()> {
-    if pressed {
-        match code {
-            0 => {
-                keyboard.write("/compact\n");
-            }
-            1 => {}
-            2 => {
-                keyboard.press(b'\t');
-            }
-            3 => {
-                keyboard.press(0x1b); // ESC
-            }
-            4 => {
-                keyboard.write("retry\n");
-            }
-            5 => {
-                keyboard.shift_press(b'\t');
-            }
-            6 => {
-                keyboard.r_ctrl_press(0);
-            }
-            7 => {
-                keyboard.press(b'\n'); // Enter
-            }
-            18 => {}
-            _ => return Ok(()),
-        };
-    } else {
-        keyboard.release();
     }
 
     Ok(())

@@ -64,9 +64,9 @@ fn main() -> anyhow::Result<()> {
 
     let worker = audio::AudioWorker {
         in_i2s: peripherals.i2s0,
-        in_ws: peripherals.pins.gpio45.into(),
-        in_clk: peripherals.pins.gpio48.into(),
-        din: peripherals.pins.gpio41.into(),
+        in_ws: peripherals.pins.gpio41.into(),
+        in_clk: peripherals.pins.gpio42.into(),
+        din: peripherals.pins.gpio40.into(),
         in_mclk: None,
     };
 

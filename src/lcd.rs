@@ -726,7 +726,7 @@ impl UI {
 
         self.draw_text(
             &status_bar_str,
-            Point::new(4, 0),
+            Point::new(4, 2),
             ColorFormat::CSS_WHEAT,
             false,
         )?;
@@ -1135,7 +1135,7 @@ impl UI {
 
             self.draw_text(
                 &status_bar_str,
-                Point::new(4, 0),
+                Point::new(4, 2),
                 ColorFormat::CSS_WHEAT,
                 false,
             )?;

@@ -701,6 +701,14 @@ impl UI {
 
     /// 显示通知
     pub fn show_notification(&mut self, color: ColorFormat, message: &str) -> anyhow::Result<()> {
+        if message.is_empty() {
+            if let UiState::ShowingNotification { color: color_, .. } = &mut self.state {
+                *color_ = color;
+                self.refresh_notification()?;
+                return Ok(());
+            }
+        }
+
         self.state = UiState::ShowingNotification {
             color,
             message: message.to_string(),
@@ -1039,27 +1047,40 @@ impl UI {
         // 标题用灰色背景，选中项用蓝色背景
         let mut display_text = format!("{}\n", title);
 
-        // 空选项时显示 Confirm/Cancel
-        let render_options = if options.is_empty() {
-            vec![
-                "Confirm ([Accept])".to_string(),
-                "Cancel ([ESC])".to_string(),
-            ]
-        } else {
-            options
-        };
-
-        for (i, option) in render_options.iter().enumerate() {
-            if i as i32 == selected_index {
-                // 选中项：蓝色背景，白色文字
-                display_text.push_str(&format!("\x1b[44;37m[ {} ]\x1b[49m\n", option));
-            } else {
-                // 未选中项：普通文字
-                display_text.push_str(&format!(" {}\n", option));
+        if !options.is_empty() {
+            for (i, option) in options.iter().enumerate() {
+                if i as i32 == selected_index {
+                    // 选中项：蓝色背景，白色文字
+                    display_text.push_str(&format!("\x1b[44;37m[ {} ]\x1b[49m\n", option));
+                } else {
+                    // 未选中项：普通文字
+                    display_text.push_str(&format!(" {}\n", option));
+                }
             }
+        } else {
+            // Confirm/Cancel 固定显示
+            display_text.push_str("\x1b[44;37m[ Confirm ([Accept]) ]\x1b[49m\n");
+            display_text.push_str("Cancel ([ESC])\n");
         }
 
-        self.draw_text_wrapped(&display_text, Point::new(2, 2), self.config.text_color)?;
+        const LINE_HEIGHT: i32 = 14;
+
+        let color = ColorFormat::new(255, 50, 50);
+
+        // 绘制顶部颜色条表示级别
+        let bounding_box = self.display.bounding_box();
+        let top_bar = Rectangle::new(
+            Point::new(0, 0),
+            Size::new(bounding_box.size.width, LINE_HEIGHT as u32),
+        );
+        top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
+        self.draw_text("● Choose an action", Point::new(0, 2), color, true)?;
+
+        self.draw_text_wrapped(
+            &display_text,
+            Point::new(2, 2 + LINE_HEIGHT),
+            self.config.text_color,
+        )?;
 
         self.display.flush()?;
         Ok(())

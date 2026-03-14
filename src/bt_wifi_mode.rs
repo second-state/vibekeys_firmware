@@ -8,6 +8,7 @@ const SERVICE_ID: BleUuid = uuid128!("623fa3e2-631b-4f8f-a6e7-a7b09c03e7e0");
 const SSID_ID: BleUuid = uuid128!("1fda4d6e-2f14-42b0-96fa-453bed238375");
 const PASS_ID: BleUuid = uuid128!("a987ab18-a940-421a-a1d7-b94ee22bccbe");
 const SERVER_URL_ID: BleUuid = uuid128!("cef520a9-bcb5-4fc6-87f7-82804eee2b20");
+const MIC_MODEL_ID: BleUuid = uuid128!("72ae1823-ab95-4d78-af01-4ce8bb88e034");
 const BACKGROUND_PNG_ID: BleUuid = uuid128!("d1f3b2c4-5e6f-4a7b-8c9d-0e1f2a3b4c5d");
 const RESET_ID: BleUuid = uuid128!("f0e1d2c3-b4a5-6789-0abc-def123456789");
 
@@ -17,6 +18,7 @@ pub struct Setting {
     pub pass: String,
     pub server_url: String,
     pub background_png: (Vec<u8>, bool), // (data, ended)
+    pub mic_model: u8,
     state: u8,
 }
 
@@ -85,11 +87,14 @@ impl Setting {
         let state = nvs.get_u8("state")?.unwrap_or(0);
         nvs.set_u8("state", 0)?;
 
+        let mic_model = nvs.get_u8("mic_model")?.unwrap_or(0);
+
         Ok(Setting {
             ssid,
             pass,
             server_url,
             background_png: (background_png, false),
+            mic_model,
             state,
         })
     }
@@ -198,7 +203,7 @@ pub fn bt(
             }
         });
 
-    let setting = setting.clone();
+    let setting_sever_url_r = setting.clone();
     let setting_ = setting.clone();
     let setting_gif = setting.clone();
 
@@ -210,7 +215,7 @@ pub fn bt(
         .lock()
         .on_read(move |c, _| {
             log::info!("Read from server URL characteristic");
-            let setting = setting.lock().unwrap();
+            let setting = setting_sever_url_r.lock().unwrap();
             c.set_value(setting.0.server_url.as_bytes());
         })
         .on_write(move |args| {
@@ -253,6 +258,37 @@ pub fn bt(
             }
         } else {
             log::error!("Failed to parse new background GIF from bytes.");
+        }
+    });
+
+    let setting = setting.clone();
+    let setting_ = setting.clone();
+
+    let mic_model_characteristic = service.lock().create_characteristic(
+        MIC_MODEL_ID,
+        NimbleProperties::READ | NimbleProperties::WRITE,
+    );
+    mic_model_characteristic.lock().on_read(move |c, _| {
+        log::info!("Read from mic model characteristic");
+        let setting = setting.lock().unwrap();
+        c.set_value(&[setting.0.mic_model]);
+    });
+    mic_model_characteristic.lock().on_write(move |args| {
+        log::info!(
+            "Wrote to mic model characteristic: {:?} -> {:?}",
+            args.current_data(),
+            args.recv_data()
+        );
+        if let Some(&new_mic_model) = args.recv_data().get(0) {
+            log::info!("New mic model: {}", new_mic_model);
+            let mut setting = setting_.lock().unwrap();
+            if let Err(e) = setting.1.set_u8("mic_model", new_mic_model) {
+                log::error!("Failed to save mic model to NVS: {:?}", e);
+            } else {
+                setting.0.mic_model = new_mic_model;
+            }
+        } else {
+            log::error!("Failed to parse new mic model from bytes.");
         }
     });
 

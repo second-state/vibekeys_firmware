@@ -309,7 +309,35 @@ pub mod key_task {
         listen_key_event(btn, tx, super::Event::RotatePush).await
     }
 
-    pub async fn mic_key(mut btn: crate::AnyBtn) -> anyhow::Result<()> {
+    #[repr(u8)]
+    pub enum MicMode {
+        PushToTalk,
+        Toggle,
+    }
+
+    impl Default for MicMode {
+        fn default() -> Self {
+            Self::PushToTalk
+        }
+    }
+
+    impl From<u8> for MicMode {
+        fn from(value: u8) -> Self {
+            match value {
+                0 => Self::PushToTalk,
+                1 => Self::Toggle,
+                _ => {
+                    log::warn!(
+                        "Invalid mic mode value: {}, defaulting to PushToTalk",
+                        value
+                    );
+                    Self::PushToTalk
+                }
+            }
+        }
+    }
+
+    async fn toggle_mic_key(mut btn: crate::AnyBtn) -> anyhow::Result<()> {
         loop {
             if let Err(e) = btn.wait_for_falling_edge().await {
                 log::error!("Button interrupt error: {:?}", e);
@@ -324,6 +352,29 @@ pub mod key_task {
             log::info!("Button pressed, mic state changed to: {}", !r);
 
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn push_to_talk_mic_key(mut btn: crate::AnyBtn) -> anyhow::Result<()> {
+        loop {
+            if let Err(e) = btn.wait_for_any_edge().await {
+                log::error!("Button interrupt error: {:?}", e);
+                return Err(anyhow::anyhow!("Failed to wait for mic button edge"));
+            }
+
+            let is_pressed = btn.is_low();
+            crate::audio::MIC_ON.store(is_pressed, std::sync::atomic::Ordering::Relaxed);
+            log::info!(
+                "Mic button state changed, mic is now {}",
+                if is_pressed { "ON" } else { "OFF" }
+            );
+        }
+    }
+
+    pub async fn mic_key(btn: crate::AnyBtn, mode: MicMode) -> anyhow::Result<()> {
+        match mode {
+            MicMode::PushToTalk => push_to_talk_mic_key(btn).await,
+            MicMode::Toggle => toggle_mic_key(btn).await,
         }
     }
 

@@ -218,7 +218,7 @@ fn main() -> anyhow::Result<()> {
         .build()
         .unwrap();
     {
-        runtime.spawn(app::key_task::mic_key(btn0));
+        runtime.spawn(app::key_task::mic_key(btn0, setting.mic_model.into()));
 
         let btn2 = new_btn(
             peripherals.pins.gpio2.into(),

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
+<!-- VibeKeys Setup Page (Copy from https://github.com/second-state/vibekeys_firmware) -->
 
 <head>
     <meta charset="UTF-8">
@@ -62,9 +63,41 @@
                                 <div class="label">
                                     <span class="label-text">WebSocket URL</span>
                                 </div>
-                                <input type="text" id="serverUrlInput" placeholder="VibeKeys server WebSocket URL"
-                                    class="input input-bordered w-full">
+                                <div class="flex gap-2">
+                                    <input type="text" id="serverUrlInput" placeholder="VibeKeys server WebSocket URL"
+                                        class="input input-bordered flex-1">
+                                    <button class="btn btn-outline" id="autoServerUrlBtn">Auto</button>
+                                </div>
                             </label>
+                        </div>
+                    </div>
+
+                    <div class="collapse collapse-arrow bg-base-100 border border-base-300">
+                        <input type="checkbox" />
+                        <div class="collapse-title text-lg font-medium">
+                            ⚙️ Advanced Settings
+                        </div>
+                        <div class="collapse-content">
+                            <div class="card-body pt-0">
+                                <label class="form-control">
+                                    <div class="label">
+                                        <span class="label-text">Microphone Mode</span>
+                                    </div>
+                                    <div class="flex gap-4">
+                                        <label class="label cursor-pointer gap-2">
+                                            <input type="radio" name="micMode" value="0" id="micModePTT"
+                                                class="radio radio-primary radio-xs tooltip" checked="checked" />
+                                            <span class="label-text tooltip" data-tip="Hold to speak">PushToTalk</span>
+                                        </label>
+                                        <label class="label cursor-pointer gap-2">
+                                            <input type="radio" name="micMode" value="1" id="micModeToggle"
+                                                class="radio radio-primary radio-xs" />
+                                            <span class="label-text tooltip"
+                                                data-tip="Press to toggle on/off">Toggle</span>
+                                        </label>
+                                    </div>
+                                </label>
+                            </div>
                         </div>
                     </div>
 
@@ -93,99 +126,6 @@
                         </div>
                     </div>
 
-                    <div class="card bg-base-100 border border-base-300">
-                        <div class="card-body">
-                            <h3 class="card-title text-lg">Avatar Image</h3>
-                            <div class="form-control mb-4">
-                                <label class="label">
-                                    <span class="label-text">Select an avatar image (GIF)</span>
-                                </label>
-                                <input type="file" class="file-input file-input-bordered w-full" id="avatarImage"
-                                    accept=".gif" onchange="validateAndPreviewAvatarFile(this)">
-                                <label class="label">
-                                    <span class="label-text-alt">Must be a GIF file, max 128KB</span>
-                                </label>
-                                <div id="avatarFileError" class="text-error text-sm"></div>
-                                <div id="avatarPreview"
-                                    class="hidden mt-2 w-16 h-16 rounded border border-base-300 bg-cover bg-center">
-                                </div>
-                            </div>
-                            <div class="flex gap-2">
-                                <button class="btn btn-primary flex-1" id="writeAvatarButton" disabled>Set
-                                    Avatar</button>
-                                <button class="btn btn-outline flex-1" id="clearAvatarButton">Clear Avatar</button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Advanced Settings Collapse Panel -->
-                    <div class="collapse collapse-arrow bg-base-200 border border-base-300">
-                        <input type="checkbox" id="advancedSettingsToggle" />
-                        <div class="collapse-title text-lg font-medium">
-                            🛠️ Advanced Settings
-                        </div>
-                        <div class="collapse-content">
-                            <div class="space-y-4 pt-4">
-                                <!-- AFE Linear Gain -->
-                                <div class="card bg-base-100 border border-base-300">
-                                    <div class="card-body py-4">
-                                        <h4 class="card-title text-base" id="afeLinearGainTitle">AFE Linear Gain</h4>
-                                        <label class="form-control">
-                                            <div class="label">
-                                                <span class="label-text">Linear gain value (0.1 - 3.0)</span>
-                                                <span class="badge badge-primary" id="afeLinearGainValue">1.5</span>
-                                            </div>
-                                            <input type="range" min="1" max="30" value="15" class="range range-sm"
-                                                id="afeLinearGainRange" />
-                                        </label>
-                                        <button class="btn btn-sm btn-outline mt-2" id="saveAfeLinearGainButton"
-                                            disabled>
-                                            Save AFE Linear Gain
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <!-- AGC Target Level -->
-                                <div class="card bg-base-100 border border-base-300">
-                                    <div class="card-body py-4">
-                                        <h4 class="card-title text-base" id="agcTargetLevelTitle">AGC Target Level</h4>
-                                        <label class="form-control">
-                                            <div class="label">
-                                                <span class="label-text">Target level (dBFS, 0 - 32)</span>
-                                                <span class="badge badge-primary" id="agcTargetLevelValue">1</span>
-                                            </div>
-                                            <input type="range" min="0" max="32" value="1" class="range range-sm"
-                                                id="agcTargetLevelRange" />
-                                        </label>
-                                        <button class="btn btn-sm btn-outline mt-2" id="saveAgcTargetLevelButton"
-                                            disabled>
-                                            Save AGC Target Level
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <!-- AGC Compression Gain -->
-                                <div class="card bg-base-100 border border-base-300">
-                                    <div class="card-body py-4">
-                                        <h4 class="card-title text-base" id="agcCompressionGainTitle">AGC Compression
-                                            Gain</h4>
-                                        <label class="form-control">
-                                            <div class="label">
-                                                <span class="label-text">Compression gain (dB, 0 - 32)</span>
-                                                <span class="badge badge-primary" id="agcCompressionGainValue">15</span>
-                                            </div>
-                                            <input type="range" min="0" max="32" value="15" class="range range-sm"
-                                                id="agcCompressionGainRange" />
-                                        </label>
-                                        <button class="btn btn-sm btn-outline mt-2" id="saveAgcCompressionGainButton"
-                                            disabled>
-                                            Save AGC Compression Gain
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>
@@ -218,11 +158,8 @@
         const PASS_ID = "a987ab18-a940-421a-a1d7-b94ee22bccbe";
         const SERVER_URL_ID = "cef520a9-bcb5-4fc6-87f7-82804eee2b20";
         const BACKGROUND_IMAGE_ID = "d1f3b2c4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
-        const AVATAR_IMAGE_ID = "e2f4c3b5-6d7e-4f8a-9b0c-1f2e3d4c5b6a";
         const RESET_ID = "f0e1d2c3-b4a5-6789-0abc-def123456789";
-        const AFE_LINEAR_GAIN_ID = "a1b2c3d4-e5f6-4789-0abc-def123456789";
-        const AGC_TARGET_LEVEL_ID = "b2c3d4e5-f6a7-4890-1bcd-ef2345678901";
-        const AGC_COMPRESSION_GAIN_ID = "c3d4e5f6-a7b8-4901-2cde-f34567890123";
+        const MIC_MODEL_ID = "72ae1823-ab95-4d78-af01-4ce8bb88e034";
 
         // global variables
         let device = null;
@@ -231,7 +168,7 @@
         let isConnected = false;
         let toast = null;
         let selectedBackgroundFile = null;
-        let selectedAvatarFile = null;
+        let skipAutoLoad = false;
 
         // DOM
         const connectButton = document.getElementById('connectButton');
@@ -251,36 +188,19 @@
         const fileError = document.getElementById('fileError');
         const writeBgButton = document.getElementById('writeBgButton');
         const clearBgButton = document.getElementById('clearBgButton');
-        const avatarImage = document.getElementById('avatarImage');
-        const avatarPreview = document.getElementById('avatarPreview');
-        const avatarFileError = document.getElementById('avatarFileError');
-        const writeAvatarButton = document.getElementById('writeAvatarButton');
-        const clearAvatarButton = document.getElementById('clearAvatarButton');
+        const autoServerUrlBtn = document.getElementById('autoServerUrlBtn');
         const notificationToast = document.getElementById('notificationToast');
         const toastMessage = document.getElementById('toastMessage');
         const resetNotSupportedModal = document.getElementById('resetNotSupportedModal');
-
-        // AFE related DOM elements
-        const afeLinearGainRange = document.getElementById('afeLinearGainRange');
-        const afeLinearGainValue = document.getElementById('afeLinearGainValue');
-        const saveAfeLinearGainButton = document.getElementById('saveAfeLinearGainButton');
-        const afeLinearGainTitle = document.getElementById('afeLinearGainTitle');
-
-        const agcTargetLevelRange = document.getElementById('agcTargetLevelRange');
-        const agcTargetLevelValue = document.getElementById('agcTargetLevelValue');
-        const saveAgcTargetLevelButton = document.getElementById('saveAgcTargetLevelButton');
-        const agcTargetLevelTitle = document.getElementById('agcTargetLevelTitle');
-
-        const agcCompressionGainRange = document.getElementById('agcCompressionGainRange');
-        const agcCompressionGainValue = document.getElementById('agcCompressionGainValue');
-        const saveAgcCompressionGainButton = document.getElementById('saveAgcCompressionGainButton');
-        const agcCompressionGainTitle = document.getElementById('agcCompressionGainTitle');
+        const micModePTT = document.getElementById('micModePTT');
+        const micModeToggle = document.getElementById('micModeToggle');
 
         // Track modified fields
         const modifiedFields = {
             ssid: false,
             pass: false,
-            url: false
+            url: false,
+            micMode: false
         };
 
         // Mark field as modified
@@ -363,43 +283,6 @@
             return true;
         }
 
-        // validate and preview avatar
-        function validateAndPreviewAvatarFile(input) {
-            const file = input.files[0];
-            avatarFileError.textContent = '';
-            avatarPreview.classList.add('hidden');
-            writeAvatarButton.disabled = true;
-            selectedAvatarFile = null;
-
-            if (file) {
-                // check file type
-                if (!file.type.startsWith('image/gif')) {
-                    avatarFileError.textContent = 'Please select a GIF image file';
-                    input.value = '';
-                    return false;
-                }
-
-                // check file size (128KB = 128 * 1024 bytes)
-                const maxSize = 128 * 1024; // 128KB
-                if (file.size > maxSize) {
-                    avatarFileError.textContent = 'The image file size cannot exceed 128KB';
-                    input.value = '';
-                    return false;
-                }
-
-                // preview image
-                const reader = new FileReader();
-                reader.onload = function (e) {
-                    avatarPreview.style.backgroundImage = `url(${e.target.result})`;
-                    avatarPreview.classList.remove('hidden');
-                    selectedAvatarFile = file;
-                    writeAvatarButton.disabled = false;
-                };
-                reader.readAsDataURL(file);
-            }
-            return true;
-        }
-
         // clear background image
         function clearBackgroundImage() {
             // No longer changes page background
@@ -430,8 +313,10 @@
 
                 showNotification('Success', 'Connected to VibeKeys device');
 
-                // Auto-load all configuration
-                await loadAllConfiguration();
+                // Auto-load all configuration (skip if WiFi credentials provided via URL)
+                if (!skipAutoLoad) {
+                    await loadAllConfiguration();
+                }
             } catch (error) {
                 console.error('Connection error:', error);
                 showNotification('Error', 'Connection error: ' + error.message, true);
@@ -488,14 +373,7 @@
             serverUrlInput.disabled = false;
             backgroundImage.disabled = false;
             clearBgButton.disabled = false;
-            avatarImage.disabled = false;
-            clearAvatarButton.disabled = false;
             controlPanel.classList.remove('opacity-50', 'pointer-events-none');
-
-            // Enable AFE controls
-            afeLinearGainRange.disabled = false;
-            agcTargetLevelRange.disabled = false;
-            agcCompressionGainRange.disabled = false;
         }
 
         // Disable all controls
@@ -508,18 +386,7 @@
             backgroundImage.disabled = true;
             writeBgButton.disabled = true;
             clearBgButton.disabled = true;
-            avatarImage.disabled = true;
-            writeAvatarButton.disabled = true;
-            clearAvatarButton.disabled = true;
             controlPanel.classList.add('opacity-50', 'pointer-events-none');
-
-            // Disable AFE controls
-            afeLinearGainRange.disabled = true;
-            agcTargetLevelRange.disabled = true;
-            agcCompressionGainRange.disabled = true;
-            saveAfeLinearGainButton.disabled = true;
-            saveAgcTargetLevelButton.disabled = true;
-            saveAgcCompressionGainButton.disabled = true;
         }
 
         // Reads Characteristic
@@ -559,11 +426,7 @@
                 await readCharacteristic(SSID_ID, ssidInput);
                 await readCharacteristic(PASS_ID, passInput);
                 await readCharacteristic(SERVER_URL_ID, serverUrlInput);
-
-                // Load AFE parameters
-                await readAfeLinearGain();
-                await readAgcTargetLevel();
-                await readAgcCompressionGain();
+                await readMicMode();
 
                 // Clear all modification marks
                 clearFieldModification('ssid', ssidTitle);
@@ -594,12 +457,13 @@
                 let savedCount = 0;
                 const hasModifications = Object.values(modifiedFields).some(modified => modified);
 
-                // If no modifications, send all three parameters
+                // If no modifications, send all four parameters
                 if (!hasModifications) {
                     await writeCharacteristic(SSID_ID, ssidInput.value);
                     await writeCharacteristic(PASS_ID, passInput.value);
                     await writeCharacteristic(SERVER_URL_ID, serverUrlInput.value);
-                    savedCount = 3;
+                    await writeMicMode();
+                    savedCount = 4;
                 } else {
                     // If there are modifications, only send modified fields
                     if (modifiedFields.ssid) {
@@ -617,6 +481,12 @@
                     if (modifiedFields.url) {
                         await writeCharacteristic(SERVER_URL_ID, serverUrlInput.value);
                         clearFieldModification('url', urlTitle);
+                        savedCount++;
+                    }
+
+                    if (modifiedFields.micMode) {
+                        await writeMicMode();
+                        modifiedFields.micMode = false;
                         savedCount++;
                     }
                 }
@@ -688,6 +558,49 @@
             }
         }
 
+        // Read mic mode
+        async function readMicMode() {
+            if (!isConnected || !service) {
+                return false;
+            }
+
+            try {
+                const characteristic = await service.getCharacteristic(MIC_MODEL_ID);
+                const value = await characteristic.readValue();
+                const modeValue = value.getUint8(0);
+                console.log('Read mic mode value:', modeValue);
+                if (modeValue === 0) {
+                    micModePTT.checked = true;
+                    micModeToggle.checked = false;
+                } else if (modeValue === 1) {
+                    micModeToggle.checked = true;
+                    micModePTT.checked = false;
+                }
+                return true;
+            } catch (error) {
+                console.error('Read mic mode error:', error);
+                return false;
+            }
+        }
+
+        // Write mic mode
+        async function writeMicMode() {
+            if (!isConnected || !service) {
+                throw new Error('VibeKeys is not connected');
+            }
+
+            const modeValue = micModePTT.checked ? 0 : 1;
+
+            try {
+                const characteristic = await service.getCharacteristic(MIC_MODEL_ID);
+                const data = new Uint8Array([modeValue]);
+                await characteristic.writeValue(data);
+            } catch (error) {
+                console.error('Write mic mode error:', error);
+                throw error;
+            }
+        }
+
         async function writeBackgroundImage() {
             if (!isConnected || !service) {
                 showNotification('Error', 'VibeKeys is not connected', true);
@@ -746,64 +659,6 @@
             }
         }
 
-        async function writeAvatarImage() {
-            if (!isConnected || !service) {
-                showNotification('Error', 'VibeKeys is not connected', true);
-                return;
-            }
-
-            if (!selectedAvatarFile) {
-                showNotification('Error', 'Please select an avatar image', true);
-                return;
-            }
-
-            try {
-                const characteristic = await service.getCharacteristic(AVATAR_IMAGE_ID);
-
-                const arrayBuffer = await selectedAvatarFile.arrayBuffer();
-                const totalSize = arrayBuffer.byteLength;
-                const chunkSize = 512; // BLE limit
-                const totalChunks = Math.ceil(totalSize / chunkSize);
-
-                showNotification('Message', `Sending avatar ${totalChunks} data chunks ...`);
-
-                // prevent double clicking
-                writeAvatarButton.disabled = true;
-                writeAvatarButton.textContent = 'Sending data ...';
-
-                for (let i = 0; i < totalChunks; i++) {
-                    const start = i * chunkSize;
-                    const end = Math.min(start + chunkSize, totalSize);
-                    const chunk = arrayBuffer.slice(start, end);
-
-                    const packet = new Uint8Array(chunk.byteLength);
-                    packet.set(new Uint8Array(chunk), 0);
-
-                    await characteristic.writeValue(packet);
-
-                    const progress = Math.round(((i + 1) / totalChunks) * 100);
-                    writeAvatarButton.textContent = `In progress ... ${progress}%`;
-
-                    await new Promise(resolve => setTimeout(resolve, 50));
-                }
-
-                // reset the button
-                writeAvatarButton.disabled = false;
-                writeAvatarButton.textContent = 'Set Avatar';
-
-                showNotification('Success', `Avatar uploaded successfully! Sent ${totalChunks} packets, total size ${Math.round(totalSize / 1024)}KB`);
-
-            } catch (error) {
-                console.error('Avatar error: ', error);
-
-                // reset the button
-                writeAvatarButton.disabled = false;
-                writeAvatarButton.textContent = 'Set Avatar';
-
-                showNotification('Error', 'Avatar error: ' + error.message, true);
-            }
-        }
-
         connectButton.addEventListener('click', async () => {
             if (!isConnected) {
                 await connectToDevice();
@@ -833,6 +688,28 @@
             markFieldAsModified('url', urlTitle);
         });
 
+        // Listen for mic mode changes
+        micModePTT.addEventListener('change', () => {
+            modifiedFields.micMode = true;
+            updateSaveButtonState();
+        });
+
+        micModeToggle.addEventListener('change', () => {
+            modifiedFields.micMode = true;
+            updateSaveButtonState();
+        });
+
+        // Auto fill server URL button
+        autoServerUrlBtn.addEventListener('click', () => {
+            const currentUrl = new URL(window.location.href);
+            const protocol = currentUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = currentUrl.host;
+            const wsUrl = `${protocol}//${host}/ws`;
+            serverUrlInput.value = wsUrl;
+            markFieldAsModified('url', urlTitle);
+            showNotification('Message', `Auto-filled server URL: ${wsUrl}`);
+        });
+
         writeBgButton.addEventListener('click', () => {
             writeBackgroundImage();
         });
@@ -842,206 +719,35 @@
             showNotification('Message', 'Background image cleared');
         });
 
-        writeAvatarButton.addEventListener('click', () => {
-            writeAvatarImage();
-        });
-
-        clearAvatarButton.addEventListener('click', async () => {
-            if (!isConnected || !service) {
-                showNotification('Error', 'Device not connected', true);
-                return;
-            }
-
-            try {
-                // Send empty data to clear avatar
-                const characteristic = await service.getCharacteristic(AVATAR_IMAGE_ID);
-                const emptyData = new Uint8Array(0);
-                await characteristic.writeValue(emptyData);
-
-                // Clear UI state
-                avatarPreview.style.backgroundImage = '';
-                avatarPreview.classList.add('hidden');
-                avatarImage.value = '';
-                selectedAvatarFile = null;
-                writeAvatarButton.disabled = true;
-
-                showNotification('Success', 'Avatar cleared');
-            } catch (error) {
-                console.error('Failed to clear avatar:', error);
-                showNotification('Error', 'Failed to clear avatar: ' + error.message, true);
-            }
-        });
-
-        // Read AFE Linear Gain (string format f32)
-        async function readAfeLinearGain() {
-            if (!isConnected || !service) return false;
-            try {
-                const characteristic = await service.getCharacteristic(AFE_LINEAR_GAIN_ID);
-                const value = await characteristic.readValue();
-                const decoder = new TextDecoder();
-                const stringValue = decoder.decode(value);
-                const gain = parseFloat(stringValue);
-                if (!isNaN(gain)) {
-                    afeLinearGainRange.value = Math.round(gain * 10);
-                    afeLinearGainValue.textContent = gain.toFixed(1);
-                    // Reset title (remove not supported label)
-                    afeLinearGainTitle.textContent = 'AFE Linear Gain';
-                    saveAfeLinearGainButton.disabled = true;
-                }
-                return true;
-            } catch (error) {
-                console.error('Failed to read AFE Linear Gain:', error);
-                // Backward compatibility: disable this control
-                afeLinearGainRange.disabled = true;
-                saveAfeLinearGainButton.disabled = true;
-                afeLinearGainTitle.textContent = 'AFE Linear Gain (Not Supported)';
-                return false;
-            }
-        }
-
-        // Read AGC Target Level (i32, 4 bytes little endian)
-        async function readAgcTargetLevel() {
-            if (!isConnected || !service) return false;
-            try {
-                const characteristic = await service.getCharacteristic(AGC_TARGET_LEVEL_ID);
-                const value = await characteristic.readValue();
-                // value is already DataView, use directly
-                const level = value.getInt32(0, true);
-                agcTargetLevelRange.value = level;
-                agcTargetLevelValue.textContent = level;
-                // Reset title (remove not supported label)
-                agcTargetLevelTitle.textContent = 'AGC Target Level';
-                saveAgcTargetLevelButton.disabled = true;
-                return true;
-            } catch (error) {
-                console.error('Failed to read AGC Target Level:', error);
-                // Backward compatibility: disable this control
-                agcTargetLevelRange.disabled = true;
-                saveAgcTargetLevelButton.disabled = true;
-                agcTargetLevelTitle.textContent = 'AGC Target Level (Not Supported)';
-                return false;
-            }
-        }
-
-        // Read AGC Compression Gain (i32, 4 bytes little endian)
-        async function readAgcCompressionGain() {
-            if (!isConnected || !service) return false;
-            try {
-                const characteristic = await service.getCharacteristic(AGC_COMPRESSION_GAIN_ID);
-                const value = await characteristic.readValue();
-                // value is already DataView, use directly
-                const gain = value.getInt32(0, true);
-                agcCompressionGainRange.value = gain;
-                agcCompressionGainValue.textContent = gain;
-                // Reset title (remove not supported label)
-                agcCompressionGainTitle.textContent = 'AGC Compression Gain';
-                saveAgcCompressionGainButton.disabled = true;
-                return true;
-            } catch (error) {
-                console.error('Failed to read AGC Compression Gain:', error);
-                // Backward compatibility: disable this control
-                agcCompressionGainRange.disabled = true;
-                saveAgcCompressionGainButton.disabled = true;
-                agcCompressionGainTitle.textContent = 'AGC Compression Gain (Not Supported)';
-                return false;
-            }
-        }
-
-        // AFE Linear Gain save function
-        async function saveAfeLinearGain() {
-            if (!isConnected || !service) {
-                showNotification('Error', 'Device not connected', true);
-                return;
-            }
-            try {
-                const gain = parseFloat((afeLinearGainRange.value / 10).toFixed(1));
-                const characteristic = await service.getCharacteristic(AFE_LINEAR_GAIN_ID);
-                const encoder = new TextEncoder();
-                const data = encoder.encode(gain.toString());
-                await characteristic.writeValue(data);
-                showNotification('Success', `AFE Linear Gain set to ${gain}`);
-                clearFieldModification('afeLinearGain', afeLinearGainTitle);
-                saveAfeLinearGainButton.disabled = true;
-            } catch (error) {
-                console.error('Failed to save AFE Linear Gain:', error);
-                showNotification('Error', 'Failed to save AFE Linear Gain: ' + error.message, true);
-            }
-        }
-
-        // AGC Target Level save function
-        async function saveAgcTargetLevel() {
-            if (!isConnected || !service) {
-                showNotification('Error', 'Device not connected', true);
-                return;
-            }
-            try {
-                const level = parseInt(agcTargetLevelRange.value);
-                const characteristic = await service.getCharacteristic(AGC_TARGET_LEVEL_ID);
-                const data = new ArrayBuffer(4);
-                const view = new DataView(data);
-                view.setInt32(0, level, true);
-                await characteristic.writeValue(data);
-                showNotification('Success', `AGC Target Level set to ${level}`);
-                clearFieldModification('agcTargetLevel', agcTargetLevelTitle);
-                saveAgcTargetLevelButton.disabled = true;
-            } catch (error) {
-                console.error('Failed to save AGC Target Level:', error);
-                showNotification('Error', 'Failed to save AGC Target Level: ' + error.message, true);
-            }
-        }
-
-        // AGC Compression Gain save function
-        async function saveAgcCompressionGain() {
-            if (!isConnected || !service) {
-                showNotification('Error', 'Device not connected', true);
-                return;
-            }
-            try {
-                const gain = parseInt(agcCompressionGainRange.value);
-                const characteristic = await service.getCharacteristic(AGC_COMPRESSION_GAIN_ID);
-                const data = new ArrayBuffer(4);
-                const view = new DataView(data);
-                view.setInt32(0, gain, true);
-                await characteristic.writeValue(data);
-                showNotification('Success', `AGC Compression Gain set to ${gain}`);
-                clearFieldModification('agcCompressionGain', agcCompressionGainTitle);
-                saveAgcCompressionGainButton.disabled = true;
-            } catch (error) {
-                console.error('Failed to save AGC Compression Gain:', error);
-                showNotification('Error', 'Failed to save AGC Compression Gain: ' + error.message, true);
-            }
-        }
-
-        // AFE Linear Gain slider event
-        afeLinearGainRange.addEventListener('input', () => {
-            const gain = (afeLinearGainRange.value / 10).toFixed(1);
-            afeLinearGainValue.textContent = gain;
-            markFieldAsModified('afeLinearGain', afeLinearGainTitle);
-            saveAfeLinearGainButton.disabled = false;
-        });
-
-        // AGC Target Level slider event
-        agcTargetLevelRange.addEventListener('input', () => {
-            agcTargetLevelValue.textContent = agcTargetLevelRange.value;
-            markFieldAsModified('agcTargetLevel', agcTargetLevelTitle);
-            saveAgcTargetLevelButton.disabled = false;
-        });
-
-        // AGC Compression Gain slider event
-        agcCompressionGainRange.addEventListener('input', () => {
-            agcCompressionGainValue.textContent = agcCompressionGainRange.value;
-            markFieldAsModified('agcCompressionGain', agcCompressionGainTitle);
-            saveAgcCompressionGainButton.disabled = false;
-        });
-
-        // AFE save button events
-        saveAfeLinearGainButton.addEventListener('click', saveAfeLinearGain);
-        saveAgcTargetLevelButton.addEventListener('click', saveAgcTargetLevel);
-        saveAgcCompressionGainButton.addEventListener('click', saveAgcCompressionGain);
-
         if (!navigator.bluetooth) {
             showNotification('Error', 'Your browser does not support the Web Bluetooth API. Please use Chrome or Edge', true);
             connectButton.disabled = true;
+        }
+
+        // Disable Auto button for loopback addresses (localhost, 127.0.0.1, etc.)
+        const currentHost = window.location.hostname;
+        const isLoopback = currentHost === 'localhost' ||
+            currentHost === '127.0.0.1' ||
+            currentHost === '[::1]' ||
+            currentHost.startsWith('127.');
+        if (isLoopback) {
+            autoServerUrlBtn.disabled = true;
+            autoServerUrlBtn.title = 'Not available for loopback addresses';
+        }
+
+        // Read WiFi credentials from URL query parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const ssidParam = urlParams.get('ssid');
+        const passParam = urlParams.get('pass');
+        if (ssidParam) {
+            ssidInput.value = ssidParam;
+            markFieldAsModified('ssid', ssidTitle);
+            skipAutoLoad = true;
+        }
+        if (passParam) {
+            passInput.value = passParam;
+            markFieldAsModified('pass', passTitle);
+            skipAutoLoad = true;
         }
 
         // Initialize controls as disabled

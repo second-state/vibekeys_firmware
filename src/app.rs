@@ -383,10 +383,41 @@ pub mod key_task {
     }
 
     pub async fn backspace_key(
-        btn: crate::AnyBtn,
+        mut btn: crate::AnyBtn,
         tx: crate::audio::EventTx,
     ) -> anyhow::Result<()> {
-        listen_key_event(btn, tx, super::Event::Backspace).await
+        let port = btn.pin();
+        loop {
+            if let Err(e) = btn.wait_for_falling_edge().await {
+                log::error!("Button interrupt error: {:?}", e);
+                return Err(anyhow::anyhow!("Failed to wait for button K{port} edge"));
+            }
+            if !btn.is_low() {
+                continue;
+            }
+
+            log::info!("Button K{port} pressed");
+            if let Err(_) = tx.send(crate::app::Event::Backspace).await {
+                return Err(anyhow::anyhow!("Failed to send K{port} event"));
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            if btn.is_low() {
+                loop {
+                    if !btn.is_low() {
+                        break;
+                    }
+
+                    log::info!("Button K{port} pressed");
+                    if let Err(_) = tx.send(crate::app::Event::Backspace).await {
+                        return Err(anyhow::anyhow!("Failed to send K{port} event"));
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+        }
     }
 
     pub async fn listen_key_event(

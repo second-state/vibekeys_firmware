@@ -792,32 +792,32 @@ impl UI {
 
         // 先绘制麦克风状态条
         let y_offset = if is_mic_on {
-            let mic_color = ColorFormat::new(255, 50, 50); // 红色表示录音中
+            let mic_color = ColorFormat::CSS_DARK_GREEN;
             let bounding_box = self.display.bounding_box();
-            let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 10));
+            let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 14));
             top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
             self.draw_text(
                 "● Listening",
-                Point::new(0, 0),
+                Point::new(0, 2),
                 ColorFormat::CSS_WHEAT,
                 None,
                 true,
             )?;
-            10
+            14
         } else {
-            let mic_color = ColorFormat::new(50, 255, 50); // 绿色表示空闲
+            let mic_color = ColorFormat::CSS_DARK_SEA_GREEN;
             let bounding_box = self.display.bounding_box();
-            let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 10));
+            let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 14));
             top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
             let status_bar_str = self.status_bar.clone();
             self.draw_text(
                 &status_bar_str,
-                Point::new(0, 0),
+                Point::new(4, 2),
                 ColorFormat::CSS_WHEAT,
                 None,
                 false,
             )?;
-            10
+            14
         };
 
         let display_text = if current_input.is_empty() {
@@ -1076,7 +1076,7 @@ impl UI {
 
         const LINE_HEIGHT: i32 = 14;
 
-        let color = ColorFormat::new(255, 50, 50);
+        let color = ColorFormat::new(255, 150, 0);
 
         // 绘制顶部颜色条表示级别
         let bounding_box = self.display.bounding_box();

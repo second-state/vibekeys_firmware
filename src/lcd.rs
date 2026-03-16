@@ -218,7 +218,7 @@ impl embedded_graphics::text::renderer::CharacterStyle for MyTextStyle {
 
     fn set_text_color(&mut self, text_color: Option<Self::Color>) {
         self.font_style
-            .set_text_color(Some(text_color.unwrap_or(ColorFormat::CSS_WHEAT)));
+            .set_text_color(Some(text_color.unwrap_or(ColorFormat::CSS_BLACK)));
     }
 
     fn set_background_color(&mut self, background_color: Option<Self::Color>) {
@@ -732,7 +732,7 @@ impl UI {
         self.draw_text(
             &status_bar_str,
             Point::new(4, 2),
-            ColorFormat::CSS_WHEAT,
+            ColorFormat::CSS_WHITE,
             None,
             false,
         )?;
@@ -799,7 +799,7 @@ impl UI {
             self.draw_text(
                 "● Listening",
                 Point::new(0, 2),
-                ColorFormat::CSS_WHEAT,
+                ColorFormat::CSS_WHITE,
                 None,
                 true,
             )?;
@@ -813,7 +813,7 @@ impl UI {
             self.draw_text(
                 &status_bar_str,
                 Point::new(4, 2),
-                ColorFormat::CSS_WHEAT,
+                ColorFormat::CSS_WHITE,
                 None,
                 false,
             )?;
@@ -1088,7 +1088,7 @@ impl UI {
         self.draw_text(
             "● Choose an action",
             Point::new(0, 2),
-            ColorFormat::CSS_WHEAT,
+            ColorFormat::CSS_WHITE,
             None,
             true,
         )?;
@@ -1183,7 +1183,7 @@ impl UI {
                 self.draw_text(
                     "● Waiting for next step",
                     Point::new(4, 2),
-                    ColorFormat::CSS_WHEAT,
+                    ColorFormat::CSS_WHITE,
                     None,
                     true,
                 )?;
@@ -1194,7 +1194,7 @@ impl UI {
             self.draw_text(
                 &status_bar_str,
                 Point::new(4, 2),
-                ColorFormat::CSS_WHEAT,
+                ColorFormat::CSS_WHITE,
                 None,
                 false,
             )?;

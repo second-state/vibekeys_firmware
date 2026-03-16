@@ -733,6 +733,7 @@ impl UI {
             &status_bar_str,
             Point::new(4, 2),
             ColorFormat::CSS_WHEAT,
+            None,
             false,
         )?;
 
@@ -775,7 +776,7 @@ impl UI {
     /// 刷新输入显示
     fn refresh_input_display(&mut self) -> anyhow::Result<()> {
         // 提取需要的数据，避免借用冲突
-        let (prompt, current_input, cursor_pos) = if let UiState::WaitingInput {
+        let (_prompt, current_input, cursor_pos) = if let UiState::WaitingInput {
             prompt,
             current_input,
             cursor_pos,
@@ -795,7 +796,13 @@ impl UI {
             let bounding_box = self.display.bounding_box();
             let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 10));
             top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
-            self.draw_text("● Recording", Point::new(0, 0), mic_color, true)?;
+            self.draw_text(
+                "● Listening",
+                Point::new(0, 0),
+                ColorFormat::CSS_WHEAT,
+                None,
+                true,
+            )?;
             10
         } else {
             let mic_color = ColorFormat::new(50, 255, 50); // 绿色表示空闲
@@ -803,30 +810,33 @@ impl UI {
             let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 10));
             top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
             let status_bar_str = self.status_bar.clone();
-            self.draw_text(&status_bar_str, Point::new(0, 0), mic_color, false)?;
+            self.draw_text(
+                &status_bar_str,
+                Point::new(0, 0),
+                ColorFormat::CSS_WHEAT,
+                None,
+                false,
+            )?;
             10
         };
 
-        // 使用 ANSI 代码标记光标位置, prompt 用灰色背景
         let display_text = if current_input.is_empty() {
-            // 空输入时显示光标标记
-            format!("\x1b[48;5;240m{}\x1b[49m\x1b[44m_\x1b[49m", prompt) // prompt 灰色背景，光标蓝色背景
+            "\x1b[44m_\x1b[49m".to_string()
         } else {
             let chars: Vec<char> = current_input.chars().collect();
             let mut input_with_cursor = String::new();
             for (i, c) in chars.iter().enumerate() {
                 if i == cursor_pos {
-                    // 光标位置：用蓝色背景标记
                     input_with_cursor.push_str(&format!("\x1b[44m{}\x1b[49m", c));
                 } else {
                     input_with_cursor.push(*c);
                 }
             }
-            // 如果光标在末尾，添加光标标记
+
             if cursor_pos == chars.len() {
                 input_with_cursor.push_str("\x1b[44m_\x1b[49m");
             }
-            format!("\x1b[48;5;240m{}\x1b[49m\n{}", prompt, input_with_cursor) // prompt 灰色背景
+            format!("{}", input_with_cursor)
         };
 
         // 绘制整个输入区域（y_offset 根据麦克风状态调整）
@@ -1075,7 +1085,13 @@ impl UI {
             Size::new(bounding_box.size.width, LINE_HEIGHT as u32),
         );
         top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
-        self.draw_text("● Choose an action", Point::new(0, 2), color, true)?;
+        self.draw_text(
+            "● Choose an action",
+            Point::new(0, 2),
+            ColorFormat::CSS_WHEAT,
+            None,
+            true,
+        )?;
 
         self.draw_text_wrapped(
             &display_text,
@@ -1164,7 +1180,13 @@ impl UI {
             );
             top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
             if !self.waiting_input_prompt.is_empty() {
-                self.draw_text("● Waiting for next step", Point::new(4, 2), color, true)?;
+                self.draw_text(
+                    "● Waiting for next step",
+                    Point::new(4, 2),
+                    ColorFormat::CSS_WHEAT,
+                    None,
+                    true,
+                )?;
             }
 
             let status_bar_str = self.status_bar.clone();
@@ -1173,6 +1195,7 @@ impl UI {
                 &status_bar_str,
                 Point::new(4, 2),
                 ColorFormat::CSS_WHEAT,
+                None,
                 false,
             )?;
 
@@ -1245,6 +1268,7 @@ impl UI {
         text: &str,
         position: Point,
         color: ColorFormat,
+        bg_color: Option<ColorFormat>,
         centered: bool,
     ) -> anyhow::Result<()> {
         const LINE_HEIGHT: u32 = 14;
@@ -1254,7 +1278,7 @@ impl UI {
         let style = MyTextStyle {
             font_style: U8g2TextStyle::new(font, color),
             vertical_offset: 0,
-            bg_color: Some(ColorFormat::CSS_BLACK),
+            bg_color,
         };
 
         // 使用 TextBox 绘制单行文本 (与 display_text 保持一致)

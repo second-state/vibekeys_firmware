@@ -276,6 +276,9 @@ impl lcd::UI {
                     .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
                     .await?;
             }
+            Event::GUI => {
+                server.send(protocol::ClientMessage::Sync).await?;
+            }
             _ => {
                 log::warn!("Unexpected event in DisplayingText state");
             }

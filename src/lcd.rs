@@ -1130,6 +1130,7 @@ impl UI {
     pub fn refresh_input_if_waiting(&mut self) -> anyhow::Result<()> {
         match self.state {
             UiState::WaitingInput { .. } => self.refresh_input_display(),
+            UiState::WaitingChoiceAllowCustom { .. } | UiState::WaitingChoice { .. } => Ok(()),
             _ => {
                 if self.waiting_input_prompt.is_empty() {
                     Ok(())
@@ -1460,7 +1461,11 @@ impl UI {
                             multi_select: true,
                         })
                     } else {
-                        selected_indices.insert(*current_selected);
+                        if selected_indices.contains(current_selected) {
+                            selected_indices.remove(current_selected);
+                        } else {
+                            selected_indices.insert(*current_selected);
+                        }
                         if let Err(e) = self.refresh_allow_custom_choices_display() {
                             log::error!("Failed to refresh choices display: {:?}", e);
                         }

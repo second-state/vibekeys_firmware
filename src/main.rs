@@ -29,6 +29,39 @@ fn new_btn(
     Ok(btn)
 }
 
+pub fn sync_time() -> anyhow::Result<()> {
+    use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode, SyncStatus};
+    log::info!("SNTP sync time");
+    let conf = SntpConf {
+        servers: ["time.windows.com"],
+        operating_mode: OperatingMode::Poll,
+        sync_mode: SyncMode::Immediate,
+    };
+    let ntp_client = EspSntp::new(&conf)?;
+
+    loop {
+        let status = ntp_client.get_sync_status();
+        log::info!("sntp sync status {:?}", status);
+        if status == SyncStatus::Completed {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    log::info!("SNTP synchronized!");
+    Ok(())
+}
+
+pub fn goto_next_firmware() -> anyhow::Result<()> {
+    use esp_idf_svc::sys::{esp_ota_get_next_update_partition, esp_ota_set_boot_partition};
+
+    unsafe {
+        let partition = esp_ota_get_next_update_partition(std::ptr::null());
+        esp_idf_svc::sys::esp!(esp_ota_set_boot_partition(partition))?;
+    };
+
+    esp_idf_svc::hal::reset::restart();
+}
+
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -76,6 +109,12 @@ fn main() -> anyhow::Result<()> {
 
     let btn4 = new_btn(
         peripherals.pins.gpio4.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    let btn3 = new_btn(
+        peripherals.pins.gpio3.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
@@ -174,12 +213,34 @@ fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    lcd::display_text(&mut target, "Connecting the server and WiFi...", 0)?;
+    if btn3.is_low() {
+        log::info!("Button ESC is pressed, Goto ota mode");
+        lcd::display_text(&mut target, "Entering OTA mode...", 0)?;
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        goto_next_firmware()?;
+    } else {
+        let mut ota = esp_idf_svc::ota::EspOta::new()?;
+        ota.mark_running_slot_valid()?;
+    }
+
+    lcd::display_text(&mut target, "Connecting the WiFi...", 0)?;
 
     let r = wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone());
     if r.is_err() {
         log::error!("Failed to connect to WiFi: {:?}", r.err());
         lcd::display_text(&mut target, " WiFi connection failed\n", 0)?;
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        unsafe {
+            esp_idf_svc::sys::esp_restart();
+        }
+    }
+
+    lcd::display_text(&mut target, "Syncing time...", 0)?;
+
+    let r = sync_time();
+    if r.is_err() {
+        log::error!("Failed to sync time: {:?}", r.err());
+        lcd::display_text(&mut target, " Time sync failed\n", 0)?;
         std::thread::sleep(std::time::Duration::from_secs(60));
         unsafe {
             esp_idf_svc::sys::esp_restart();
@@ -212,6 +273,8 @@ fn main() -> anyhow::Result<()> {
             }
         })
         .map_err(|e| anyhow::anyhow!("Failed to spawn audio worker thread: {:?}", e))?;
+
+    _ = rustls_rustcrypto::provider().install_default();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -257,12 +320,6 @@ fn main() -> anyhow::Result<()> {
         )?;
         runtime.spawn(app::key_task::backspace_key(btn6, tx.clone()));
 
-        let btn3 = new_btn(
-            peripherals.pins.gpio3.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
         runtime.spawn(app::key_task::esc_key(btn3, tx.clone()));
 
         let btn7 = new_btn(
@@ -294,6 +351,8 @@ fn main() -> anyhow::Result<()> {
 
         runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
     }
+
+    lcd::display_text(&mut target, "Connecting the Server...", 0)?;
 
     let mut ui = lcd::UI::new_with_target(target);
 

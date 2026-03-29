@@ -67,7 +67,11 @@ tokio-websockets = { version = "0.13", features = [
     "client",
     "fastrand",
     "sha1_smol",
+    "rustls-webpki-roots"
 ] }
+
+rustls-rustcrypto = { git = "https://github.com/RustCrypto/rustls-rustcrypto",rev="aecee37208823f6a4ffabeb7c0a1227015b131cb" }
+
 http = "1.3"
 
 

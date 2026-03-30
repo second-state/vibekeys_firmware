@@ -132,7 +132,7 @@ fn main() -> anyhow::Result<()> {
     log::info!("Connected to WiFi, IP address: {}", ip.ip);
     lcd::display_text(
         &mut target,
-        &format!("OTA Mode\n Connect http://{}", ip.ip),
+        &format!("OTA Mode\n Upload firmware at:\nhttp://{}", ip.ip),
         0,
     )?;
 

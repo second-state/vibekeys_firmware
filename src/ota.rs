@@ -126,7 +126,18 @@ fn main() -> anyhow::Result<()> {
     let setting = Setting::load_from_nvs(&nvs)?;
     let mut esp_wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
 
-    wifi::connect(&mut esp_wifi, &setting.ssid, &setting.pass, sysloop)?;
+    let r = wifi::connect(&mut esp_wifi, &setting.ssid, &setting.pass, sysloop);
+
+    if r.is_err() || !esp_wifi.is_connected().unwrap_or(false) {
+        lcd::display_text(
+            &mut target,
+            "OTA Mode\n Connect wifi Failed\n Goto Setting Mode",
+            0,
+        )?;
+        nvs.set_u8("state", 1)?;
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        goto_next_firmware()?;
+    }
 
     let ip = esp_wifi.sta_netif().get_ip_info()?;
     log::info!("Connected to WiFi, IP address: {}", ip.ip);

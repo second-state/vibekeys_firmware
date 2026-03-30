@@ -290,12 +290,55 @@ fn main() -> anyhow::Result<()> {
         ota.mark_running_slot_valid()?;
     }
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
-
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
+
+    if btn7.is_low() {
+        log::info!("Button Accept is pressed, Starting in keyboard mode");
+        lcd::display_text(&mut target, "Starting in keyboard mode...", 0)?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+
+        esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
+
+        let ble_device = esp32_nimble::BLEDevice::take();
+        let mut keyboard = bt_keyboard_mode::KeyboardAndMouse::new(ble_device, 100)?;
+        let _controller_service = bt_keyboard_mode::new_controller_service(ble_device, tx)?;
+
+        let server = ble_device.get_server();
+        server.start()?;
+        bt_keyboard_mode::start_ble_advertising(ble_device, keyboard.hid_service_id())?;
+
+        let mut key_pins = bt_keyboard_mode::KeysPin {
+            mic: btn0,
+            ultrathink: btn2,
+            esc: btn3,
+            gui: btn4,
+            switch: btn5,
+            backspace: btn6,
+            accept: btn7,
+            rotate_a: pin16,
+            rotate_b: pin17,
+            rotate_button: pin18,
+        };
+
+        lcd::display_text(&mut target, "Keyboard Mode", 0)?;
+
+        keyboard_mode_main(
+            &runtime,
+            &mut target,
+            ble_device,
+            &mut keyboard,
+            &mut key_pins,
+            &mut rx,
+        );
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
+
     {
         runtime.spawn(app::key_task::mic_key(btn0, setting.mic_model.into()));
 
@@ -409,4 +452,100 @@ pub fn log_heap() {
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024
         );
     }
+}
+
+fn keyboard_mode_main(
+    runtime: &tokio::runtime::Runtime,
+    display: &mut lcd::FrameBuffer,
+    ble_device: &mut esp32_nimble::BLEDevice,
+    keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
+    key_pins: &mut bt_keyboard_mode::KeysPin,
+    rx: &mut tokio::sync::mpsc::Receiver<bt_keyboard_mode::ControllerCommand>,
+) -> ! {
+    loop {
+        let event = runtime.block_on(bt_keyboard_mode::key_event(key_pins, rx));
+        let _ = handle_key_event(display, ble_device, keyboard, event);
+    }
+}
+
+pub fn handle_key_event(
+    display: &mut lcd::FrameBuffer,
+    ble_device: &mut esp32_nimble::BLEDevice,
+    keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
+    event: bt_keyboard_mode::ControllerCommand,
+) -> anyhow::Result<()> {
+    log::info!("Handling controller command: {:?}", event);
+    use bt_keyboard_mode::KeysPin;
+    match event {
+        bt_keyboard_mode::ControllerCommand::DisplayKeyboard(text) => {
+            lcd::display_text(display, &text, 0)?;
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::MIC) => {
+            keyboard.press(b' '); // Space for mic on/off toggle
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::MIC) => {
+            keyboard.release(); // Release space
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ULTRATHINK) => {
+            keyboard.write("ultrathink ");
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ULTRATHINK) => {}
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ESC) => {
+            keyboard.press(0x1b); // ESC
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ESC) => {
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::GUI) => {
+            keyboard.write("claude");
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::GUI) => {}
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::SWITCH) => {
+            keyboard.shift_press(b'\t'); // Shift + Tab for switch mode
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::SWITCH) => {
+            keyboard.release(); // Release Shift + Tab
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::BACKSPACE) => {
+            keyboard.press(0x08); // Backspace
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::BACKSPACE) => {
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ACCEPT) => {
+            {
+                let mut adv = ble_device.get_advertising().lock();
+                let adv_is_advertising = adv.is_advertising();
+                log::info!("Checking advertising state... {}", adv_is_advertising);
+                if !adv_is_advertising {
+                    adv.start().unwrap();
+                }
+            }
+            keyboard.press(b'\n'); //
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ACCEPT) => {
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ROTATE_BUTTON) => {
+            keyboard.press(b' ');
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ROTATE_BUTTON) => {
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::RotateDown => {
+            // 箭头下
+            keyboard.press_raw(0x51, 0); // HID Down Arrow
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::RotateUp => {
+            // 箭头上
+            keyboard.press_raw(0x52, 0); // HID Up Arrow
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            keyboard.release();
+        }
+        _ => {}
+    }
+
+    Ok(())
 }

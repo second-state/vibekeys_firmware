@@ -8,9 +8,7 @@ use esp32_nimble::{
     uuid128, BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice, BLEServer,
     NimbleProperties,
 };
-use esp_idf_svc::hal::gpio::*;
-use futures_util::FutureExt;
-use std::sync::{mpsc::Sender, Arc};
+use std::sync::Arc;
 use zerocopy::IntoBytes;
 use zerocopy_derive::{Immutable, IntoBytes};
 
@@ -334,6 +332,114 @@ struct MediaKeyReport {
     keys: [u8; 2],
 }
 
+pub struct KeysPin {
+    pub mic: crate::AnyBtn,
+    pub ultrathink: crate::AnyBtn,
+    pub esc: crate::AnyBtn,
+    pub gui: crate::AnyBtn,
+    pub switch: crate::AnyBtn,
+    pub backspace: crate::AnyBtn,
+    pub accept: crate::AnyBtn,
+    pub rotate_a: crate::AnyBtn,
+    pub rotate_b: crate::AnyBtn,
+    pub rotate_button: crate::AnyBtn,
+}
+
+impl KeysPin {
+    pub const MIC: u8 = 0;
+    pub const ULTRATHINK: u8 = 1;
+    pub const ESC: u8 = 2;
+    pub const GUI: u8 = 3;
+    pub const SWITCH: u8 = 4;
+    pub const BACKSPACE: u8 = 5;
+    pub const ACCEPT: u8 = 6;
+    pub const ROTATE_BUTTON: u8 = 7;
+}
+
+pub async fn key_event(
+    key_pins: &mut KeysPin,
+    rx: &mut tokio::sync::mpsc::Receiver<ControllerCommand>,
+) -> ControllerCommand {
+    tokio::select! {
+        _ = key_pins.mic.wait_for_any_edge() => {
+            if key_pins.mic.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::MIC)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::MIC)
+            }
+        },
+        _ = key_pins.ultrathink.wait_for_any_edge() => {
+            if key_pins.ultrathink.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::ULTRATHINK)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::ULTRATHINK)
+            }
+        }
+        _ = key_pins.esc.wait_for_any_edge() => {
+            if key_pins.esc.is_low() {
+                log::info!("ESC key pressed");
+                ControllerCommand::KeyboardPress(KeysPin::ESC)
+            } else {
+                log::info!("ESC key released");
+                ControllerCommand::KeyboardRelease(KeysPin::ESC)
+            }
+        },
+        _ = key_pins.gui.wait_for_any_edge() => {
+            if key_pins.gui.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::GUI)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::GUI)
+            }
+        },
+        _ = key_pins.switch.wait_for_any_edge() => {
+            if key_pins.switch.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::SWITCH)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::SWITCH)
+            }
+        },
+        _ = key_pins.backspace.wait_for_any_edge() => {
+            if key_pins.backspace.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::BACKSPACE)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::BACKSPACE)
+            }
+        },
+        _ = key_pins.accept.wait_for_any_edge() => {
+            if key_pins.accept.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::ACCEPT)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::ACCEPT)
+            }
+        },
+        _ = key_pins.rotate_a.wait_for_any_edge() => {
+            if key_pins.rotate_a.is_high() {
+                if key_pins.rotate_b.is_low() {
+                    ControllerCommand::RotateDown
+                } else {
+                    ControllerCommand::RotateUp
+                }
+            } else {
+                if key_pins.rotate_b.is_low() {
+                    ControllerCommand::RotateUp
+                } else {
+                    ControllerCommand::RotateDown
+                }
+            }
+        },
+        _ = key_pins.rotate_button.wait_for_any_edge() => {
+            if key_pins.rotate_button.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::ROTATE_BUTTON)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::ROTATE_BUTTON)
+            }
+        },
+        Some(event) = rx.recv() => {
+            event
+        }
+    }
+}
+
 pub struct Keyboard {
     hid_service_id: BleUuid,
     input_keyboard: Arc<Mutex<BLECharacteristic>>,
@@ -427,6 +533,12 @@ impl Keyboard {
             self.key_report.modifiers |= 0x02;
             key &= !SHIFT;
         }
+        self.key_report.keys[0] = key;
+        self.send_report(&self.key_report);
+    }
+
+    pub fn press_raw(&mut self, key: u8, modifiers: u8) {
+        self.key_report.modifiers = modifiers;
         self.key_report.keys[0] = key;
         self.send_report(&self.key_report);
     }
@@ -555,6 +667,12 @@ impl KeyboardAndMouse {
         self.send_report(&self.key_report);
     }
 
+    pub fn press_raw(&mut self, key: u8, modifiers: u8) {
+        self.key_report.modifiers = modifiers;
+        self.key_report.keys[0] = key;
+        self.send_report(&self.key_report);
+    }
+
     pub fn release(&mut self) {
         self.key_report.modifiers = 0;
         self.key_report.keys.fill(0);
@@ -626,7 +744,6 @@ const KEYBOARD_NOTIFY_ID: BleUuid = uuid128!("d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e
 
 pub struct ControllerService {
     pub notify_characteristic: Arc<Mutex<BLECharacteristic>>,
-    pub rx: std::sync::mpsc::Receiver<ControllerCommand>,
 }
 
 impl ControllerService {
@@ -638,58 +755,42 @@ impl ControllerService {
     }
 }
 
+#[derive(Debug)]
 pub enum ControllerCommand {
-    GoToOta,
     DisplayKeyboard(String),
     KeyboardPress(u8),
     KeyboardRelease(u8),
+    RotateDown,
+    RotateUp,
 }
 
 pub fn new_controller_service(
     device: &mut BLEDevice,
-) -> anyhow::Result<(ControllerService, Sender<ControllerCommand>)> {
-    let (tx, rx) = std::sync::mpsc::channel::<ControllerCommand>();
+    tx: tokio::sync::mpsc::Sender<ControllerCommand>,
+) -> anyhow::Result<ControllerService> {
     let server = device.get_server();
     let service = server.create_service(CONTROLLER_SERVICE_ID);
-
-    let tx_ = tx.clone();
-    let ota_characteristic = service
-        .lock()
-        .create_characteristic(GOTO_OTA_ID, NimbleProperties::WRITE);
-
-    ota_characteristic.lock().on_write(move |args| {
-        log::info!("Wrote to controller OTA characteristic");
-        let data = args.recv_data();
-        log::info!("Received data: {:?}", data);
-
-        let _ = tx_.send(ControllerCommand::GoToOta);
-    });
 
     let display_characteristic = service
         .lock()
         .create_characteristic(KEYBOARD_DISPLAY_ID, NimbleProperties::WRITE);
 
-    let tx_ = tx.clone();
     display_characteristic.lock().on_write(move |args| {
         log::info!("Wrote to controller display characteristic");
         let data = args.recv_data();
         log::info!("Received data: {:?}", data);
         let s = String::from_utf8_lossy(&data).to_string();
 
-        let _ = tx_.send(ControllerCommand::DisplayKeyboard(s));
+        let _ = tx.blocking_send(ControllerCommand::DisplayKeyboard(s));
     });
 
     let notify_characteristic = service
         .lock()
         .create_characteristic(KEYBOARD_NOTIFY_ID, NimbleProperties::NOTIFY);
 
-    Ok((
-        ControllerService {
-            notify_characteristic,
-            rx,
-        },
-        tx,
-    ))
+    Ok(ControllerService {
+        notify_characteristic,
+    })
 }
 
 pub fn start_ble_advertising(

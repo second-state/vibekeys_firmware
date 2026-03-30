@@ -109,7 +109,6 @@ impl Setting {
 
 pub enum BTevent {
     Reset,
-    GoToOta,
 }
 
 pub fn bt(

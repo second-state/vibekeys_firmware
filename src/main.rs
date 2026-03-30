@@ -119,14 +119,14 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // GUI (claude)
-    let btn4 = new_btn(
+    let mut btn4 = new_btn(
         peripherals.pins.gpio4.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
     // ESC
-    let btn3 = new_btn(
+    let mut btn3 = new_btn(
         peripherals.pins.gpio3.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -154,7 +154,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // Accept
-    let btn7 = new_btn(
+    let mut btn7 = new_btn(
         peripherals.pins.gpio7.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -192,95 +192,42 @@ fn main() -> anyhow::Result<()> {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
 
-    if btn4.is_low() || setting.need_init() {
-        esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
-        setting.background_png.0.clear();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let setting_arc = Arc::new(Mutex::new((setting, nvs)));
-        lcd::display_text(&mut target, "Setting Mode", 0)?;
-        bt_wifi_mode::bt(&dev_id, setting_arc.clone(), tx)?;
+    let mut mode = 3;
 
-        match rx.recv() {
-            Ok(bt_wifi_mode::BTevent::Reset) => {
-                let mut lock = setting_arc.lock().unwrap();
+    for i in 0..5 {
+        lcd::display_text(&mut target, format!(" <ESC> -> OTA mode\n <Claude> -> Setting mode\n <Accept> -> Remote Control mode\n{}s later enter Keyboard mode", 5-i).as_str(), 0).unwrap();
 
-                {
-                    let (png, b) = &mut lock.0.background_png;
-                    if *b {
-                        lcd::display_png(&mut target, png, std::time::Duration::from_secs(3))
-                            .unwrap();
-                        let png = std::mem::take(png);
-                        if let Err(_) = lock.1.set_blob("background_png", &png) {
-                            lcd::display_text(
-                                &mut target,
-                                &format!("Failed to save background PNG"),
-                                0,
-                            )
-                            .unwrap();
-                        }
-                    }
-                }
-                for i in 1..=3 {
-                    lcd::display_text(
-                        &mut target,
-                        &format!("Received Setting from BLE\n SSID:{}\n SERVER_URL:{}\n Restarting in {}s", lock.0.ssid, lock.0.server_url, i),
-                        0,
-                    )?;
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-                unsafe {
-                    esp_idf_svc::sys::esp_restart();
+        mode = runtime.block_on(async {
+            tokio::select! {
+                _ = btn3.wait_for_low() => {
+                    log::info!("Button ESC is pressed, Goto ota mode");
+                    0
+                },
+                _ = btn7.wait_for_low() => {
+                    log::info!("Button Accept is pressed, Starting in Remote Control mode");
+                    1
+                },
+                _ = btn4.wait_for_low() => {
+                    log::info!("Button Setting is pressed, Starting in setting mode");
+                    2
+                },
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    log::info!("No button is pressed, Starting in normal mode");
+                    3
                 }
             }
-            Ok(bt_wifi_mode::BTevent::GoToOta) => {
-                for i in 1..=5 {
-                    lcd::display_text(
-                        &mut target,
-                        &format!("OTA is not yet supported.\n Restarting in {}s", i),
-                        0,
-                    )?;
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-            }
-            Err(e) => {
-                log::error!("Error receiving BLE event: {:?}", e);
-                for i in (1..=5).rev() {
-                    lcd::display_text(
-                        &mut target,
-                        &format!("Error receiving from BLE\n Restarting in {}s", i),
-                        0,
-                    )?;
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-
-                unsafe {
-                    esp_idf_svc::sys::esp_restart();
-                }
-            }
+        });
+        if mode != 3 {
+            break;
         }
-
-        esp_idf_svc::hal::reset::restart();
     }
 
-    log::info!("Displaying PNG image on LCD...");
-
-    if setting.background_png.0.is_empty() {
-        log::info!("No background PNG found in settings, using default.");
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    } else {
-        log::info!(
-            "Background PNG found in settings, size: {} bytes",
-            setting.background_png.0.len()
-        );
-        lcd::display_png(
-            &mut target,
-            setting.background_png.0.as_slice(),
-            std::time::Duration::from_secs(2),
-        )?;
-    }
-
-    if btn3.is_low() {
+    if mode == 0 {
         log::info!("Button ESC is pressed, Goto ota mode");
         lcd::display_text(&mut target, "Entering OTA mode...", 0)?;
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -290,13 +237,7 @@ fn main() -> anyhow::Result<()> {
         ota.mark_running_slot_valid()?;
     }
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    if btn7.is_low() {
-        log::info!("Button Accept is pressed, Starting in keyboard mode");
+    if mode == 3 {
         lcd::display_text(&mut target, "Starting in keyboard mode...", 0)?;
         std::thread::sleep(std::time::Duration::from_secs(1));
 
@@ -335,6 +276,78 @@ fn main() -> anyhow::Result<()> {
             &mut key_pins,
             &mut rx,
         );
+    }
+
+    if mode == 2 || setting.need_init() {
+        esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
+        setting.background_png.0.clear();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let setting_arc = Arc::new(Mutex::new((setting, nvs)));
+        lcd::display_text(&mut target, "Setting Mode", 0)?;
+        bt_wifi_mode::bt(&dev_id, setting_arc.clone(), tx)?;
+
+        match rx.recv() {
+            Ok(bt_wifi_mode::BTevent::Reset) => {
+                let mut lock = setting_arc.lock().unwrap();
+
+                {
+                    let (png, b) = &mut lock.0.background_png;
+                    if *b {
+                        lcd::display_png(&mut target, png, std::time::Duration::from_secs(3))
+                            .unwrap();
+                        let png = std::mem::take(png);
+                        if let Err(_) = lock.1.set_blob("background_png", &png) {
+                            lcd::display_text(
+                                &mut target,
+                                &format!("Failed to save background PNG"),
+                                0,
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+                for i in 1..=3 {
+                    lcd::display_text(
+                        &mut target,
+                        &format!("Received Setting from BLE\n SSID:{}\n SERVER_URL:{}\n Restarting in {}s", lock.0.ssid, lock.0.server_url, i),
+                        0,
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                esp_idf_svc::hal::reset::restart();
+            }
+            Err(e) => {
+                log::error!("Error receiving BLE event: {:?}", e);
+                for i in (1..=5).rev() {
+                    lcd::display_text(
+                        &mut target,
+                        &format!("Error receiving from BLE\n Restarting in {}s", i),
+                        0,
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+
+                esp_idf_svc::hal::reset::restart();
+            }
+        }
+    }
+
+    log::info!("Displaying PNG image on LCD...");
+
+    if setting.background_png.0.is_empty() {
+        log::info!("No background PNG found in settings, using default.");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    } else {
+        log::info!(
+            "Background PNG found in settings, size: {} bytes",
+            setting.background_png.0.len()
+        );
+        lcd::display_png(
+            &mut target,
+            setting.background_png.0.as_slice(),
+            std::time::Duration::from_secs(2),
+        )?;
     }
 
     let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);

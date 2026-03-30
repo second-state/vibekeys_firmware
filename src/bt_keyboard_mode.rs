@@ -25,6 +25,44 @@ const KEYBOARD_ID: u8 = 0x01;
 const MEDIA_KEYS_ID: u8 = 0x02;
 const MOUSE_ID: u8 = 0x03;
 
+const HID_KEYBOARD_REPORT_DISCRIPTOR: &[u8] = hid!(
+    (USAGE_PAGE, 0x01), // USAGE_PAGE (Generic Desktop Ctrls)
+    (USAGE, 0x06),      // USAGE (Keyboard)
+    (COLLECTION, 0x01), // COLLECTION (Application)
+    // ------------------------------------------------- Keyboard
+    (REPORT_ID, KEYBOARD_ID), //   REPORT_ID (1)
+    (USAGE_PAGE, 0x07),       //   USAGE_PAGE (Kbrd/Keypad)
+    (USAGE_MINIMUM, 0xE0),    //   USAGE_MINIMUM (0xE0)
+    (USAGE_MAXIMUM, 0xE7),    //   USAGE_MAXIMUM (0xE7)
+    (LOGICAL_MINIMUM, 0x00),  //   LOGICAL_MINIMUM (0)
+    (LOGICAL_MAXIMUM, 0x01),  //   Logical Maximum (1)
+    (REPORT_SIZE, 0x01),      //   REPORT_SIZE (1)
+    (REPORT_COUNT, 0x08),     //   REPORT_COUNT (8)
+    (HIDINPUT, 0x02), //   INPUT (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
+    (REPORT_COUNT, 0x01), //   REPORT_COUNT (1) ; 1 byte (Reserved)
+    (REPORT_SIZE, 0x08), //   REPORT_SIZE (8)
+    (HIDINPUT, 0x01), //   INPUT (Const,Array,Abs,No Wrap,Linear,Preferred State,No Null Position)
+    (REPORT_COUNT, 0x05), //   REPORT_COUNT (5) ; 5 bits (Num lock, Caps lock, Scroll lock, Compose, Kana)
+    (REPORT_SIZE, 0x01),  //   REPORT_SIZE (1)
+    (USAGE_PAGE, 0x08),   //   USAGE_PAGE (LEDs)
+    (USAGE_MINIMUM, 0x01), //   USAGE_MINIMUM (0x01) ; Num Lock
+    (USAGE_MAXIMUM, 0x05), //   USAGE_MAXIMUM (0x05) ; Kana
+    (HIDOUTPUT, 0x02), //   OUTPUT (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position,Non-volatile)
+    (REPORT_COUNT, 0x01), //   REPORT_COUNT (1) ; 3 bits (Padding)
+    (REPORT_SIZE, 0x03), //   REPORT_SIZE (3)
+    (HIDOUTPUT, 0x01), //   OUTPUT (Const,Array,Abs,No Wrap,Linear,Preferred State,No Null Position,Non-volatile)
+    (REPORT_COUNT, 0x06), //   REPORT_COUNT (6) ; 6 bytes (Keys)
+    (REPORT_SIZE, 0x08), //   REPORT_SIZE(8)
+    (LOGICAL_MINIMUM, 0x00), //   LOGICAL_MINIMUM(0)
+    (LOGICAL_MAXIMUM, 0x65), //   LOGICAL_MAXIMUM(0x65) ; 101 keys
+    (USAGE_PAGE, 0x07), //   USAGE_PAGE (Kbrd/Keypad)
+    (USAGE_MINIMUM, 0x00), //   USAGE_MINIMUM (0)
+    (USAGE_MAXIMUM, 0x65), //   USAGE_MAXIMUM (0x65)
+    (HIDINPUT, 0x00),  //   INPUT (Data,Array,Abs,No Wrap,Linear,Preferred State,No Null Position)
+    (END_COLLECTION),  // END_COLLECTION
+    (END_COLLECTION)   // END_COLLECTION
+);
+
 const HID_REPORT_DISCRIPTOR: &[u8] = hid!(
     (USAGE_PAGE, 0x01), // USAGE_PAGE (Generic Desktop Ctrls)
     (USAGE, 0x06),      // USAGE (Keyboard)
@@ -296,6 +334,122 @@ struct MediaKeyReport {
     keys: [u8; 2],
 }
 
+pub struct Keyboard {
+    hid_service_id: BleUuid,
+    input_keyboard: Arc<Mutex<BLECharacteristic>>,
+    output_keyboard: Arc<Mutex<BLECharacteristic>>,
+    key_report: KeyReport,
+}
+
+impl Keyboard {
+    pub fn new(device: &mut BLEDevice, battery_level: u8) -> anyhow::Result<Self> {
+        device
+            .security()
+            .set_auth(AuthReq::all())
+            .set_io_cap(SecurityIOCap::NoInputNoOutput)
+            .resolve_rpa();
+
+        let server = device.get_server();
+        server.on_connect(|_server, _client| {});
+        let mut hid = BLEHIDDevice::new(server);
+
+        let input_keyboard = hid.input_report(KEYBOARD_ID);
+        let output_keyboard = hid.output_report(KEYBOARD_ID);
+
+        hid.manufacturer("VibeKeys-MAX");
+        hid.pnp(0x02, 0x2E8A, 0x820a, 0x0210);
+        hid.hid_info(0x00, 0x01);
+
+        hid.report_map(HID_KEYBOARD_REPORT_DISCRIPTOR);
+
+        hid.set_battery_level(battery_level);
+
+        let hid_service_id = hid.hid_service().lock().uuid();
+
+        Ok(Self {
+            hid_service_id,
+            input_keyboard,
+            output_keyboard,
+            key_report: KeyReport {
+                modifiers: 0,
+                reserved: 0,
+                keys: [0; 6],
+            },
+        })
+    }
+
+    pub fn write(&mut self, str: &str) {
+        for char in str.as_bytes() {
+            self.press(*char);
+            self.release();
+        }
+    }
+
+    pub fn ctrl_press(&mut self, char: u8) {
+        self.key_report.modifiers |= 0x01;
+        self.press(char);
+    }
+
+    pub fn r_ctrl_press(&mut self, char: u8) {
+        self.key_report.modifiers |= 0x10;
+        self.press(char);
+    }
+
+    pub fn shift_press(&mut self, char: u8) {
+        self.key_report.modifiers |= 0x02;
+        self.press(char);
+    }
+
+    pub fn r_shift_press(&mut self, char: u8) {
+        self.key_report.modifiers |= 0x20;
+        self.press(char);
+    }
+
+    pub fn alt_press(&mut self, char: u8) {
+        self.key_report.modifiers |= 0x04;
+        self.press(char);
+    }
+
+    pub fn gui_press(&mut self, char: u8) {
+        self.key_report.modifiers |= 0x08;
+        self.press(char);
+    }
+
+    pub fn press(&mut self, char: u8) {
+        if char > ASCII_MAP.len() as u8 {
+            self.key_report.keys[0] = char;
+            self.send_report(&self.key_report);
+            return;
+        }
+
+        let mut key = ASCII_MAP[char as usize];
+        if (key & SHIFT) > 0 {
+            self.key_report.modifiers |= 0x02;
+            key &= !SHIFT;
+        }
+        self.key_report.keys[0] = key;
+        self.send_report(&self.key_report);
+    }
+
+    pub fn release(&mut self) {
+        self.key_report.modifiers = 0;
+        self.key_report.keys.fill(0);
+        self.send_report(&self.key_report);
+    }
+
+    fn send_report(&self, keys: &KeyReport) {
+        self.input_keyboard
+            .lock()
+            .set_value(keys.as_bytes())
+            .notify();
+        esp_idf_svc::hal::delay::Ets::delay_ms(7);
+    }
+
+    pub fn hid_service_id(&self) -> BleUuid {
+        self.hid_service_id
+    }
+}
+
 pub struct KeyboardAndMouse {
     hid_service_id: BleUuid,
     input_keyboard: Arc<Mutex<BLECharacteristic>>,
@@ -407,7 +561,7 @@ impl KeyboardAndMouse {
         self.send_report(&self.key_report);
     }
 
-    pub fn send_report(&self, keys: &KeyReport) {
+    fn send_report(&self, keys: &KeyReport) {
         self.input_keyboard
             .lock()
             .set_value(keys.as_bytes())
@@ -551,104 +705,6 @@ pub fn start_ble_advertising(
             .add_service_uuid(CONTROLLER_SERVICE_ID),
     )?;
     ble_advertising.lock().start()?;
-
-    Ok(())
-}
-
-pub struct KeysPin(
-    pub Gpio0,
-    pub Gpio1,
-    pub Gpio2,
-    pub Gpio3,
-    pub Gpio4,
-    pub Gpio5,
-    pub Gpio6,
-    pub Gpio7,
-    pub Gpio18,
-);
-
-pub fn start_key_listen(tx: Sender<ControllerCommand>, keys: KeysPin) -> anyhow::Result<()> {
-    let mut button_k0 = esp_idf_svc::hal::gpio::PinDriver::input(keys.0)?;
-    button_k0.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    button_k0.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-    let mut button_k1 = esp_idf_svc::hal::gpio::PinDriver::input(keys.1)?;
-    button_k1.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    button_k1.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-    let mut button_k2 = esp_idf_svc::hal::gpio::PinDriver::input(keys.2)?;
-    button_k2.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    button_k2.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-    let mut button_k3 = esp_idf_svc::hal::gpio::PinDriver::input(keys.3)?;
-    button_k3.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    button_k3.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-    let mut button_k4 = esp_idf_svc::hal::gpio::PinDriver::input(keys.4)?;
-    button_k4.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    button_k4.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-    let mut button_k5 = esp_idf_svc::hal::gpio::PinDriver::input(keys.5)?;
-    button_k5.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    button_k5.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-    let mut button_k6 = esp_idf_svc::hal::gpio::PinDriver::input(keys.6)?;
-    button_k6.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    button_k6.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-    let mut button_k7 = esp_idf_svc::hal::gpio::PinDriver::input(keys.7)?;
-    button_k7.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    button_k7.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-    let mut button_k18 = esp_idf_svc::hal::gpio::PinDriver::input(keys.8)?;
-    button_k18.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    button_k18.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-    loop {
-        let (key, is_low) = esp_idf_svc::hal::task::block_on(async {
-            futures_util::select! {
-                _ = button_k0.wait_for_any_edge().fuse() => {
-                    (0,button_k0.is_low())
-                }
-                _ = button_k1.wait_for_any_edge().fuse() => {
-                    (1,button_k1.is_low())
-                },
-                _ = button_k2.wait_for_any_edge().fuse() => {
-                    (2,button_k2.is_low())
-                },
-                _ = button_k3.wait_for_any_edge().fuse() => {
-                    (3,button_k3.is_low())
-                },
-                _ = button_k4.wait_for_any_edge().fuse() => {
-                    (4,button_k4.is_low())
-                },
-                _ = button_k5.wait_for_any_edge().fuse() => {
-                    (5,button_k5.is_low())
-                },
-                _ = button_k6.wait_for_any_edge().fuse() => {
-                    (6,button_k6.is_low())
-                },
-                _ = button_k7.wait_for_any_edge().fuse() => {
-                    (7,button_k7.is_low())
-                },
-                _ = button_k18.wait_for_any_edge().fuse() => {
-                    (18,button_k18.is_low())
-                },
-            }
-        });
-        let r = if is_low {
-            log::info!("Key {} pressed", key);
-            tx.send(ControllerCommand::KeyboardPress(key as u8))
-        } else {
-            log::info!("Key {} released", key);
-            tx.send(ControllerCommand::KeyboardRelease(key as u8))
-        };
-        if r.is_err() {
-            break;
-        }
-    }
-
-    log::warn!("Key listening task ended");
 
     Ok(())
 }

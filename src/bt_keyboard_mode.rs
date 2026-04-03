@@ -94,7 +94,7 @@ impl KeymapConfig {
     pub fn get_key_name(pin_index: u8) -> &'static str {
         match pin_index {
             0 => "MIC",
-            1 => "ULTRATHINK",
+            1 => "CUSTOM",
             2 => "ESC",
             3 => "GUI",
             4 => "SWITCH",
@@ -433,7 +433,7 @@ struct MediaKeyReport {
 
 pub struct KeysPin {
     pub mic: crate::AnyBtn,
-    pub ultrathink: crate::AnyBtn,
+    pub custom: crate::AnyBtn,
     pub esc: crate::AnyBtn,
     pub gui: crate::AnyBtn,
     pub switch: crate::AnyBtn,
@@ -446,7 +446,7 @@ pub struct KeysPin {
 
 impl KeysPin {
     pub const MIC: u8 = 0;
-    pub const ULTRATHINK: u8 = 1;
+    pub const CUSTOM: u8 = 1;
     pub const ESC: u8 = 2;
     pub const GUI: u8 = 3;
     pub const SWITCH: u8 = 4;
@@ -467,11 +467,11 @@ pub async fn key_event(
                 ControllerCommand::KeyboardRelease(KeysPin::MIC)
             }
         },
-        _ = key_pins.ultrathink.wait_for_any_edge() => {
-            if key_pins.ultrathink.is_low() {
-                ControllerCommand::KeyboardPress(KeysPin::ULTRATHINK)
+        _ = key_pins.custom.wait_for_any_edge() => {
+            if key_pins.custom.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::CUSTOM)
             } else {
-                ControllerCommand::KeyboardRelease(KeysPin::ULTRATHINK)
+                ControllerCommand::KeyboardRelease(KeysPin::CUSTOM)
             }
         }
         _ = key_pins.esc.wait_for_any_edge() => {

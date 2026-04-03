@@ -132,7 +132,7 @@ fn main() -> anyhow::Result<()> {
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
-    // UltraThink
+    // Custom
     let btn2 = new_btn(
         peripherals.pins.gpio2.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
@@ -255,7 +255,7 @@ fn main() -> anyhow::Result<()> {
 
         let mut key_pins = bt_keyboard_mode::KeysPin {
             mic: btn0,
-            ultrathink: btn2,
+            custom: btn2,
             esc: btn3,
             gui: btn4,
             switch: btn5,
@@ -364,7 +364,7 @@ fn main() -> anyhow::Result<()> {
         runtime.spawn(app::key_task::listen_key_event(
             btn2,
             tx.clone(),
-            app::Event::UltraThink,
+            app::Event::Custom,
         ));
 
         runtime.spawn(app::key_task::listen_key_event(
@@ -553,7 +553,7 @@ pub fn handle_key_event(
                 // Default behavior
                 match pin_index {
                     KeysPin::MIC => keyboard.press(b' '),
-                    KeysPin::ULTRATHINK => keyboard.write("ultrathink "),
+                    KeysPin::CUSTOM => keyboard.write("/compact"),
                     KeysPin::ESC => keyboard.press(0x1b),
                     KeysPin::GUI => keyboard.write("claude"),
                     KeysPin::SWITCH => keyboard.shift_press(b'\t'),
@@ -579,7 +579,7 @@ pub fn handle_key_event(
                 // Default behavior
                 match pin_index {
                     KeysPin::MIC
-                    | KeysPin::ULTRATHINK
+                    | KeysPin::CUSTOM
                     | KeysPin::GUI
                     | KeysPin::SWITCH
                     | KeysPin::BACKSPACE

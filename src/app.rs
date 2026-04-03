@@ -15,7 +15,7 @@ pub enum Event {
     RotateDown,
     RotatePush,
     Backspace,
-    UltraThink,
+    Custom,
     SwtchMode,
     GUI,
 }
@@ -31,7 +31,7 @@ impl std::fmt::Debug for Event {
             Event::RotateDown => write!(f, "RotateDown"),
             Event::RotatePush => write!(f, "RotatePush"),
             Event::Backspace => write!(f, "Backspace"),
-            Event::UltraThink => write!(f, "UltraThink"),
+            Event::Custom => write!(f, "Custom"),
             Event::SwtchMode => write!(f, "SwtchMode"),
             Event::GUI => write!(f, "GUI"),
         }
@@ -180,9 +180,6 @@ impl lcd::UI {
                 log::info!("Submitting input: {}", input);
                 server.send(protocol::ClientMessage::input(input)).await?;
             }
-            Event::UltraThink => {
-                self.insert_text_at_start("UltraThink ")?;
-            }
             Event::SwtchMode => {
                 // shift + tab
                 server
@@ -281,7 +278,7 @@ impl lcd::UI {
                     .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
                     .await?;
             }
-            Event::GUI => {
+            Event::Custom => {
                 server.send(protocol::ClientMessage::Sync).await?;
             }
             _ => {

@@ -507,15 +507,15 @@ fn execute_key_action(
                     match mod_name.as_str() {
                         "ctrl" => modifier_mask |= 0x01,
                         "shift" => modifier_mask |= 0x02,
-                        "alt" => modifier_mask |= 0x04,
-                        "meta" => modifier_mask |= 0x08,
+                        "alt" | "option" => modifier_mask |= 0x04,
+                        "meta" | "command" | "cmd" | "win" | "gui" => modifier_mask |= 0x08,
                         _ => {}
                     }
                 }
 
-                // Convert key name to HID code
-                let key_code = bt_keyboard_mode::key_name_to_hid_code(key)?;
-                keyboard.press_raw(key_code, modifier_mask);
+                // Convert key name to HID code (may include modifier bit for modifier keys)
+                let (key_code, key_modifier) = bt_keyboard_mode::key_name_to_hid_code(key)?;
+                keyboard.press_raw(key_code, modifier_mask | key_modifier);
             } else {
                 keyboard.release();
             }

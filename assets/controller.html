@@ -295,9 +295,10 @@
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
                                     <div>
-                                        <p><strong>Keys:</strong> <code class="badge">A</code> <code class="badge">Enter</code> <code class="badge">Space</code> <code class="badge">F1</code></p>
-                                        <p><strong>Combos:</strong> <code class="badge">Ctrl+C</code> <code class="badge">Alt+Tab</code></p>
+                                        <p><strong>Keys:</strong> <code class="badge">A</code> <code class="badge">Enter</code> <code class="badge">Space</code> <code class="badge">F1</code> <code class="badge">GUI/Win</code></p>
+                                        <p><strong>Combos:</strong> <code class="badge">Ctrl+C</code> <code class="badge">Alt+Win</code> <code class="badge">Win+D</code></p>
                                         <p><strong>Text:</strong> <code class="badge">"text content"</code></p>
+                                        <p class="text-xs opacity-70 mt-1">Modifiers: Ctrl, Shift, Alt, Win/Meta/Cmd</p>
                                     </div>
                                 </div>
                             </div>
@@ -365,10 +366,12 @@
                 return /^[\\x20-\\x7E]+$/.test(str);
             }
 
-            const validModifiers = ['ctrl', 'alt', 'shift', 'meta', 'win', 'cmd'];
+            const validModifiers = ['ctrl', 'alt', 'option', 'shift', 'meta', 'win', 'cmd'];
             const validKeys = [
                 'enter', 'return', 'space', 'tab', 'escape', 'esc', 'backspace', 'delete', 'insert',
-                'home', 'end', 'pageup', 'pagedown', 'up', 'down', 'left', 'right'
+                'home', 'end', 'pageup', 'pagedown', 'up', 'down', 'left', 'right',
+                'ctrl', 'shift', 'alt', 'option',
+                'gui', 'win', 'meta', 'cmd', 'command'
             ];
             // Add F1-F12
             for (let i = 1; i <= 12; i++) {

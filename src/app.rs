@@ -17,7 +17,7 @@ pub enum Event {
     Backspace,
     Custom,
     SwitchMode,
-    GUI,
+    NEXT,
 }
 
 impl std::fmt::Debug for Event {
@@ -33,7 +33,7 @@ impl std::fmt::Debug for Event {
             Event::Backspace => write!(f, "Backspace"),
             Event::Custom => write!(f, "Custom"),
             Event::SwitchMode => write!(f, "SwtchMode"),
-            Event::GUI => write!(f, "GUI"),
+            Event::NEXT => write!(f, "Next"),
         }
     }
 }
@@ -217,7 +217,7 @@ impl lcd::UI {
             Event::RotatePush => {
                 self.reset_scroll()?;
             }
-            Event::GUI => self.next_choice()?,
+            Event::NEXT => self.next_choice()?,
             Event::Backspace => {
                 if self.allow_input() {
                     self.remove_input_char()?;

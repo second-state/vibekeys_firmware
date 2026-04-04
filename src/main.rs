@@ -118,8 +118,8 @@ fn main() -> anyhow::Result<()> {
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
-    // GUI (claude)
-    let mut btn4 = new_btn(
+    // NEXT
+    let btn4 = new_btn(
         peripherals.pins.gpio4.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -133,7 +133,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // Custom
-    let btn2 = new_btn(
+    let mut btn2 = new_btn(
         peripherals.pins.gpio2.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -200,7 +200,7 @@ fn main() -> anyhow::Result<()> {
     let mut mode = 3;
 
     for i in 0..5 {
-        lcd::display_text(&mut target, format!(" <ESC> -> OTA mode\n <Claude> -> Setting mode\n <Accept> -> Remote Control mode\n{}s later enter Keyboard mode", 5-i).as_str(), 0).unwrap();
+        lcd::display_text(&mut target, format!(" <ESC> -> OTA mode\n <Custom> -> Setting mode\n <Accept> -> Remote Control mode\n{}s later enter Keyboard mode", 5-i).as_str(), 0).unwrap();
 
         mode = runtime.block_on(async {
             tokio::select! {
@@ -212,8 +212,8 @@ fn main() -> anyhow::Result<()> {
                     log::info!("Button Accept is pressed, Starting in Remote Control mode");
                     1
                 },
-                _ = btn4.wait_for_low() => {
-                    log::info!("Button Setting is pressed, Starting in setting mode");
+                _ = btn2.wait_for_low() => {
+                    log::info!("Button Custom is pressed, Starting in setting mode");
                     2
                 },
                 _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
@@ -257,7 +257,7 @@ fn main() -> anyhow::Result<()> {
             mic: btn0,
             custom: btn2,
             esc: btn3,
-            gui: btn4,
+            next: btn4,
             backspace: btn5,
             switch: btn6,
             accept: btn7,
@@ -370,7 +370,7 @@ fn main() -> anyhow::Result<()> {
         runtime.spawn(app::key_task::listen_key_event(
             btn4,
             tx.clone(),
-            app::Event::GUI,
+            app::Event::NEXT,
         ));
 
         runtime.spawn(app::key_task::backspace_key(btn5, tx.clone()));
@@ -552,12 +552,12 @@ pub fn handle_key_event(
             } else {
                 // Default behavior
                 match pin_index {
-                    KeysPin::MIC => keyboard.press(b' '),
-                    KeysPin::CUSTOM => keyboard.write("/compact"),
-                    KeysPin::ESC => keyboard.press(0x1b),
-                    KeysPin::GUI => keyboard.write("claude"),
+                    KeysPin::MIC => keyboard.press_raw(0xE3, 0x08 | 0x04), // Left ALT + meta
+                    KeysPin::CUSTOM => keyboard.write("/compact\n"),
+                    KeysPin::ESC => keyboard.press_raw(0x29, 0),
+                    KeysPin::NEXT => keyboard.press_raw(0x51, 0), // Down arrow
                     KeysPin::SWITCH => keyboard.shift_press(b'\t'),
-                    KeysPin::BACKSPACE => keyboard.press(0x08),
+                    KeysPin::BACKSPACE => keyboard.press_raw(0x2a, 0),
                     KeysPin::ACCEPT => {
                         let mut adv = ble_device.get_advertising().lock();
                         if !adv.is_advertising() {
@@ -580,7 +580,7 @@ pub fn handle_key_event(
                 match pin_index {
                     KeysPin::MIC
                     | KeysPin::CUSTOM
-                    | KeysPin::GUI
+                    | KeysPin::NEXT
                     | KeysPin::SWITCH
                     | KeysPin::BACKSPACE
                     | KeysPin::ACCEPT

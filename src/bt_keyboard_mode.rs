@@ -93,14 +93,14 @@ impl KeymapConfig {
     /// Get key name from KeysPin index
     pub fn get_key_name(pin_index: u8) -> &'static str {
         match pin_index {
-            0 => "MIC",
-            1 => "CUSTOM",
-            2 => "ESC",
-            3 => "GUI",
-            4 => "BACKSPACE",
-            5 => "SWITCH",
-            6 => "ACCEPT",
-            7 => "ROTATE",
+            KeysPin::MIC => "MIC",
+            KeysPin::CUSTOM => "CUSTOM",
+            KeysPin::ESC => "ESC",
+            KeysPin::NEXT => "NEXT",
+            KeysPin::BACKSPACE => "BACKSPACE",
+            KeysPin::SWITCH => "SWITCH",
+            KeysPin::ACCEPT => "ACCEPT",
+            KeysPin::ROTATE_BUTTON => "ROTATE",
             _ => "UNKNOWN",
         }
     }
@@ -435,7 +435,7 @@ pub struct KeysPin {
     pub mic: crate::AnyBtn,
     pub custom: crate::AnyBtn,
     pub esc: crate::AnyBtn,
-    pub gui: crate::AnyBtn,
+    pub next: crate::AnyBtn,
     pub backspace: crate::AnyBtn,
     pub switch: crate::AnyBtn,
     pub accept: crate::AnyBtn,
@@ -448,7 +448,7 @@ impl KeysPin {
     pub const MIC: u8 = 0;
     pub const CUSTOM: u8 = 1;
     pub const ESC: u8 = 2;
-    pub const GUI: u8 = 3;
+    pub const NEXT: u8 = 3;
     pub const BACKSPACE: u8 = 4;
     pub const SWITCH: u8 = 5;
     pub const ACCEPT: u8 = 6;
@@ -483,11 +483,11 @@ pub async fn key_event(
                 ControllerCommand::KeyboardRelease(KeysPin::ESC)
             }
         },
-        _ = key_pins.gui.wait_for_any_edge() => {
-            if key_pins.gui.is_low() {
-                ControllerCommand::KeyboardPress(KeysPin::GUI)
+        _ = key_pins.next.wait_for_any_edge() => {
+            if key_pins.next.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::NEXT)
             } else {
-                ControllerCommand::KeyboardRelease(KeysPin::GUI)
+                ControllerCommand::KeyboardRelease(KeysPin::NEXT)
             }
         },
         _ = key_pins.switch.wait_for_any_edge() => {

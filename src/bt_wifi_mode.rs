@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use esp32_nimble::{utilities::BleUuid, uuid128, BLEAdvertisementData, NimbleProperties};
+use esp32_nimble::{utilities::BleUuid, uuid128, BLEService, NimbleProperties};
 
 use crate::lcd;
 
-const SERVICE_ID: BleUuid = uuid128!("623fa3e2-631b-4f8f-a6e7-a7b09c03e7e0");
+pub const SERVICE_ID: BleUuid = uuid128!("623fa3e2-631b-4f8f-a6e7-a7b09c03e7e0");
 const SSID_ID: BleUuid = uuid128!("1fda4d6e-2f14-42b0-96fa-453bed238375");
 const PASS_ID: BleUuid = uuid128!("a987ab18-a940-421a-a1d7-b94ee22bccbe");
 const SERVER_URL_ID: BleUuid = uuid128!("cef520a9-bcb5-4fc6-87f7-82804eee2b20");
@@ -111,40 +111,36 @@ pub enum BTevent {
     Reset,
 }
 
-pub fn bt(
-    device_id: &str,
+pub fn new_setting_service(
+    service: &mut BLEService,
     setting: Arc<Mutex<(Setting, esp_idf_svc::nvs::EspDefaultNvs)>>,
-    evt_tx: std::sync::mpsc::Sender<BTevent>,
+    evt_tx: Option<tokio::sync::mpsc::Sender<BTevent>>,
 ) -> anyhow::Result<()> {
-    let ble_device = esp32_nimble::BLEDevice::take();
-    let ble_advertising = ble_device.get_advertising();
+    // let server = device.get_server();
+    // server.on_connect(move |server, desc| {
+    //     log::info!("Client connected: {:?}", desc);
 
-    let server = ble_device.get_server();
-    server.on_connect(|server, desc| {
-        log::info!("Client connected: {:?}", desc);
+    //     server
+    //         .update_conn_params(desc.conn_handle(), 24, 48, 0, 60)
+    //         .unwrap();
 
-        server
-            .update_conn_params(desc.conn_handle(), 24, 48, 0, 60)
-            .unwrap();
+    //     if server.connected_count() < (esp_idf_svc::sys::CONFIG_BT_NIMBLE_MAX_CONNECTIONS as _) {
+    //         log::info!("Multi-connect support: start advertising");
+    //         ble_advertising.lock().start().unwrap();
+    //     }
+    // });
 
-        if server.connected_count() < (esp_idf_svc::sys::CONFIG_BT_NIMBLE_MAX_CONNECTIONS as _) {
-            log::info!("Multi-connect support: start advertising");
-            ble_advertising.lock().start().unwrap();
-        }
-    });
+    // server.on_disconnect(|_desc, reason| {
+    //     log::info!("Client disconnected ({:?})", reason);
+    // });
 
-    server.on_disconnect(|_desc, reason| {
-        log::info!("Client disconnected ({:?})", reason);
-    });
-
-    let service = server.create_service(SERVICE_ID);
+    // let service = server.create_service(SERVICE_ID);
 
     let setting1 = setting.clone();
     let setting2 = setting.clone();
 
-    let ssid_characteristic = service
-        .lock()
-        .create_characteristic(SSID_ID, NimbleProperties::READ | NimbleProperties::WRITE);
+    let ssid_characteristic =
+        service.create_characteristic(SSID_ID, NimbleProperties::READ | NimbleProperties::WRITE);
     ssid_characteristic
         .lock()
         .on_read(move |c, _| {
@@ -173,9 +169,8 @@ pub fn bt(
 
     let setting1 = setting.clone();
     let setting2 = setting.clone();
-    let pass_characteristic = service
-        .lock()
-        .create_characteristic(PASS_ID, NimbleProperties::READ | NimbleProperties::WRITE);
+    let pass_characteristic =
+        service.create_characteristic(PASS_ID, NimbleProperties::READ | NimbleProperties::WRITE);
     pass_characteristic
         .lock()
         .on_read(move |c, _| {
@@ -206,7 +201,7 @@ pub fn bt(
     let setting_ = setting.clone();
     let setting_gif = setting.clone();
 
-    let server_url_characteristic = service.lock().create_characteristic(
+    let server_url_characteristic = service.create_characteristic(
         SERVER_URL_ID,
         NimbleProperties::READ | NimbleProperties::WRITE,
     );
@@ -236,9 +231,8 @@ pub fn bt(
             }
         });
 
-    let background_png_characteristic = service
-        .lock()
-        .create_characteristic(BACKGROUND_PNG_ID, NimbleProperties::WRITE);
+    let background_png_characteristic =
+        service.create_characteristic(BACKGROUND_PNG_ID, NimbleProperties::WRITE);
     background_png_characteristic.lock().on_write(move |args| {
         let gif_chunk = args.recv_data();
 
@@ -263,7 +257,7 @@ pub fn bt(
     let setting = setting.clone();
     let setting_ = setting.clone();
 
-    let mic_model_characteristic = service.lock().create_characteristic(
+    let mic_model_characteristic = service.create_characteristic(
         MIC_MODEL_ID,
         NimbleProperties::READ | NimbleProperties::WRITE,
     );
@@ -291,23 +285,20 @@ pub fn bt(
         }
     });
 
-    let reset_characteristic = service
-        .lock()
-        .create_characteristic(RESET_ID, NimbleProperties::WRITE);
+    let evt_tx_reset = evt_tx.clone();
+    let reset_characteristic = service.create_characteristic(RESET_ID, NimbleProperties::WRITE);
     reset_characteristic.lock().on_write(move |args| {
         let reset_cmd = args.recv_data();
         if reset_cmd == b"RESET" {
-            evt_tx.send(BTevent::Reset).unwrap();
+            if let Some(tx) = &evt_tx_reset {
+                tx.blocking_send(BTevent::Reset).unwrap();
+            } else {
+                log::info!("Reset command received, but no event handler configured");
+            }
         } else {
             log::warn!("Invalid reset command received via BLE.");
         }
     });
 
-    ble_advertising.lock().set_data(
-        BLEAdvertisementData::new()
-            .name(&format!("VibeKeys-Max-{}", device_id))
-            .add_service_uuid(SERVICE_ID),
-    )?;
-    ble_advertising.lock().start()?;
     Ok(())
 }

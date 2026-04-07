@@ -5,7 +5,8 @@ use esp32_nimble::{
     enums::*,
     hid::*,
     utilities::{mutex::Mutex, BleUuid},
-    uuid128, BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice, NimbleProperties,
+    uuid128, BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice, BLEService,
+    NimbleProperties,
 };
 use std::sync::Arc;
 use zerocopy::IntoBytes;
@@ -539,6 +540,85 @@ pub async fn key_event(
     }
 }
 
+/// Wait for key event only (without ControllerCommand from rx)
+pub async fn wait_key_event(key_pins: &mut KeysPin) -> ControllerCommand {
+    tokio::select! {
+        _ = key_pins.mic.wait_for_any_edge() => {
+            if key_pins.mic.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::MIC)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::MIC)
+            }
+        },
+        _ = key_pins.custom.wait_for_any_edge() => {
+            if key_pins.custom.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::CUSTOM)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::CUSTOM)
+            }
+        }
+        _ = key_pins.esc.wait_for_any_edge() => {
+            if key_pins.esc.is_low() {
+                log::info!("ESC key pressed");
+                ControllerCommand::KeyboardPress(KeysPin::ESC)
+            } else {
+                log::info!("ESC key released");
+                ControllerCommand::KeyboardRelease(KeysPin::ESC)
+            }
+        },
+        _ = key_pins.next.wait_for_any_edge() => {
+            if key_pins.next.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::NEXT)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::NEXT)
+            }
+        },
+        _ = key_pins.switch.wait_for_any_edge() => {
+            if key_pins.switch.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::SWITCH)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::SWITCH)
+            }
+        },
+        _ = key_pins.backspace.wait_for_any_edge() => {
+            if key_pins.backspace.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::BACKSPACE)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::BACKSPACE)
+            }
+        },
+        _ = key_pins.accept.wait_for_any_edge() => {
+            if key_pins.accept.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::ACCEPT)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::ACCEPT)
+            }
+        },
+        _ = key_pins.rotate_a.wait_for_any_edge() => {
+            if key_pins.rotate_a.is_high() {
+                if key_pins.rotate_b.is_low() {
+                    ControllerCommand::RotateDown
+                } else {
+                    ControllerCommand::RotateUp
+                }
+            } else {
+                if key_pins.rotate_b.is_low() {
+                    ControllerCommand::RotateUp
+                } else {
+                    ControllerCommand::RotateDown
+                }
+            }
+        },
+        _ = key_pins.rotate_button.wait_for_any_edge() => {
+            if key_pins.rotate_button.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::ROTATE_BUTTON)
+            } else {
+                ControllerCommand::KeyboardRelease(KeysPin::ROTATE_BUTTON)
+            }
+        },
+    }
+}
+
 pub struct Keyboard {
     hid_service_id: BleUuid,
     input_keyboard: Arc<Mutex<BLECharacteristic>>,
@@ -836,7 +916,7 @@ impl KeyboardAndMouse {
 
 // controller service and characteristic UUIDs
 
-const CONTROLLER_SERVICE_ID: BleUuid = uuid128!("9c80ffb6-affa-4083-944a-91e34c88bd76");
+const CONTROLLER_SERVICE_ID: BleUuid = super::bt_wifi_mode::SERVICE_ID;
 const KEYBOARD_DISPLAY_ID: BleUuid = uuid128!("cdaa6472-67a8-4241-93cf-145051608573");
 const KEYBOARD_NOTIFY_ID: BleUuid = uuid128!("d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f");
 const KEYMAP_CONFIG_ID: BleUuid = uuid128!("6f2a291c-0e4d-4f0f-9446-50bcd0b73bb0");
@@ -865,17 +945,13 @@ pub enum ControllerCommand {
 }
 
 pub fn new_controller_service(
-    device: &mut BLEDevice,
+    service: &mut BLEService,
     tx: tokio::sync::mpsc::Sender<ControllerCommand>,
 ) -> anyhow::Result<ControllerService> {
-    let server = device.get_server();
-    let service = server.create_service(CONTROLLER_SERVICE_ID);
-
     let tx_ = tx.clone();
 
-    let display_characteristic = service
-        .lock()
-        .create_characteristic(KEYBOARD_DISPLAY_ID, NimbleProperties::WRITE);
+    let display_characteristic =
+        service.create_characteristic(KEYBOARD_DISPLAY_ID, NimbleProperties::WRITE);
 
     display_characteristic.lock().on_write(move |args| {
         log::info!("Wrote to controller display characteristic");
@@ -886,13 +962,11 @@ pub fn new_controller_service(
         let _ = tx_.blocking_send(ControllerCommand::DisplayKeyboard(s));
     });
 
-    let notify_characteristic = service
-        .lock()
-        .create_characteristic(KEYBOARD_NOTIFY_ID, NimbleProperties::NOTIFY);
+    let notify_characteristic =
+        service.create_characteristic(KEYBOARD_NOTIFY_ID, NimbleProperties::NOTIFY);
 
-    let keymap_config_characteristic = service
-        .lock()
-        .create_characteristic(KEYMAP_CONFIG_ID, NimbleProperties::WRITE);
+    let keymap_config_characteristic =
+        service.create_characteristic(KEYMAP_CONFIG_ID, NimbleProperties::WRITE);
 
     keymap_config_characteristic.lock().on_write(move |args| {
         log::info!("Wrote to keymap config characteristic");
@@ -910,16 +984,21 @@ pub fn new_controller_service(
 
 pub fn start_ble_advertising(
     device: &mut BLEDevice,
-    hid_service_id: BleUuid,
+    service_ids: &[BleUuid],
 ) -> anyhow::Result<()> {
     let ble_advertising = device.get_advertising();
-    ble_advertising.lock().scan_response(true).set_data(
-        BLEAdvertisementData::new()
-            .name("VibeKeys-MAX")
-            .appearance(0x03C1)
-            .add_service_uuid(hid_service_id)
-            .add_service_uuid(CONTROLLER_SERVICE_ID),
-    )?;
+    let mut adv = BLEAdvertisementData::new();
+    adv.name("VibeKeys-MAX");
+    adv.appearance(0x03C1);
+
+    for service_id in service_ids {
+        adv.add_service_uuid(*service_id);
+    }
+
+    ble_advertising
+        .lock()
+        .scan_response(true)
+        .set_data(&mut adv)?;
     ble_advertising.lock().start()?;
 
     Ok(())

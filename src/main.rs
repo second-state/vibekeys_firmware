@@ -133,7 +133,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // Custom
-    let mut btn2 = new_btn(
+    let btn2 = new_btn(
         peripherals.pins.gpio2.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -181,13 +181,13 @@ fn main() -> anyhow::Result<()> {
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
-    let mut nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
+    let nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
 
-    let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
+    let setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
 
     let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
     let mac = wifi.sta_netif().get_mac().unwrap();
-    let dev_id = format!(
+    let _dev_id = format!(
         "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
@@ -200,7 +200,7 @@ fn main() -> anyhow::Result<()> {
     let mut mode = 3;
 
     for i in 0..5 {
-        lcd::display_text(&mut target, format!(" <ESC> -> OTA mode\n <Custom> -> Setting mode\n <Accept> -> Remote Control mode\n{}s later enter Keyboard mode", 5-i).as_str(), 0).unwrap();
+        lcd::display_text(&mut target, format!(" <ESC> -> OTA mode\n <Accept> -> Remote Control mode\n{}s later enter Keyboard mode", 5-i).as_str(), 0).unwrap();
 
         mode = runtime.block_on(async {
             tokio::select! {
@@ -211,10 +211,6 @@ fn main() -> anyhow::Result<()> {
                 _ = btn7.wait_for_low() => {
                     log::info!("Button Accept is pressed, Starting in Remote Control mode");
                     1
-                },
-                _ = btn2.wait_for_low() => {
-                    log::info!("Button Custom is pressed, Starting in setting mode");
-                    2
                 },
                 _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
                     log::info!("No button is pressed, Starting in normal mode");
@@ -237,21 +233,41 @@ fn main() -> anyhow::Result<()> {
         ota.mark_running_slot_valid()?;
     }
 
-    if mode == 3 {
+    if mode == 3 || setting.need_init() {
         lcd::display_text(&mut target, "Starting in keyboard mode...", 0)?;
         std::thread::sleep(std::time::Duration::from_secs(1));
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let (setting_tx, setting_rx) = tokio::sync::mpsc::channel(8);
+
+        // Load keymap config before moving nvs
+        let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
+        log::info!("Loaded keymap config with {} keys", keymap.keys.len());
+
+        let mut setting_arc = Arc::new(Mutex::new((setting.clone(), nvs)));
 
         esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
 
         let ble_device = esp32_nimble::BLEDevice::take();
+
+        let server = ble_device.get_server();
+        let service = server.create_service(bt_wifi_mode::SERVICE_ID);
+
         let mut keyboard = bt_keyboard_mode::KeyboardAndMouse::new(ble_device, 100)?;
-        let _controller_service = bt_keyboard_mode::new_controller_service(ble_device, tx)?;
+        let service_id = {
+            let mut lock = service.lock();
+            bt_keyboard_mode::new_controller_service(&mut lock, tx)?;
+            // Start setting service
+            bt_wifi_mode::new_setting_service(&mut lock, setting_arc.clone(), Some(setting_tx))?;
+            lock.uuid()
+        };
 
         let server = ble_device.get_server();
         server.start()?;
-        bt_keyboard_mode::start_ble_advertising(ble_device, keyboard.hid_service_id())?;
+        bt_keyboard_mode::start_ble_advertising(
+            ble_device,
+            &[keyboard.hid_service_id(), service_id],
+        )?;
 
         let mut key_pins = bt_keyboard_mode::KeysPin {
             mic: btn0,
@@ -268,75 +284,16 @@ fn main() -> anyhow::Result<()> {
 
         lcd::display_text(&mut target, "Keyboard Mode", 0)?;
 
-        // Load keymap config from NVS
-        let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
-        log::info!("Loaded keymap config with {} keys", keymap.keys.len());
-
-        keyboard_mode_main(
-            &runtime,
+        runtime.block_on(keyboard_mode_main(
             &mut target,
             ble_device,
             &mut keyboard,
             &mut key_pins,
-            &mut rx,
-            &mut nvs,
+            &mut setting_arc,
+            setting_rx,
+            rx,
             &mut keymap,
-        );
-    }
-
-    if mode == 2 || setting.need_init() {
-        esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
-        setting.background_png.0.clear();
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        let setting_arc = Arc::new(Mutex::new((setting, nvs)));
-        lcd::display_text(&mut target, "Setting Mode", 0)?;
-        bt_wifi_mode::bt(&dev_id, setting_arc.clone(), tx)?;
-
-        match rx.recv() {
-            Ok(bt_wifi_mode::BTevent::Reset) => {
-                let mut lock = setting_arc.lock().unwrap();
-
-                {
-                    let (png, b) = &mut lock.0.background_png;
-                    if *b {
-                        lcd::display_png(&mut target, png, std::time::Duration::from_secs(3))
-                            .unwrap();
-                        let png = std::mem::take(png);
-                        if let Err(_) = lock.1.set_blob("background_png", &png) {
-                            lcd::display_text(
-                                &mut target,
-                                &format!("Failed to save background PNG"),
-                                0,
-                            )
-                            .unwrap();
-                        }
-                    }
-                }
-                for i in 1..=3 {
-                    lcd::display_text(
-                        &mut target,
-                        &format!("Received Setting from BLE\n SSID:{}\n SERVER_URL:{}\n Restarting in {}s", lock.0.ssid, lock.0.server_url, i),
-                        0,
-                    )?;
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-                esp_idf_svc::hal::reset::restart();
-            }
-            Err(e) => {
-                log::error!("Error receiving BLE event: {:?}", e);
-                for i in (1..=5).rev() {
-                    lcd::display_text(
-                        &mut target,
-                        &format!("Error receiving from BLE\n Restarting in {}s", i),
-                        0,
-                    )?;
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-
-                esp_idf_svc::hal::reset::restart();
-            }
-        }
+        ));
     }
 
     log::info!("Displaying PNG image on LCD...");
@@ -473,19 +430,90 @@ pub fn log_heap() {
     }
 }
 
-fn keyboard_mode_main(
-    runtime: &tokio::runtime::Runtime,
+fn handle_reset_event(
+    setting_arc: &mut Arc<Mutex<(bt_wifi_mode::Setting, esp_idf_svc::nvs::EspDefaultNvs)>>,
+) -> ! {
+    let mut lock = setting_arc.lock().unwrap();
+    let png_to_save = if lock.0.background_png.1 {
+        Some(lock.0.background_png.0.clone())
+    } else {
+        None
+    };
+
+    if let Some(png) = png_to_save {
+        if lock.1.set_blob("background_png", &png).is_err() {
+            log::error!("Failed to save background PNG");
+        }
+    }
+
+    log::info!(
+        "Received Reset from BLE, SSID:{}, SERVER_URL:{}, restarting",
+        lock.0.ssid,
+        lock.0.server_url
+    );
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    esp_idf_svc::hal::reset::restart();
+}
+
+fn handle_keymap_config(
+    config: String,
+    nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
+    keymap: &mut bt_keyboard_mode::KeymapConfig,
+) {
+    log::info!("Received keymap config: {}", config);
+    match bt_keyboard_mode::KeymapConfig::from_json(&config) {
+        Ok(keymap_) => {
+            keymap.merge(keymap_);
+            match keymap.save_to_nvs(nvs) {
+                Ok(()) => {
+                    log::info!("Keymap config merged and saved to NVS successfully");
+                }
+                Err(e) => {
+                    log::error!("Failed to save keymap to NVS: {:?}", e);
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to parse keymap JSON: {:?}", e);
+        }
+    }
+}
+
+async fn keyboard_mode_main(
     display: &mut lcd::FrameBuffer,
     ble_device: &mut esp32_nimble::BLEDevice,
     keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
     key_pins: &mut bt_keyboard_mode::KeysPin,
-    rx: &mut tokio::sync::mpsc::Receiver<bt_keyboard_mode::ControllerCommand>,
-    nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
+    setting_arc: &mut Arc<Mutex<(bt_wifi_mode::Setting, esp_idf_svc::nvs::EspDefaultNvs)>>,
+    mut setting_rx: tokio::sync::mpsc::Receiver<bt_wifi_mode::BTevent>,
+    mut rx: tokio::sync::mpsc::Receiver<bt_keyboard_mode::ControllerCommand>,
     keymap: &mut bt_keyboard_mode::KeymapConfig,
 ) -> ! {
     loop {
-        let event = runtime.block_on(bt_keyboard_mode::key_event(key_pins, rx));
-        let _ = handle_key_event(display, ble_device, keyboard, event, nvs, keymap);
+        let event = tokio::select! {
+            // Handle setting events (e.g., reset)
+            Some(bt_wifi_mode::BTevent::Reset) = setting_rx.recv() => {
+                handle_reset_event(setting_arc);
+            }
+            // Handle controller commands from BLE
+            Some(evt) = rx.recv() => {
+                match evt {
+                    bt_keyboard_mode::ControllerCommand::KeymapConfig(config) => {
+                        handle_keymap_config(
+                            config,
+                            &mut setting_arc.lock().unwrap().1,
+                            keymap,
+                        );
+                        continue;
+                    }
+                    controller_evt => controller_evt,
+                }
+            }
+            // Handle physical key events
+            key_evt = bt_keyboard_mode::wait_key_event(key_pins) => key_evt
+        };
+
+        let _ = handle_key_event(display, ble_device, keyboard, event, keymap);
     }
 }
 
@@ -535,8 +563,7 @@ pub fn handle_key_event(
     ble_device: &mut esp32_nimble::BLEDevice,
     keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
     event: bt_keyboard_mode::ControllerCommand,
-    nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
-    keymap: &mut bt_keyboard_mode::KeymapConfig,
+    keymap: &bt_keyboard_mode::KeymapConfig,
 ) -> anyhow::Result<()> {
     log::info!("Handling controller command: {:?}", event);
     use bt_keyboard_mode::KeysPin;
@@ -593,38 +620,17 @@ pub fn handle_key_event(
             }
         }
         bt_keyboard_mode::ControllerCommand::RotateDown => {
-            // 箭头下
             keyboard.press_raw(0x51, 0); // HID Down Arrow
             std::thread::sleep(std::time::Duration::from_millis(200));
             keyboard.release();
         }
         bt_keyboard_mode::ControllerCommand::RotateUp => {
-            // 箭头上
             keyboard.press_raw(0x52, 0); // HID Up Arrow
             std::thread::sleep(std::time::Duration::from_millis(200));
             keyboard.release();
         }
-        bt_keyboard_mode::ControllerCommand::KeymapConfig(config) => {
-            log::info!("Received keymap config: {}", config);
-            match bt_keyboard_mode::KeymapConfig::from_json(&config) {
-                Ok(keymap_) => {
-                    keymap.merge(keymap_);
-                    match keymap.save_to_nvs(nvs) {
-                        Ok(()) => {
-                            log::info!("Keymap config merged and saved to NVS successfully");
-                            lcd::display_text(display, "Keymap merged!", 0)?;
-                        }
-                        Err(e) => {
-                            log::error!("Failed to save keymap to NVS: {:?}", e);
-                            lcd::display_text(display, "Save failed!", 0)?;
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("Failed to parse keymap JSON: {:?}", e);
-                    lcd::display_text(display, "Invalid JSON!", 0)?;
-                }
-            }
+        bt_keyboard_mode::ControllerCommand::KeymapConfig(_) => {
+            // KeymapConfig is handled separately in keyboard_mode_main
         }
     }
 

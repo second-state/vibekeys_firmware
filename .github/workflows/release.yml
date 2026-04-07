@@ -37,7 +37,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install espflash
-        run: cargo install espflash
+        run: cargo install --locked espflash
 
       - name: Build keys
         run: ./build.sh keys

@@ -517,6 +517,7 @@ async fn keyboard_mode_main(
                             &mut setting_arc.lock().unwrap().1,
                             keymap,
                         );
+                        lcd::display_text(display, "keymap updated!", 0).unwrap();
                         continue;
                     }
                     controller_evt => controller_evt,
@@ -585,6 +586,14 @@ pub fn handle_key_event(
             lcd::display_text(display, &text, 0)?;
         }
         bt_keyboard_mode::ControllerCommand::KeyboardPress(pin_index) => {
+            if pin_index == KeysPin::ACCEPT {
+                log::info!("Accept button pressed, starting advertising");
+                let mut adv = ble_device.get_advertising().lock();
+                if !adv.is_advertising() {
+                    adv.start().unwrap();
+                }
+            }
+
             let key_name = bt_keyboard_mode::KeymapConfig::get_key_name(pin_index);
             if let Some(action) = keymap.keys.get(key_name) {
                 log::info!("Executing custom keymap for {}: {:?}", key_name, action);
@@ -599,10 +608,6 @@ pub fn handle_key_event(
                     KeysPin::SWITCH => keyboard.shift_press(b'\t'),
                     KeysPin::BACKSPACE => keyboard.press_raw(0x2a, 0),
                     KeysPin::ACCEPT => {
-                        let mut adv = ble_device.get_advertising().lock();
-                        if !adv.is_advertising() {
-                            adv.start().unwrap();
-                        }
                         keyboard.press(b'\n');
                     }
                     KeysPin::ROTATE_BUTTON => keyboard.press(b' '),

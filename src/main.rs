@@ -610,7 +610,7 @@ pub fn handle_key_event(
                     KeysPin::ACCEPT => {
                         keyboard.press(b'\n');
                     }
-                    KeysPin::ROTATE_BUTTON => keyboard.press(b' '),
+                    KeysPin::ROTATE_BUTTON => keyboard.press(b'\n'),
                     _ => {}
                 }
             }
@@ -638,12 +638,12 @@ pub fn handle_key_event(
             }
         }
         bt_keyboard_mode::ControllerCommand::RotateDown => {
-            keyboard.press_raw(0x51, 0); // HID Down Arrow
+            keyboard.press_raw(0x4E, 0); // HID Page Down
             std::thread::sleep(std::time::Duration::from_millis(200));
             keyboard.release();
         }
         bt_keyboard_mode::ControllerCommand::RotateUp => {
-            keyboard.press_raw(0x52, 0); // HID Up Arrow
+            keyboard.press_raw(0x4B, 0); // HID Page Up
             std::thread::sleep(std::time::Duration::from_millis(200));
             keyboard.release();
         }

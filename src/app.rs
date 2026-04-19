@@ -82,60 +82,42 @@ pub async fn run(
 
     while let Some(evt) = select_event(&mut server, &mut rx).await {
         match evt {
-            SelectResult::Event(e) => {
-                match e {
-                    Event::MicAudioChunk(chunk) => {
-                        if !start_submit_audio {
-                            start_submit_audio = true;
-                            log::info!("Starting to submit audio chunks to server");
-                            server
-                                .send(protocol::ClientMessage::voice_input_start(Some(16000)))
-                                .await?;
-                            ui.refresh_input_if_waiting()?;
-                        }
-                        let audio_buffer_u8 = unsafe {
-                            std::slice::from_raw_parts(chunk.as_ptr() as *const u8, chunk.len() * 2)
-                        };
+            SelectResult::Event(e) => match e {
+                Event::MicAudioChunk(chunk) => {
+                    if !start_submit_audio {
+                        start_submit_audio = true;
+                        log::info!("Starting to submit audio chunks to server");
                         server
-                            .send(protocol::ClientMessage::voice_input_chunk(
-                                audio_buffer_u8.to_vec(),
-                            ))
+                            .send(protocol::ClientMessage::voice_input_start(Some(16000)))
                             .await?;
+                        ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Voice input started")?;
                     }
-                    Event::MicAudioChunkEnd => {
-                        start_submit_audio = false;
-                        ui.refresh_input_if_waiting()?;
-                        server
-                            .send(protocol::ClientMessage::voice_input_end())
-                            .await?;
-                    }
-                    evt => {
-                        log::info!("Received event: {:?}", evt);
-
-                        match ui.state() {
-                            lcd::UiState::WaitingInput { .. } => {
-                                ui.handle_key_event_on_waiting_input(evt, &mut server)
-                                    .await?;
-                            }
-                            lcd::UiState::WaitingChoice { .. } => {
-                                ui.handle_key_event_on_choice_selection(evt, &mut server)
-                                    .await?;
-                            }
-                            &lcd::UiState::WaitingChoiceAllowCustom { .. } => {
-                                ui.handle_key_event_on_choice_selection(evt, &mut server)
-                                    .await?;
-                            }
-                            lcd::UiState::ShowingNotification { .. } => {
-                                ui.handle_key_event_on_displaying_text(evt, &mut server)
-                                    .await?;
-                            }
-                            _ => {
-                                log::info!("Received event {:?} in state {:?}, handling with default handler", evt, ui.state());
-                            }
-                        }
-                    }
+                    let audio_buffer_u8 = unsafe {
+                        std::slice::from_raw_parts(chunk.as_ptr() as *const u8, chunk.len() * 2)
+                    };
+                    server
+                        .send(protocol::ClientMessage::voice_input_chunk(
+                            audio_buffer_u8.to_vec(),
+                        ))
+                        .await?;
                 }
-            }
+                Event::MicAudioChunkEnd => {
+                    start_submit_audio = false;
+                    ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Voice input ended")?;
+                    server
+                        .send(protocol::ClientMessage::voice_input_end())
+                        .await?;
+                }
+                Event::RotateUp => {
+                    server.send(protocol::ClientMessage::ScrollUp).await?;
+                }
+                Event::RotateDown => {
+                    server.send(protocol::ClientMessage::ScrollDown).await?;
+                }
+                evt => {
+                    log::info!("Received event: {:?}", evt);
+                }
+            },
             SelectResult::ServerMessage(msg) => match msg {
                 protocol::ServerMessage::PtyOutput(..) => {
                     log::trace!("Received PTY output, ignoring for now");
@@ -150,144 +132,6 @@ pub async fn run(
     }
 
     Ok(())
-}
-
-impl lcd::UI {
-    async fn handle_key_event_on_waiting_input(
-        &mut self,
-        evt: Event,
-        server: &mut crate::ws::Server,
-    ) -> anyhow::Result<()> {
-        match evt {
-            Event::Esc => {
-                self.clear_input()?;
-            }
-            Event::RotateDown => {
-                self.move_cursor_right()?;
-            }
-            Event::RotateUp => {
-                self.move_cursor_left()?;
-            }
-            Event::Backspace => {
-                self.remove_input_char()?;
-            }
-            Event::Accept => {
-                let input = self.get_input().unwrap_or_default();
-                if input.is_empty() {
-                    log::info!("Input is empty, ignoring submit");
-                    return Ok(());
-                }
-                log::info!("Submitting input: {}", input);
-                server.send(protocol::ClientMessage::input(input)).await?;
-            }
-            Event::SwitchMode => {
-                // shift + tab
-                server
-                    .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
-                    .await?;
-            }
-            _ => {
-                log::warn!("Unexpected event in WaitingInput state");
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_key_event_on_choice_selection(
-        &mut self,
-        evt: Event,
-        server: &mut crate::ws::Server,
-    ) -> anyhow::Result<()> {
-        match evt {
-            Event::RotateDown => {
-                if self.allow_input() {
-                    self.move_cursor_right()?;
-                } else {
-                    self.scroll_down()?;
-                }
-            }
-            Event::RotateUp => {
-                if self.allow_input() {
-                    self.move_cursor_left()?;
-                } else {
-                    self.scroll_up()?;
-                }
-            }
-            Event::RotatePush => {
-                self.reset_scroll()?;
-            }
-            Event::NEXT => self.next_choice()?,
-            Event::Backspace => {
-                if self.allow_input() {
-                    self.remove_input_char()?;
-                }
-            }
-            Event::Accept => {
-                if self.is_confirm_dialog() {
-                    server
-                        .send(protocol::ClientMessage::pty_input(b"\r".to_vec()))
-                        .await?;
-                } else {
-                    if let Some(choice) = self.confirm_choice() {
-                        server.send(choice).await?;
-                        log::info!("Confirmed choice, sent to server");
-                    } else {
-                        log::debug!("No choice selected, ignoring accept event");
-                    }
-                }
-            }
-            Event::Esc => {
-                if !self.allow_input() {
-                    server
-                        .send(protocol::ClientMessage::pty_input(b"\x1b".to_vec()))
-                        .await?;
-                } else {
-                    self.clear_input()?;
-                }
-            }
-            _ => {
-                log::warn!("Unexpected event in ChoiceSelection state");
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_key_event_on_displaying_text(
-        &mut self,
-        evt: Event,
-        server: &mut crate::ws::Server,
-    ) -> anyhow::Result<()> {
-        match evt {
-            Event::RotateDown => {
-                self.scroll_down()?;
-            }
-            Event::RotateUp => {
-                self.scroll_up()?;
-            }
-            Event::RotatePush => {
-                self.reset_scroll()?;
-            }
-            Event::Accept => {
-                self.scroll_up()?;
-            }
-            Event::SwitchMode => {
-                // shift + tab
-                server
-                    .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
-                    .await?;
-            }
-            Event::Custom => {
-                server.send(protocol::ClientMessage::Sync).await?;
-            }
-            _ => {
-                log::warn!("Unexpected event in DisplayingText state");
-            }
-        }
-
-        Ok(())
-    }
 }
 
 pub mod key_task {

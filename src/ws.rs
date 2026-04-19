@@ -11,7 +11,7 @@ pub struct Server {
 
 impl Server {
     pub async fn new(uri: String) -> anyhow::Result<Self> {
-        let uri = format!("{}", uri);
+        let uri = format!("{}?pty=false&img=true&width=288&height=80", uri);
         let (ws, _resp) = tokio_websockets::ClientBuilder::new()
             .uri(&uri)?
             .connect()

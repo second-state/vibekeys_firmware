@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use embedded_graphics::prelude::RgbColor;
+use embedded_graphics::prelude::WebColors;
 use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver};
 
 use crate::lcd::DisplayTargetDrive;
@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
         peripherals.pins.gpio14,
     )?;
 
-    let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::WHITE);
+    let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::CSS_BLACK);
     target.flush()?;
     lcd::display_text(&mut target, "VibeKeys Starting...\n Read setting", 0)?;
 

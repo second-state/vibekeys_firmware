@@ -74,12 +74,6 @@ pub async fn run(
     let mut server = server.unwrap();
     let mut start_submit_audio = false;
 
-    ui.show_notification(
-        ColorFormat::CSS_DARK_GREEN,
-        "Server Connected\nPress Voice Key to start talking",
-    )?;
-    ui.start_input("Ready for input")?;
-
     while let Some(evt) = select_event(&mut server, &mut rx).await {
         match evt {
             SelectResult::Event(e) => match e {
@@ -90,7 +84,8 @@ pub async fn run(
                         server
                             .send(protocol::ClientMessage::voice_input_start(Some(16000)))
                             .await?;
-                        ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Voice input started")?;
+                        // ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Voice input started")?;
+                        ui.start_input("")?;
                     }
                     let audio_buffer_u8 = unsafe {
                         std::slice::from_raw_parts(chunk.as_ptr() as *const u8, chunk.len() * 2)
@@ -103,16 +98,65 @@ pub async fn run(
                 }
                 Event::MicAudioChunkEnd => {
                     start_submit_audio = false;
-                    ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Voice input ended")?;
                     server
                         .send(protocol::ClientMessage::voice_input_end())
                         .await?;
+                    ui.refresh_input_display()?;
                 }
                 Event::RotateUp => {
-                    server.send(protocol::ClientMessage::ScrollUp).await?;
+                    if ui.is_input_mode() {
+                        ui.move_cursor_left()?;
+                    } else {
+                        server.send(protocol::ClientMessage::ScrollUp).await?;
+                    }
                 }
                 Event::RotateDown => {
-                    server.send(protocol::ClientMessage::ScrollDown).await?;
+                    if ui.is_input_mode() {
+                        ui.move_cursor_right()?;
+                    } else {
+                        server.send(protocol::ClientMessage::ScrollDown).await?;
+                    }
+                }
+                Event::Esc => {
+                    if ui.is_input_mode() {
+                        ui.clear_input()?;
+                    } else {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(vec![0x1b]))
+                            .await?;
+                    }
+                }
+                Event::Accept => {
+                    if ui.is_input_mode() {
+                        let mut input = ui.take_waiting_input_prompt();
+                        server.send(protocol::ClientMessage::Input(input)).await?;
+                    } else {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(vec![0x0d]))
+                            .await?;
+                    }
+                }
+                Event::NEXT => {
+                    server
+                        .send(protocol::ClientMessage::PtyInput(b"\x1b[B".to_vec()))
+                        .await?;
+                }
+                Event::Backspace => {
+                    if ui.is_input_mode() {
+                        ui.delete_char_before_cursor()?;
+                    } else {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(vec![0x08]))
+                            .await?;
+                    }
+                }
+                Event::SwitchMode => {
+                    server
+                        .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
+                        .await?;
+                }
+                Event::RotatePush => {
+                    server.send(protocol::ClientMessage::Sync).await?;
                 }
                 evt => {
                     log::info!("Received event: {:?}", evt);

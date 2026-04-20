@@ -527,7 +527,7 @@ pub fn display_text(
         MyTextStyle {
             font_style: U8g2TextStyle::new(
                 u8g2_fonts::fonts::u8g2_font_wqy12_t_gb2312,
-                ColorFormat::CSS_BLACK,
+                ColorFormat::CSS_WHEAT,
             ),
             vertical_offset: 3,
             bg_color: None,
@@ -630,44 +630,6 @@ impl NotificationLevel {
 
 // ========== UI 状态 ==========
 
-/// UI 当前状态
-#[derive(Clone, Debug)]
-pub enum UiState {
-    /// 空闲状态
-    Idle,
-
-    /// 显示图片
-    ShowingImage,
-
-    /// 显示通知
-    ShowingNotification { color: ColorFormat, message: String },
-
-    /// 等待输入
-    WaitingInput {
-        prompt: String,
-        current_input: String,
-        cursor_pos: usize,
-    },
-
-    /// 等待选择
-    WaitingChoice {
-        id: String,
-        title: String,
-        options: Vec<String>,
-        selected_index: i32,
-    },
-    WaitingChoiceAllowCustom {
-        id: String,
-        title: String,
-        options: Vec<String>,
-        multi_select: bool,
-        current_selected: i32,
-        selected_indices: HashSet<i32>,
-        custom_input: String,
-        cursor_pos: usize,
-    },
-}
-
 // ========== UI 组件 ==========
 
 /// UI 渲染配置
@@ -680,7 +642,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            text_color: ColorFormat::CSS_BLACK,
+            text_color: ColorFormat::CSS_WHEAT,
         }
     }
 }
@@ -693,14 +655,13 @@ impl Default for UiConfig {
 pub struct UI {
     /// 显示缓冲区
     display: FrameBuffer,
-    /// 当前 UI 状态
-    state: UiState,
-    status_bar: String,
+
     /// UI 配置
     config: UiConfig,
-    scroll_offset: i32,
 
-    waiting_input_prompt: String,
+    asr_input: String,
+    asr_cursor_pos: usize,
+    input_mode: bool,
 
     image_buffer: Vec<u8>,
 }
@@ -709,13 +670,12 @@ impl UI {
     /// 创建新的 UI 实例
     pub fn new() -> Self {
         Self {
-            display: FrameBuffer::new(ColorFormat::CSS_WHITE),
-            state: UiState::Idle,
-            config: UiConfig::default(),
-            scroll_offset: 0,
-            waiting_input_prompt: String::new(),
-            status_bar: "[N]".to_string(),
+            display: FrameBuffer::new(ColorFormat::new(30, 30, 30)),
+            input_mode: false,
             image_buffer: Vec::with_capacity(1024),
+            config: UiConfig::default(),
+            asr_input: String::new(),
+            asr_cursor_pos: 0,
         }
     }
 
@@ -723,18 +683,16 @@ impl UI {
     pub fn new_with_target(display: FrameBuffer) -> Self {
         Self {
             display,
-            state: UiState::Idle,
-            config: UiConfig::default(),
-            scroll_offset: 0,
-            waiting_input_prompt: String::new(),
-            status_bar: "[N]".to_string(),
+            input_mode: false,
             image_buffer: Vec::with_capacity(1024),
+            config: UiConfig::default(),
+            asr_input: String::new(),
+            asr_cursor_pos: 0,
         }
     }
 
     /// 处理 UI 消息 (对应 protocol.rs 的 ServerMessage)
     pub fn handle_message(&mut self, msg: UiMessage) -> anyhow::Result<()> {
-        log::info!("Handling UI message: {:?}", msg);
         match msg {
             UiMessage::ScreenImage {
                 data,
@@ -749,15 +707,15 @@ impl UI {
                 Ok(())
             }
             UiMessage::Notification { message, color, .. } => {
-                self.show_notification(color, &message)
+                // self.show_notification(color, &message)
+                log::info!("[TODO] Showing notification: {}", message);
+                Ok(())
             }
-            UiMessage::AsrResult(text) => self.show_asr_result(&text),
+            UiMessage::AsrResult(text) => self.input_asr_result(&text),
         }
     }
 
     pub fn show_self_image_buffer(&mut self, format: ImageFormat) -> anyhow::Result<()> {
-        self.state = UiState::ShowingImage;
-        self.scroll_offset = 0;
         let data = &self.image_buffer;
 
         match format {
@@ -784,9 +742,6 @@ impl UI {
 
     /// 显示图片
     pub fn show_image(&mut self, data: &[u8], format: ImageFormat) -> anyhow::Result<()> {
-        self.state = UiState::ShowingImage;
-        self.scroll_offset = 0;
-
         match format {
             ImageFormat::Png => {
                 let img_reader = image::ImageReader::with_format(
@@ -831,45 +786,16 @@ impl UI {
 
     /// 开始输入模式
     pub fn start_input(&mut self, prompt: &str) -> anyhow::Result<()> {
-        if matches!(self.state, UiState::WaitingInput { .. }) {
-            return Ok(()); // 已经在输入模式，不重复设置
-        }
+        self.input_mode = true;
 
-        // TODO: change state bar
-
-        if let UiState::ShowingNotification { color, .. } = &mut self.state {
-            *color = ColorFormat::new(255, 150, 0); // 切换到输入模式，先把通知颜色改为橙色
-            self.waiting_input_prompt = prompt.to_string();
-            return Ok(()); // 正在显示通知，先保存输入提示，等刷新时再切换到输入模式
-        }
-
-        if cfg!(debug_assertions) {
-            unreachable!("Unexpected state when starting input: {:?}", self.state);
-        } else {
-            // unreachable in current design, but just in case
-            self.state = UiState::WaitingInput {
-                prompt: prompt.to_string(),
-                current_input: String::new(),
-                cursor_pos: 0,
-            };
-            self.refresh_input_display()?;
-            Ok(())
-        }
+        self.input_asr_result(prompt)?;
+        Ok(())
     }
 
     /// 刷新输入显示
-    fn refresh_input_display(&mut self) -> anyhow::Result<()> {
+    pub fn refresh_input_display(&mut self) -> anyhow::Result<()> {
         // 提取需要的数据，避免借用冲突
-        let (_prompt, current_input, cursor_pos) = if let UiState::WaitingInput {
-            prompt,
-            current_input,
-            cursor_pos,
-        } = &self.state
-        {
-            (prompt.clone(), current_input.clone(), *cursor_pos)
-        } else {
-            return Ok(());
-        };
+        let cursor_pos = self.asr_cursor_pos;
 
         // 检查麦克风状态
         let is_mic_on = crate::audio::MIC_ON.load(std::sync::atomic::Ordering::Relaxed);
@@ -893,21 +819,20 @@ impl UI {
             let bounding_box = self.display.bounding_box();
             let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 14));
             top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
-            let status_bar_str = self.status_bar.clone();
             self.draw_text(
-                &status_bar_str,
+                &"Waiting",
                 Point::new(4, 2),
                 ColorFormat::CSS_WHITE,
                 None,
-                false,
+                true,
             )?;
             14
         };
 
-        let display_text = if current_input.is_empty() {
+        let display_text = if self.asr_input.is_empty() {
             "\x1b[44m_\x1b[49m".to_string()
         } else {
-            let chars: Vec<char> = current_input.chars().collect();
+            let chars: Vec<char> = self.asr_input.chars().collect();
             let mut input_with_cursor = String::new();
             for (i, c) in chars.iter().enumerate() {
                 if i == cursor_pos {
@@ -934,65 +859,82 @@ impl UI {
         Ok(())
     }
 
-    /// 获取当前输入并返回
-    pub fn get_input(&self) -> Option<String> {
-        if let UiState::WaitingInput { current_input, .. } = &self.state {
-            Some(current_input.clone())
-        } else {
-            None
-        }
-    }
-
-    #[allow(unused)]
-    /// 获取光标位置
-    pub fn get_cursor_pos(&self) -> Option<usize> {
-        if let UiState::WaitingInput { cursor_pos, .. } = &self.state {
-            Some(*cursor_pos)
-        } else {
-            None
-        }
+    pub fn is_input_mode(&self) -> bool {
+        self.input_mode
     }
 
     pub fn show_notification(&mut self, color: ColorFormat, message: &str) -> anyhow::Result<()> {
-        self.state = UiState::ShowingNotification {
-            color,
-            message: message.to_string(),
-        };
-        self.scroll_offset = 0;
         self.draw_text_wrapped(message, Point::new(2, 2), color)?;
         self.display.flush()?;
         Ok(())
     }
 
-    /// 显示 ASR 结果（如果在输入模式，直接插入到光标位置）
-    pub fn show_asr_result(&mut self, text: &str) -> anyhow::Result<()> {
-        log::info!("[TODO] Showing ASR result: {}", text);
+    pub fn input_asr_result(&mut self, text: &str) -> anyhow::Result<()> {
+        log::info!("Inserting ASR result: {}", text);
+
+        self.input_mode = true;
+
+        // 将字符索引转换为字节索引（支持中文等多字节字符）
+        let byte_pos = self.asr_input
+            .char_indices()
+            .nth(self.asr_cursor_pos)
+            .map(|(i, _)| i)
+            .unwrap_or(self.asr_input.len());
+
+        self.asr_input.insert_str(byte_pos, text);
+        self.asr_cursor_pos += text.chars().count();
+        self.refresh_input_display()?;
         Ok(())
     }
 
-    /// 获取当前状态
-    pub fn state(&self) -> &UiState {
-        &self.state
-    }
-
-    pub fn set_status(&mut self, status: &str) -> anyhow::Result<()> {
-        self.status_bar = status.to_string();
-        match &self.state {
-            UiState::WaitingInput { .. } => self.refresh_input_display(),
-            _ => Ok(()),
+    /// 向左移动光标
+    pub fn move_cursor_left(&mut self) -> anyhow::Result<()> {
+        if self.asr_cursor_pos > 0 {
+            self.asr_cursor_pos -= 1;
+            self.refresh_input_display()?;
         }
-    }
-
-    fn take_waiting_input_prompt(&mut self) -> String {
-        std::mem::take(&mut self.waiting_input_prompt)
-    }
-
-    /// 清屏并重置到空闲状态
-    pub fn clear(&mut self) -> anyhow::Result<()> {
-        self.state = UiState::Idle;
-        self.display.fill_color(ColorFormat::CSS_WHITE)?;
-        self.display.flush()?;
         Ok(())
+    }
+
+    /// 向右移动光标
+    pub fn move_cursor_right(&mut self) -> anyhow::Result<()> {
+        let max_pos = self.asr_input.chars().count();
+        if self.asr_cursor_pos < max_pos {
+            self.asr_cursor_pos += 1;
+            self.refresh_input_display()?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_char_before_cursor(&mut self) -> anyhow::Result<()> {
+        if self.asr_cursor_pos > 0 {
+            // 将字符索引转换为字节索引（支持中文等多字节字符）
+            let byte_pos = self.asr_input
+                .char_indices()
+                .nth(self.asr_cursor_pos - 1)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+
+            self.asr_input.remove(byte_pos);
+            self.asr_cursor_pos -= 1;
+            self.refresh_input_display()?;
+        }
+        Ok(())
+    }
+
+    pub fn clear_input(&mut self) -> anyhow::Result<()> {
+        self.input_mode = false;
+        self.asr_input.clear();
+        self.asr_cursor_pos = 0;
+        self.refresh_input_display()?;
+        Ok(())
+    }
+
+    pub fn take_waiting_input_prompt(&mut self) -> String {
+        self.asr_cursor_pos = 0;
+        self.input_mode = false;
+
+        std::mem::take(&mut self.asr_input)
     }
 
     // ========== 辅助方法 ==========
@@ -1078,7 +1020,6 @@ impl UI {
             textbox_style,
         )
         .add_plugin(crate::ansi_plugin::MyAnsiPlugin::new())
-        .set_vertical_offset(self.scroll_offset)
         .draw(&mut self.display)?;
 
         Ok(())

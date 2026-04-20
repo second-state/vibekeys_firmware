@@ -85,6 +85,8 @@ impl Server {
                             }
                         };
                         return Some(msg);
+                    } else if msg.is_ping() {
+                        // ignore ping frames
                     } else {
                         log::warn!("Received unsupported message type: {:?}", msg);
                         continue;

@@ -1,6 +1,7 @@
 use embedded_graphics::prelude::WebColors;
 
 use crate::{
+    bt_keyboard_mode::{self, KeymapConfig},
     lcd::{self, ColorFormat},
     protocol::{self},
 };
@@ -62,6 +63,7 @@ pub async fn run(
     uri: String,
     ui: &mut crate::lcd::UI,
     mut rx: crate::audio::EventRx,
+    keymaps: &KeymapConfig,
 ) -> anyhow::Result<()> {
     let server = crate::ws::Server::new(uri).await;
     if server.is_err() {
@@ -128,7 +130,7 @@ pub async fn run(
                 }
                 Event::Accept => {
                     if ui.is_input_mode() {
-                        let mut input = ui.take_waiting_input_prompt();
+                        let input = ui.take_waiting_input_prompt();
                         server.send(protocol::ClientMessage::Input(input)).await?;
                     } else {
                         server
@@ -137,9 +139,20 @@ pub async fn run(
                     }
                 }
                 Event::NEXT => {
-                    server
-                        .send(protocol::ClientMessage::PtyInput(b"\x1b[B".to_vec()))
-                        .await?;
+                    if let Some(bytes) = keymaps
+                        .keys
+                        .get(KeymapConfig::KEY_NEXT)
+                        .and_then(|action| key_action_to_ansi(action))
+                    {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(bytes))
+                            .await?;
+                    } else {
+                        // Fallback to default DOWN arrow
+                        server
+                            .send(protocol::ClientMessage::PtyInput(b"\x1b[B".to_vec()))
+                            .await?;
+                    }
                 }
                 Event::Backspace => {
                     if ui.is_input_mode() {
@@ -151,15 +164,48 @@ pub async fn run(
                     }
                 }
                 Event::SwitchMode => {
-                    server
-                        .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
-                        .await?;
+                    if let Some(bytes) = keymaps
+                        .keys
+                        .get(KeymapConfig::KEY_SWITCH)
+                        .and_then(|action| key_action_to_ansi(action))
+                    {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(bytes))
+                            .await?;
+                    } else {
+                        // Fallback to default DOWN arrow
+                        server
+                            .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
+                            .await?;
+                    }
                 }
                 Event::RotatePush => {
-                    server.send(protocol::ClientMessage::Sync).await?;
+                    if let Some(bytes) = keymaps
+                        .keys
+                        .get(KeymapConfig::KEY_ROTATE)
+                        .and_then(|action| key_action_to_ansi(action))
+                    {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(bytes))
+                            .await?;
+                    } else {
+                        server.send(protocol::ClientMessage::Sync).await?;
+                    }
                 }
-                evt => {
-                    log::info!("Received event: {:?}", evt);
+                Event::Custom => {
+                    if let Some(bytes) = keymaps
+                        .keys
+                        .get(KeymapConfig::KEY_CUSTOM)
+                        .and_then(|action| key_action_to_ansi(action))
+                    {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(bytes))
+                            .await?;
+                    } else {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(b"/compact".to_vec()))
+                            .await?;
+                    }
                 }
             },
             SelectResult::ServerMessage(msg) => match msg {
@@ -176,6 +222,164 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Convert KeyAction to ANSI escape sequences for terminal input
+///
+/// # Arguments
+/// * `action` - The key action to convert
+///
+/// # Returns
+/// * `Some(bytes)` - ANSI bytes to send
+/// * `None` - Nothing to send (unknown key)
+pub fn key_action_to_ansi(action: &bt_keyboard_mode::KeyAction) -> Option<Vec<u8>> {
+    use bt_keyboard_mode::KeyAction;
+
+    match action {
+        KeyAction::Combo { modifiers, key, .. } => {
+            let key_upper = key.to_uppercase();
+            let mut result = Vec::new();
+
+            // Check each modifier and apply corresponding ANSI sequence
+            let mut has_ctrl = false;
+            let mut has_alt = false;
+            let mut has_shift = false;
+
+            for mod_name in modifiers {
+                match mod_name.as_str() {
+                    "ctrl" => has_ctrl = true,
+                    "shift" => has_shift = true,
+                    "alt" | "option" => has_alt = true,
+                    "meta" | "command" | "cmd" | "win" | "gui" => {
+                        // Meta not supported in ANSI, ignore
+                    }
+                    _ => {}
+                }
+            }
+
+            // Get the base key character
+            let base_char = match key_upper.as_str() {
+                // Letters
+                "A" => Some(b'a'),
+                "B" => Some(b'b'),
+                "C" => Some(b'c'),
+                "D" => Some(b'd'),
+                "E" => Some(b'e'),
+                "F" => Some(b'f'),
+                "G" => Some(b'g'),
+                "H" => Some(b'h'),
+                "I" => Some(b'i'),
+                "J" => Some(b'j'),
+                "K" => Some(b'k'),
+                "L" => Some(b'l'),
+                "M" => Some(b'm'),
+                "N" => Some(b'n'),
+                "O" => Some(b'o'),
+                "P" => Some(b'p'),
+                "Q" => Some(b'q'),
+                "R" => Some(b'r'),
+                "S" => Some(b's'),
+                "T" => Some(b't'),
+                "U" => Some(b'u'),
+                "V" => Some(b'v'),
+                "W" => Some(b'w'),
+                "X" => Some(b'x'),
+                "Y" => Some(b'y'),
+                "Z" => Some(b'z'),
+                // Numbers
+                "0" => Some(b'0'),
+                "1" => Some(b'1'),
+                "2" => Some(b'2'),
+                "3" => Some(b'3'),
+                "4" => Some(b'4'),
+                "5" => Some(b'5'),
+                "6" => Some(b'6'),
+                "7" => Some(b'7'),
+                "8" => Some(b'8'),
+                "9" => Some(b'9'),
+                // Special keys
+                "SPACE" => Some(b' '),
+                "ENTER" | "RETURN" => Some(0x0d),
+                "TAB" => Some(0x09),
+                "ESC" | "ESCAPE" => Some(0x1b),
+                "BACKSPACE" => Some(0x08),
+                "DELETE" | "DEL" => Some(0x7f),
+                // Arrow keys (ANSI escape sequences)
+                "UP" => return Some(b"\x1b[A".to_vec()),
+                "DOWN" => return Some(b"\x1b[B".to_vec()),
+                "RIGHT" => return Some(b"\x1b[C".to_vec()),
+                "LEFT" => return Some(b"\x1b[D".to_vec()),
+                // Function keys
+                "F1" => return Some(b"\x1bOP".to_vec()),
+                "F2" => return Some(b"\x1bOQ".to_vec()),
+                "F3" => return Some(b"\x1bOR".to_vec()),
+                "F4" => return Some(b"\x1bOS".to_vec()),
+                "F5" => return Some(b"\x1b[15~".to_vec()),
+                "F6" => return Some(b"\x1b[17~".to_vec()),
+                "F7" => return Some(b"\x1b[18~".to_vec()),
+                "F8" => return Some(b"\x1b[19~".to_vec()),
+                "F9" => return Some(b"\x1b[20~".to_vec()),
+                "F10" => return Some(b"\x1b[21~".to_vec()),
+                "F11" => return Some(b"\x1b[23~".to_vec()),
+                "F12" => return Some(b"\x1b[24~".to_vec()),
+                // Symbols (basic set)
+                "MINUS" | "-" => Some(b'-'),
+                "EQUAL" | "=" => Some(b'='),
+                "LEFT_BRACKET" | "[" => Some(b'['),
+                "RIGHT_BRACKET" | "]" => Some(b']'),
+                "BACKSLASH" | "\\" => Some(b'\\'),
+                "SEMICOLON" | ";" => Some(b';'),
+                "QUOTE" | "'" => Some(b'\''),
+                "COMMA" | "," => Some(b','),
+                "PERIOD" | "." => Some(b'.'),
+                "SLASH" | "/" => Some(b'/'),
+                "GRAVE" | "`" => Some(b'`'),
+                _ => {
+                    log::warn!("Unknown key for ANSI conversion: {}", key);
+                    None
+                }
+            };
+
+            if let Some(mut ch) = base_char {
+                // Apply shift modifier (for letters and symbols)
+                if has_shift && ch.is_ascii_lowercase() {
+                    ch = ch.to_ascii_uppercase();
+                }
+
+                // Handle Ctrl modifier - sends control character (0x00-0x1F)
+                // Ctrl+A = 0x01, Ctrl+B = 0x02, ..., Ctrl+Z = 0x1A
+                if has_ctrl {
+                    if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() {
+                        // A-Z maps to 0x01-0x1A
+                        ch = ch.to_ascii_uppercase();
+                        ch = ch - b'@'; // A=0x41, 0x41-0x40=0x01
+                    } else if ch == b' ' {
+                        ch = 0x00; // Ctrl+Space = NUL
+                    }
+                    result.push(ch);
+                }
+
+                // Handle Alt modifier - sends ESC prefix + character
+                // Alt+T = ESC + t
+                if has_alt {
+                    result.push(0x1b); // ESC
+                    result.push(ch);
+                }
+
+                // If no modifiers or only shift, just send the character
+                if !has_ctrl && !has_alt {
+                    result.push(ch);
+                }
+            }
+
+            if result.is_empty() {
+                None
+            } else {
+                Some(result)
+            }
+        }
+        KeyAction::Text { value, .. } => Some(value.as_bytes().to_vec()),
+    }
 }
 
 pub mod key_task {

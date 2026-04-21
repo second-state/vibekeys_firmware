@@ -181,9 +181,19 @@ fn main() -> anyhow::Result<()> {
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
-    let nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
+    let mut nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
+
+    if btn3.is_low() {
+        lcd::display_text(&mut target, "Clear all config", 0)?;
+        bt_wifi_mode::Setting::clear_nvs(&mut nvs)?;
+        bt_keyboard_mode::KeymapConfig::clear_nvs(&mut nvs)?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 
     let setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
+    // Load keymap config before moving nvs
+    let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
+    log::info!("Loaded keymap config with {} keys", keymap.keys.len());
 
     let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
     let mac = wifi.sta_netif().get_mac().unwrap();
@@ -233,16 +243,21 @@ fn main() -> anyhow::Result<()> {
         ota.mark_running_slot_valid()?;
     }
 
+    if mode == 1 && setting.need_init() {
+        lcd::display_text(
+            &mut target,
+            "Remote Control mode requires network/server config",
+            0,
+        )?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
     if mode == 3 || setting.need_init() {
         lcd::display_text(&mut target, "Starting in keyboard mode...", 0)?;
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let (setting_tx, setting_rx) = tokio::sync::mpsc::channel(8);
-
-        // Load keymap config before moving nvs
-        let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
-        log::info!("Loaded keymap config with {} keys", keymap.keys.len());
 
         let mut setting_arc = Arc::new(Mutex::new((setting.clone(), nvs)));
 
@@ -415,7 +430,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut ui = lcd::UI::new_with_target(target);
 
-    let app_fut = app::run(setting.server_url, &mut ui, rx);
+    let app_fut = app::run(setting.server_url, &mut ui, rx, &keymap);
     let r = runtime.block_on(app_fut);
     if let Err(e) = r {
         log::error!("App error: {:?}", e);

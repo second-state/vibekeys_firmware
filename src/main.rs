@@ -625,7 +625,7 @@ pub fn handle_key_event(
                     KeysPin::ACCEPT => {
                         keyboard.press(b'\n');
                     }
-                    KeysPin::ROTATE_BUTTON => keyboard.press(b'\n'),
+                    KeysPin::ROTATE_BUTTON => keyboard.write("/"),
                     _ => {}
                 }
             }

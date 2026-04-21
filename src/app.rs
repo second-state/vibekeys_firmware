@@ -189,7 +189,9 @@ pub async fn run(
                             .send(protocol::ClientMessage::PtyInput(bytes))
                             .await?;
                     } else {
-                        server.send(protocol::ClientMessage::Sync).await?;
+                        server
+                            .send(protocol::ClientMessage::PtyInput(b"/".to_vec()))
+                            .await?;
                     }
                 }
                 Event::Custom => {

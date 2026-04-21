@@ -875,7 +875,8 @@ impl UI {
         self.input_mode = true;
 
         // 将字符索引转换为字节索引（支持中文等多字节字符）
-        let byte_pos = self.asr_input
+        let byte_pos = self
+            .asr_input
             .char_indices()
             .nth(self.asr_cursor_pos)
             .map(|(i, _)| i)
@@ -909,7 +910,8 @@ impl UI {
     pub fn delete_char_before_cursor(&mut self) -> anyhow::Result<()> {
         if self.asr_cursor_pos > 0 {
             // 将字符索引转换为字节索引（支持中文等多字节字符）
-            let byte_pos = self.asr_input
+            let byte_pos = self
+                .asr_input
                 .char_indices()
                 .nth(self.asr_cursor_pos - 1)
                 .map(|(i, _)| i)

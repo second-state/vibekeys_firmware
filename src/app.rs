@@ -1,6 +1,7 @@
 use embedded_graphics::prelude::WebColors;
 
 use crate::{
+    bt_keyboard_mode::{self, KeymapConfig},
     lcd::{self, ColorFormat},
     protocol::{self},
 };
@@ -62,6 +63,7 @@ pub async fn run(
     uri: String,
     ui: &mut crate::lcd::UI,
     mut rx: crate::audio::EventRx,
+    keymaps: &KeymapConfig,
 ) -> anyhow::Result<()> {
     let server = crate::ws::Server::new(uri).await;
     if server.is_err() {
@@ -74,68 +76,140 @@ pub async fn run(
     let mut server = server.unwrap();
     let mut start_submit_audio = false;
 
-    ui.show_notification(
-        ColorFormat::CSS_DARK_GREEN,
-        "Server Connected\nPress Voice Key to start talking",
-    )?;
-    ui.start_input("Ready for input")?;
-
     while let Some(evt) = select_event(&mut server, &mut rx).await {
         match evt {
-            SelectResult::Event(e) => {
-                match e {
-                    Event::MicAudioChunk(chunk) => {
-                        if !start_submit_audio {
-                            start_submit_audio = true;
-                            log::info!("Starting to submit audio chunks to server");
-                            server
-                                .send(protocol::ClientMessage::voice_input_start(Some(16000)))
-                                .await?;
-                            ui.refresh_input_if_waiting()?;
-                        }
-                        let audio_buffer_u8 = unsafe {
-                            std::slice::from_raw_parts(chunk.as_ptr() as *const u8, chunk.len() * 2)
-                        };
+            SelectResult::Event(e) => match e {
+                Event::MicAudioChunk(chunk) => {
+                    if !start_submit_audio {
+                        start_submit_audio = true;
+                        log::info!("Starting to submit audio chunks to server");
                         server
-                            .send(protocol::ClientMessage::voice_input_chunk(
-                                audio_buffer_u8.to_vec(),
-                            ))
+                            .send(protocol::ClientMessage::voice_input_start(Some(16000)))
                             .await?;
+                        // ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Voice input started")?;
+                        ui.start_input("")?;
                     }
-                    Event::MicAudioChunkEnd => {
-                        start_submit_audio = false;
-                        ui.refresh_input_if_waiting()?;
-                        server
-                            .send(protocol::ClientMessage::voice_input_end())
-                            .await?;
-                    }
-                    evt => {
-                        log::info!("Received event: {:?}", evt);
-
-                        match ui.state() {
-                            lcd::UiState::WaitingInput { .. } => {
-                                ui.handle_key_event_on_waiting_input(evt, &mut server)
-                                    .await?;
-                            }
-                            lcd::UiState::WaitingChoice { .. } => {
-                                ui.handle_key_event_on_choice_selection(evt, &mut server)
-                                    .await?;
-                            }
-                            &lcd::UiState::WaitingChoiceAllowCustom { .. } => {
-                                ui.handle_key_event_on_choice_selection(evt, &mut server)
-                                    .await?;
-                            }
-                            lcd::UiState::ShowingNotification { .. } => {
-                                ui.handle_key_event_on_displaying_text(evt, &mut server)
-                                    .await?;
-                            }
-                            _ => {
-                                log::info!("Received event {:?} in state {:?}, handling with default handler", evt, ui.state());
-                            }
-                        }
+                    let audio_buffer_u8 = unsafe {
+                        std::slice::from_raw_parts(chunk.as_ptr() as *const u8, chunk.len() * 2)
+                    };
+                    server
+                        .send(protocol::ClientMessage::voice_input_chunk(
+                            audio_buffer_u8.to_vec(),
+                        ))
+                        .await?;
+                }
+                Event::MicAudioChunkEnd => {
+                    start_submit_audio = false;
+                    server
+                        .send(protocol::ClientMessage::voice_input_end())
+                        .await?;
+                    ui.refresh_input_display()?;
+                }
+                Event::RotateUp => {
+                    if ui.is_input_mode() {
+                        ui.move_cursor_left()?;
+                    } else {
+                        server.send(protocol::ClientMessage::ScrollUp).await?;
                     }
                 }
-            }
+                Event::RotateDown => {
+                    if ui.is_input_mode() {
+                        ui.move_cursor_right()?;
+                    } else {
+                        server.send(protocol::ClientMessage::ScrollDown).await?;
+                    }
+                }
+                Event::Esc => {
+                    if ui.is_input_mode() {
+                        ui.clear_input()?;
+                    } else {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(vec![0x1b]))
+                            .await?;
+                    }
+                }
+                Event::Accept => {
+                    if ui.is_input_mode() {
+                        let input = ui.take_waiting_input_prompt();
+                        server.send(protocol::ClientMessage::Input(input)).await?;
+                    } else {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(vec![0x0d]))
+                            .await?;
+                    }
+                }
+                Event::NEXT => {
+                    if let Some(bytes) = keymaps
+                        .keys
+                        .get(KeymapConfig::KEY_NEXT)
+                        .and_then(|action| key_action_to_ansi(action))
+                    {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(bytes))
+                            .await?;
+                    } else {
+                        // Fallback to default DOWN arrow
+                        server
+                            .send(protocol::ClientMessage::PtyInput(b"\x1b[B".to_vec()))
+                            .await?;
+                    }
+                }
+                Event::Backspace => {
+                    if ui.is_input_mode() {
+                        ui.delete_char_before_cursor()?;
+                    } else {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(vec![0x08]))
+                            .await?;
+                    }
+                }
+                Event::SwitchMode => {
+                    if let Some(bytes) = keymaps
+                        .keys
+                        .get(KeymapConfig::KEY_SWITCH)
+                        .and_then(|action| key_action_to_ansi(action))
+                    {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(bytes))
+                            .await?;
+                    } else {
+                        // Fallback to default DOWN arrow
+                        server
+                            .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
+                            .await?;
+                    }
+                }
+                Event::RotatePush => {
+                    if let Some(bytes) = keymaps
+                        .keys
+                        .get(KeymapConfig::KEY_ROTATE)
+                        .and_then(|action| key_action_to_ansi(action))
+                    {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(bytes))
+                            .await?;
+                    } else {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(b"/".to_vec()))
+                            .await?;
+                    }
+                }
+                Event::Custom => {
+                    if let Some(bytes) = keymaps
+                        .keys
+                        .get(KeymapConfig::KEY_CUSTOM)
+                        .and_then(|action| key_action_to_ansi(action))
+                    {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(bytes))
+                            .await?;
+                    } else {
+                        server
+                            .send(protocol::ClientMessage::PtyInput(b"/compact".to_vec()))
+                            .await?;
+                    }
+                }
+            },
             SelectResult::ServerMessage(msg) => match msg {
                 protocol::ServerMessage::PtyOutput(..) => {
                     log::trace!("Received PTY output, ignoring for now");
@@ -152,141 +226,161 @@ pub async fn run(
     Ok(())
 }
 
-impl lcd::UI {
-    async fn handle_key_event_on_waiting_input(
-        &mut self,
-        evt: Event,
-        server: &mut crate::ws::Server,
-    ) -> anyhow::Result<()> {
-        match evt {
-            Event::Esc => {
-                self.clear_input()?;
-            }
-            Event::RotateDown => {
-                self.move_cursor_right()?;
-            }
-            Event::RotateUp => {
-                self.move_cursor_left()?;
-            }
-            Event::Backspace => {
-                self.remove_input_char()?;
-            }
-            Event::Accept => {
-                let input = self.get_input().unwrap_or_default();
-                if input.is_empty() {
-                    log::info!("Input is empty, ignoring submit");
-                    return Ok(());
-                }
-                log::info!("Submitting input: {}", input);
-                server.send(protocol::ClientMessage::input(input)).await?;
-            }
-            Event::SwitchMode => {
-                // shift + tab
-                server
-                    .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
-                    .await?;
-            }
-            _ => {
-                log::warn!("Unexpected event in WaitingInput state");
-            }
-        }
+/// Convert KeyAction to ANSI escape sequences for terminal input
+///
+/// # Arguments
+/// * `action` - The key action to convert
+///
+/// # Returns
+/// * `Some(bytes)` - ANSI bytes to send
+/// * `None` - Nothing to send (unknown key)
+pub fn key_action_to_ansi(action: &bt_keyboard_mode::KeyAction) -> Option<Vec<u8>> {
+    use bt_keyboard_mode::KeyAction;
 
-        Ok(())
-    }
+    match action {
+        KeyAction::Combo { modifiers, key, .. } => {
+            let key_upper = key.to_uppercase();
+            let mut result = Vec::new();
 
-    async fn handle_key_event_on_choice_selection(
-        &mut self,
-        evt: Event,
-        server: &mut crate::ws::Server,
-    ) -> anyhow::Result<()> {
-        match evt {
-            Event::RotateDown => {
-                if self.allow_input() {
-                    self.move_cursor_right()?;
-                } else {
-                    self.scroll_down()?;
-                }
-            }
-            Event::RotateUp => {
-                if self.allow_input() {
-                    self.move_cursor_left()?;
-                } else {
-                    self.scroll_up()?;
-                }
-            }
-            Event::RotatePush => {
-                self.reset_scroll()?;
-            }
-            Event::NEXT => self.next_choice()?,
-            Event::Backspace => {
-                if self.allow_input() {
-                    self.remove_input_char()?;
-                }
-            }
-            Event::Accept => {
-                if self.is_confirm_dialog() {
-                    server
-                        .send(protocol::ClientMessage::pty_input(b"\r".to_vec()))
-                        .await?;
-                } else {
-                    if let Some(choice) = self.confirm_choice() {
-                        server.send(choice).await?;
-                        log::info!("Confirmed choice, sent to server");
-                    } else {
-                        log::debug!("No choice selected, ignoring accept event");
+            // Check each modifier and apply corresponding ANSI sequence
+            let mut has_ctrl = false;
+            let mut has_alt = false;
+            let mut has_shift = false;
+
+            for mod_name in modifiers {
+                match mod_name.as_str() {
+                    "ctrl" => has_ctrl = true,
+                    "shift" => has_shift = true,
+                    "alt" | "option" => has_alt = true,
+                    "meta" | "command" | "cmd" | "win" | "gui" => {
+                        // Meta not supported in ANSI, ignore
                     }
+                    _ => {}
                 }
             }
-            Event::Esc => {
-                if !self.allow_input() {
-                    server
-                        .send(protocol::ClientMessage::pty_input(b"\x1b".to_vec()))
-                        .await?;
-                } else {
-                    self.clear_input()?;
+
+            // Get the base key character
+            let base_char = match key_upper.as_str() {
+                // Letters
+                "A" => Some(b'a'),
+                "B" => Some(b'b'),
+                "C" => Some(b'c'),
+                "D" => Some(b'd'),
+                "E" => Some(b'e'),
+                "F" => Some(b'f'),
+                "G" => Some(b'g'),
+                "H" => Some(b'h'),
+                "I" => Some(b'i'),
+                "J" => Some(b'j'),
+                "K" => Some(b'k'),
+                "L" => Some(b'l'),
+                "M" => Some(b'm'),
+                "N" => Some(b'n'),
+                "O" => Some(b'o'),
+                "P" => Some(b'p'),
+                "Q" => Some(b'q'),
+                "R" => Some(b'r'),
+                "S" => Some(b's'),
+                "T" => Some(b't'),
+                "U" => Some(b'u'),
+                "V" => Some(b'v'),
+                "W" => Some(b'w'),
+                "X" => Some(b'x'),
+                "Y" => Some(b'y'),
+                "Z" => Some(b'z'),
+                // Numbers
+                "0" => Some(b'0'),
+                "1" => Some(b'1'),
+                "2" => Some(b'2'),
+                "3" => Some(b'3'),
+                "4" => Some(b'4'),
+                "5" => Some(b'5'),
+                "6" => Some(b'6'),
+                "7" => Some(b'7'),
+                "8" => Some(b'8'),
+                "9" => Some(b'9'),
+                // Special keys
+                "SPACE" => Some(b' '),
+                "ENTER" | "RETURN" => Some(0x0d),
+                "TAB" => Some(0x09),
+                "ESC" | "ESCAPE" => Some(0x1b),
+                "BACKSPACE" => Some(0x08),
+                "DELETE" | "DEL" => Some(0x7f),
+                // Arrow keys (ANSI escape sequences)
+                "UP" => return Some(b"\x1b[A".to_vec()),
+                "DOWN" => return Some(b"\x1b[B".to_vec()),
+                "RIGHT" => return Some(b"\x1b[C".to_vec()),
+                "LEFT" => return Some(b"\x1b[D".to_vec()),
+                // Function keys
+                "F1" => return Some(b"\x1bOP".to_vec()),
+                "F2" => return Some(b"\x1bOQ".to_vec()),
+                "F3" => return Some(b"\x1bOR".to_vec()),
+                "F4" => return Some(b"\x1bOS".to_vec()),
+                "F5" => return Some(b"\x1b[15~".to_vec()),
+                "F6" => return Some(b"\x1b[17~".to_vec()),
+                "F7" => return Some(b"\x1b[18~".to_vec()),
+                "F8" => return Some(b"\x1b[19~".to_vec()),
+                "F9" => return Some(b"\x1b[20~".to_vec()),
+                "F10" => return Some(b"\x1b[21~".to_vec()),
+                "F11" => return Some(b"\x1b[23~".to_vec()),
+                "F12" => return Some(b"\x1b[24~".to_vec()),
+                // Symbols (basic set)
+                "MINUS" | "-" => Some(b'-'),
+                "EQUAL" | "=" => Some(b'='),
+                "LEFT_BRACKET" | "[" => Some(b'['),
+                "RIGHT_BRACKET" | "]" => Some(b']'),
+                "BACKSLASH" | "\\" => Some(b'\\'),
+                "SEMICOLON" | ";" => Some(b';'),
+                "QUOTE" | "'" => Some(b'\''),
+                "COMMA" | "," => Some(b','),
+                "PERIOD" | "." => Some(b'.'),
+                "SLASH" | "/" => Some(b'/'),
+                "GRAVE" | "`" => Some(b'`'),
+                _ => {
+                    log::warn!("Unknown key for ANSI conversion: {}", key);
+                    None
+                }
+            };
+
+            if let Some(mut ch) = base_char {
+                // Apply shift modifier (for letters and symbols)
+                if has_shift && ch.is_ascii_lowercase() {
+                    ch = ch.to_ascii_uppercase();
+                }
+
+                // Handle Ctrl modifier - sends control character (0x00-0x1F)
+                // Ctrl+A = 0x01, Ctrl+B = 0x02, ..., Ctrl+Z = 0x1A
+                if has_ctrl {
+                    if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() {
+                        // A-Z maps to 0x01-0x1A
+                        ch = ch.to_ascii_uppercase();
+                        ch = ch - b'@'; // A=0x41, 0x41-0x40=0x01
+                    } else if ch == b' ' {
+                        ch = 0x00; // Ctrl+Space = NUL
+                    }
+                    result.push(ch);
+                }
+
+                // Handle Alt modifier - sends ESC prefix + character
+                // Alt+T = ESC + t
+                if has_alt {
+                    result.push(0x1b); // ESC
+                    result.push(ch);
+                }
+
+                // If no modifiers or only shift, just send the character
+                if !has_ctrl && !has_alt {
+                    result.push(ch);
                 }
             }
-            _ => {
-                log::warn!("Unexpected event in ChoiceSelection state");
+
+            if result.is_empty() {
+                None
+            } else {
+                Some(result)
             }
         }
-
-        Ok(())
-    }
-
-    async fn handle_key_event_on_displaying_text(
-        &mut self,
-        evt: Event,
-        server: &mut crate::ws::Server,
-    ) -> anyhow::Result<()> {
-        match evt {
-            Event::RotateDown => {
-                self.scroll_down()?;
-            }
-            Event::RotateUp => {
-                self.scroll_up()?;
-            }
-            Event::RotatePush => {
-                self.reset_scroll()?;
-            }
-            Event::Accept => {
-                self.scroll_up()?;
-            }
-            Event::SwitchMode => {
-                // shift + tab
-                server
-                    .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
-                    .await?;
-            }
-            Event::Custom => {
-                server.send(protocol::ClientMessage::Sync).await?;
-            }
-            _ => {
-                log::warn!("Unexpected event in DisplayingText state");
-            }
-        }
-
-        Ok(())
+        KeyAction::Text { value, .. } => Some(value.as_bytes().to_vec()),
     }
 }
 

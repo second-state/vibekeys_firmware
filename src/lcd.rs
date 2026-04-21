@@ -373,6 +373,139 @@ pub fn display_png<D: DisplayTargetDrive>(
     Ok(())
 }
 
+mod new_jpg {
+    use esp_idf_svc::sys::*;
+
+    struct JpegDecoder {
+        handle: jpeg_dec_handle_t,
+    }
+
+    impl JpegDecoder {
+        fn open(config: &jpeg_dec_config_t) -> Result<Self, i32> {
+            unsafe {
+                let mut handle: jpeg_dec_handle_t = std::ptr::null_mut();
+                let ret = jpeg_dec_open(
+                    config as *const jpeg_dec_config_t as *mut jpeg_dec_config_t,
+                    &mut handle,
+                );
+                if ret != jpeg_error_t_JPEG_ERR_OK {
+                    return Err(ret);
+                }
+                Ok(JpegDecoder { handle })
+            }
+        }
+    }
+
+    impl Drop for JpegDecoder {
+        fn drop(&mut self) {
+            if !self.handle.is_null() {
+                unsafe {
+                    jpeg_dec_close(self.handle);
+                }
+            }
+        }
+    }
+
+    pub struct JpegBuffer {
+        ptr: *mut u8,
+        size: usize,
+    }
+
+    impl JpegBuffer {
+        fn new(size: usize, aligned: std::ffi::c_int) -> anyhow::Result<Self> {
+            unsafe {
+                let ptr = jpeg_calloc_align(size, aligned);
+                if ptr.is_null() {
+                    return Err(anyhow::anyhow!("Failed to allocate JPEG buffer"));
+                }
+                Ok(JpegBuffer {
+                    ptr: ptr as *mut u8,
+                    size,
+                })
+            }
+        }
+
+        pub fn flush_to_lcd(&self) -> i32 {
+            let ptr = unsafe { std::slice::from_raw_parts(self.ptr.cast_const(), self.size) };
+            super::flush_display(ptr, 0, 0, 288, 80)
+        }
+    }
+
+    impl Drop for JpegBuffer {
+        fn drop(&mut self) {
+            if !self.ptr.is_null() {
+                unsafe {
+                    jpeg_free_align(self.ptr as *mut _);
+                }
+            }
+        }
+    }
+
+    pub fn esp_jpeg_decode_one_picture(data: &[u8]) -> anyhow::Result<JpegBuffer> {
+        unsafe {
+            use esp_idf_svc::sys::*;
+
+            // Generate default configuration
+            let mut config = jpeg_dec_config_t::default();
+            config.output_type = jpeg_pixel_format_t_JPEG_PIXEL_FORMAT_RGB565_LE;
+            config.clipper.height = 80;
+            config.clipper.width = 288;
+
+            // Create jpeg_dec handle
+            let decoder = JpegDecoder::open(&config)
+                .map_err(|e| anyhow::anyhow!("Failed to open JPEG decoder: error code {}", e))?;
+
+            // Create io_callback handle
+            let mut jpeg_io = Box::new(jpeg_dec_io_t::default());
+
+            // Create out_info handle
+            let mut out_info = Box::new(jpeg_dec_header_info_t::default());
+
+            // Set input buffer and buffer len to io_callback
+            jpeg_io.inbuf = data.as_ptr() as *mut u8;
+            jpeg_io.inbuf_len = data.len() as i32;
+
+            // Parse jpeg picture header and get picture for user and decoder
+            let ret = jpeg_dec_parse_header(decoder.handle, jpeg_io.as_mut(), out_info.as_mut());
+            if ret != jpeg_error_t_JPEG_ERR_OK {
+                return Err(anyhow::anyhow!(
+                    "Failed to parse JPEG header: error code {}",
+                    ret
+                ));
+            }
+
+            // Calculate output length based on pixel format
+            // Default to RGB565 (2 bytes per pixel)
+            let out_len = (*out_info).width * (*out_info).height * 2;
+
+            // Allocate aligned output buffer
+            let out_buf = JpegBuffer::new(out_len as usize, 16)?;
+
+            jpeg_io.outbuf = out_buf.ptr;
+
+            // Start decode jpeg
+            let ret = jpeg_dec_process(decoder.handle, jpeg_io.as_mut());
+            if ret != jpeg_error_t_JPEG_ERR_OK {
+                return Err(anyhow::anyhow!("Failed to decode JPEG: error code {}", ret));
+            }
+
+            Ok(out_buf)
+        }
+    }
+}
+
+pub fn display_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
+    let jpeg_buffer = new_jpg::esp_jpeg_decode_one_picture(jpeg)?;
+    let e = jpeg_buffer.flush_to_lcd();
+    if e != 0 {
+        return Err(anyhow::anyhow!(
+            "Failed to flush JPEG to LCD: error code {}",
+            e
+        ));
+    }
+    Ok(())
+}
+
 pub fn display_text(
     display_target: &mut FrameBuffer,
     text: &str,
@@ -394,7 +527,7 @@ pub fn display_text(
         MyTextStyle {
             font_style: U8g2TextStyle::new(
                 u8g2_fonts::fonts::u8g2_font_wqy12_t_gb2312,
-                ColorFormat::CSS_BLACK,
+                ColorFormat::CSS_WHEAT,
             ),
             vertical_offset: 3,
             bg_color: None,
@@ -421,6 +554,7 @@ pub enum UiMessage {
     ScreenImage {
         data: Vec<u8>,
         format: ImageFormat,
+        is_last: bool,
     },
 
     /// 通知消息
@@ -430,33 +564,22 @@ pub enum UiMessage {
         title: Option<String>,
     },
 
-    /// 请求输入
-    GetInput {
-        prompt: String,
-    },
-
-    /// 提供选择项
-    Choices {
-        id: String,
-        title: String,
-        options: Vec<String>,
-        multi_select: bool,
-        allow_custom_input: bool,
-    },
-
     /// ASR 结果
     AsrResult(String),
-
-    Status(String),
 }
 
 impl Debug for UiMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UiMessage::ScreenImage { data, format } => f
+            UiMessage::ScreenImage {
+                data,
+                format,
+                is_last,
+            } => f
                 .debug_struct("ScreenImage")
                 .field("format", format)
                 .field("data_len", &data.len())
+                .field("is_last", is_last)
                 .finish(),
             UiMessage::Notification {
                 message,
@@ -468,31 +591,9 @@ impl Debug for UiMessage {
                 .field("message", &message.chars().take(20).collect::<String>())
                 .field("title", title)
                 .finish(),
-            UiMessage::GetInput { prompt } => f
-                .debug_tuple("GetInput")
-                .field(&prompt.chars().take(20).collect::<String>())
-                .finish(),
-            UiMessage::Choices {
-                id,
-                title,
-                options,
-                multi_select,
-                allow_custom_input,
-            } => f
-                .debug_struct("Choices")
-                .field("id", id)
-                .field("title", &title.chars().take(20).collect::<String>())
-                .field("options_count", &options.len())
-                .field("multi_select", &multi_select)
-                .field("allow_custom_input", &allow_custom_input)
-                .finish(),
             UiMessage::AsrResult(text) => f
                 .debug_tuple("AsrResult")
                 .field(&text.chars().take(20).collect::<String>())
-                .finish(),
-            UiMessage::Status(status) => f
-                .debug_tuple("Status")
-                .field(&status.chars().take(20).collect::<String>())
                 .finish(),
         }
     }
@@ -529,44 +630,6 @@ impl NotificationLevel {
 
 // ========== UI 状态 ==========
 
-/// UI 当前状态
-#[derive(Clone, Debug)]
-pub enum UiState {
-    /// 空闲状态
-    Idle,
-
-    /// 显示图片
-    ShowingImage,
-
-    /// 显示通知
-    ShowingNotification { color: ColorFormat, message: String },
-
-    /// 等待输入
-    WaitingInput {
-        prompt: String,
-        current_input: String,
-        cursor_pos: usize,
-    },
-
-    /// 等待选择
-    WaitingChoice {
-        id: String,
-        title: String,
-        options: Vec<String>,
-        selected_index: i32,
-    },
-    WaitingChoiceAllowCustom {
-        id: String,
-        title: String,
-        options: Vec<String>,
-        multi_select: bool,
-        current_selected: i32,
-        selected_indices: HashSet<i32>,
-        custom_input: String,
-        cursor_pos: usize,
-    },
-}
-
 // ========== UI 组件 ==========
 
 /// UI 渲染配置
@@ -579,7 +642,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            text_color: ColorFormat::CSS_BLACK,
+            text_color: ColorFormat::CSS_WHEAT,
         }
     }
 }
@@ -592,26 +655,27 @@ impl Default for UiConfig {
 pub struct UI {
     /// 显示缓冲区
     display: FrameBuffer,
-    /// 当前 UI 状态
-    state: UiState,
-    status_bar: String,
+
     /// UI 配置
     config: UiConfig,
-    scroll_offset: i32,
 
-    waiting_input_prompt: String,
+    asr_input: String,
+    asr_cursor_pos: usize,
+    input_mode: bool,
+
+    image_buffer: Vec<u8>,
 }
 
 impl UI {
     /// 创建新的 UI 实例
     pub fn new() -> Self {
         Self {
-            display: FrameBuffer::new(ColorFormat::CSS_WHITE),
-            state: UiState::Idle,
+            display: FrameBuffer::new(ColorFormat::new(30, 30, 30)),
+            input_mode: false,
+            image_buffer: Vec::with_capacity(1024),
             config: UiConfig::default(),
-            scroll_offset: 0,
-            waiting_input_prompt: String::new(),
-            status_bar: "[N]".to_string(),
+            asr_input: String::new(),
+            asr_cursor_pos: 0,
         }
     }
 
@@ -619,75 +683,40 @@ impl UI {
     pub fn new_with_target(display: FrameBuffer) -> Self {
         Self {
             display,
-            state: UiState::Idle,
+            input_mode: false,
+            image_buffer: Vec::with_capacity(1024),
             config: UiConfig::default(),
-            scroll_offset: 0,
-            waiting_input_prompt: String::new(),
-            status_bar: "[N]".to_string(),
+            asr_input: String::new(),
+            asr_cursor_pos: 0,
         }
     }
 
     /// 处理 UI 消息 (对应 protocol.rs 的 ServerMessage)
     pub fn handle_message(&mut self, msg: UiMessage) -> anyhow::Result<()> {
-        log::info!("Handling UI message: {:?}", msg);
         match msg {
-            UiMessage::ScreenImage { data, format } => self.show_image(&data, format),
-            UiMessage::Notification { message, color, .. } => {
-                self.show_notification(color, &message)
-            }
-            UiMessage::GetInput { prompt } => self.start_input(&prompt),
-            UiMessage::Choices {
-                title,
-                options,
-                id,
-                multi_select,
-                allow_custom_input,
+            UiMessage::ScreenImage {
+                data,
+                format,
+                is_last,
             } => {
-                if allow_custom_input {
-                    self.show_allow_custom_choices(&id, &title, &options, multi_select)
-                } else {
-                    self.show_choices(&id, &title, &options)
+                self.image_buffer.extend_from_slice(&data);
+                if is_last {
+                    self.show_self_image_buffer(format)?;
+                    self.image_buffer.clear();
                 }
+                Ok(())
             }
-            UiMessage::AsrResult(text) => self.show_asr_result(&text),
-            UiMessage::Status(status) => self.set_status(&status),
+            UiMessage::Notification { message, color, .. } => {
+                // self.show_notification(color, &message)
+                log::info!("[TODO] Showing notification: {}", message);
+                Ok(())
+            }
+            UiMessage::AsrResult(text) => self.input_asr_result(&text),
         }
     }
 
-    pub fn reset_scroll(&mut self) -> anyhow::Result<()> {
-        self.scroll_offset = 0;
-        match &self.state {
-            UiState::ShowingNotification { .. } => self.refresh_notification(),
-            UiState::WaitingChoice { .. } => self.refresh_choices_display(),
-            UiState::WaitingChoiceAllowCustom { .. } => self.refresh_allow_custom_choices_display(),
-            _ => Ok(()),
-        }
-    }
-
-    pub fn scroll_up(&mut self) -> anyhow::Result<()> {
-        self.scroll_offset -= 14;
-        match &self.state {
-            UiState::ShowingNotification { .. } => self.refresh_notification(),
-            UiState::WaitingChoice { .. } => self.refresh_choices_display(),
-            UiState::WaitingChoiceAllowCustom { .. } => self.refresh_allow_custom_choices_display(),
-            _ => Ok(()),
-        }
-    }
-
-    pub fn scroll_down(&mut self) -> anyhow::Result<()> {
-        self.scroll_offset += 14;
-        match &self.state {
-            UiState::ShowingNotification { .. } => self.refresh_notification(),
-            UiState::WaitingChoice { .. } => self.refresh_choices_display(),
-            UiState::WaitingChoiceAllowCustom { .. } => self.refresh_allow_custom_choices_display(),
-            _ => Ok(()),
-        }
-    }
-
-    /// 显示图片
-    pub fn show_image(&mut self, data: &[u8], format: ImageFormat) -> anyhow::Result<()> {
-        self.state = UiState::ShowingImage;
-        self.scroll_offset = 0;
+    pub fn show_self_image_buffer(&mut self, format: ImageFormat) -> anyhow::Result<()> {
+        let data = &self.image_buffer;
 
         match format {
             ImageFormat::Png => {
@@ -697,14 +726,10 @@ impl UI {
                 );
                 let img = img_reader.decode()?.to_rgb8();
                 self.draw_rgb888(&img)?;
+                self.display.flush()?;
             }
             ImageFormat::Jpeg => {
-                let img_reader = image::ImageReader::with_format(
-                    std::io::Cursor::new(data),
-                    image::ImageFormat::Jpeg,
-                );
-                let img = img_reader.decode()?.to_rgb8();
-                self.draw_rgb888(&img)?;
+                display_jpeg(data)?;
             }
             ImageFormat::Gif => {
                 // GIF 动画处理可以在这里扩展
@@ -712,7 +737,30 @@ impl UI {
             }
         }
 
-        self.display.flush()?;
+        Ok(())
+    }
+
+    /// 显示图片
+    pub fn show_image(&mut self, data: &[u8], format: ImageFormat) -> anyhow::Result<()> {
+        match format {
+            ImageFormat::Png => {
+                let img_reader = image::ImageReader::with_format(
+                    std::io::Cursor::new(data),
+                    image::ImageFormat::Png,
+                );
+                let img = img_reader.decode()?.to_rgb8();
+                self.draw_rgb888(&img)?;
+                self.display.flush()?;
+            }
+            ImageFormat::Jpeg => {
+                display_jpeg(data)?;
+            }
+            ImageFormat::Gif => {
+                // GIF 动画处理可以在这里扩展
+                log::warn!("GIF format not fully supported yet");
+            }
+        }
+
         Ok(())
     }
 
@@ -736,93 +784,18 @@ impl UI {
         Ok(())
     }
 
-    /// 显示通知
-    pub fn show_notification(&mut self, color: ColorFormat, message: &str) -> anyhow::Result<()> {
-        if message.is_empty() {
-            if let UiState::ShowingNotification { color: color_, .. } = &mut self.state {
-                *color_ = color;
-                self.refresh_notification()?;
-                return Ok(());
-            }
-        }
+    /// 开始输入模式
+    pub fn start_input(&mut self, prompt: &str) -> anyhow::Result<()> {
+        self.input_mode = true;
 
-        self.state = UiState::ShowingNotification {
-            color,
-            message: message.to_string(),
-        };
-        self.scroll_offset = 0;
-
-        // self.display.fill_color(self.config.notification_bg)?;
-
-        const LINE_HEIGHT: i32 = 14;
-
-        // 绘制顶部颜色条表示级别
-        let bounding_box = self.display.bounding_box();
-        let top_bar = Rectangle::new(
-            Point::new(0, 0),
-            Size::new(bounding_box.size.width, LINE_HEIGHT as u32),
-        );
-        top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
-
-        let status_bar_str = format!("{}", self.status_bar.clone());
-
-        self.draw_text(
-            &status_bar_str,
-            Point::new(4, 2),
-            ColorFormat::CSS_WHITE,
-            None,
-            false,
-        )?;
-
-        // 显示消息
-        self.draw_text_wrapped(message, Point::new(2, LINE_HEIGHT), self.config.text_color)?;
-
-        self.display.flush()?;
+        self.input_asr_result(prompt)?;
         Ok(())
     }
 
-    /// 开始输入模式
-    pub fn start_input(&mut self, prompt: &str) -> anyhow::Result<()> {
-        if matches!(self.state, UiState::WaitingInput { .. }) {
-            return Ok(()); // 已经在输入模式，不重复设置
-        }
-
-        // TODO: change state bar
-
-        if let UiState::ShowingNotification { color, .. } = &mut self.state {
-            *color = ColorFormat::new(255, 150, 0); // 切换到输入模式，先把通知颜色改为橙色
-            self.waiting_input_prompt = prompt.to_string();
-            self.refresh_notification()?;
-            return Ok(()); // 正在显示通知，先保存输入提示，等刷新时再切换到输入模式
-        }
-
-        if cfg!(debug_assertions) {
-            unreachable!("Unexpected state when starting input: {:?}", self.state);
-        } else {
-            // unreachable in current design, but just in case
-            self.state = UiState::WaitingInput {
-                prompt: prompt.to_string(),
-                current_input: String::new(),
-                cursor_pos: 0,
-            };
-            self.refresh_input_display()?;
-            Ok(())
-        }
-    }
-
     /// 刷新输入显示
-    fn refresh_input_display(&mut self) -> anyhow::Result<()> {
+    pub fn refresh_input_display(&mut self) -> anyhow::Result<()> {
         // 提取需要的数据，避免借用冲突
-        let (_prompt, current_input, cursor_pos) = if let UiState::WaitingInput {
-            prompt,
-            current_input,
-            cursor_pos,
-        } = &self.state
-        {
-            (prompt.clone(), current_input.clone(), *cursor_pos)
-        } else {
-            return Ok(());
-        };
+        let cursor_pos = self.asr_cursor_pos;
 
         // 检查麦克风状态
         let is_mic_on = crate::audio::MIC_ON.load(std::sync::atomic::Ordering::Relaxed);
@@ -846,21 +819,20 @@ impl UI {
             let bounding_box = self.display.bounding_box();
             let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 14));
             top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
-            let status_bar_str = self.status_bar.clone();
             self.draw_text(
-                &status_bar_str,
+                &"Waiting",
                 Point::new(4, 2),
                 ColorFormat::CSS_WHITE,
                 None,
-                false,
+                true,
             )?;
             14
         };
 
-        let display_text = if current_input.is_empty() {
+        let display_text = if self.asr_input.is_empty() {
             "\x1b[44m_\x1b[49m".to_string()
         } else {
-            let chars: Vec<char> = current_input.chars().collect();
+            let chars: Vec<char> = self.asr_input.chars().collect();
             let mut input_with_cursor = String::new();
             for (i, c) in chars.iter().enumerate() {
                 if i == cursor_pos {
@@ -887,707 +859,84 @@ impl UI {
         Ok(())
     }
 
-    #[allow(unused)]
-    /// 添加输入字符（在光标位置插入）
-    pub fn add_input_char(&mut self, c: char) -> anyhow::Result<()> {
-        match &mut self.state {
-            UiState::WaitingInput {
-                current_input,
-                cursor_pos,
-                ..
-            } => {
-                let mut chars: Vec<char> = current_input.chars().collect();
-                chars.insert(*cursor_pos, c);
-                *current_input = chars.into_iter().collect();
-                *cursor_pos += 1;
-                self.refresh_input_display()?;
-            }
-            UiState::WaitingChoiceAllowCustom {
-                custom_input,
-                cursor_pos,
-                ..
-            } => {
-                let mut chars: Vec<char> = custom_input.chars().collect();
-                chars.insert(*cursor_pos, c);
-                *custom_input = chars.into_iter().collect();
-                *cursor_pos += 1;
-                self.refresh_allow_custom_choices_display()?;
-            }
-            _ => {}
-        }
+    pub fn is_input_mode(&self) -> bool {
+        self.input_mode
+    }
+
+    pub fn show_notification(&mut self, color: ColorFormat, message: &str) -> anyhow::Result<()> {
+        self.draw_text_wrapped(message, Point::new(2, 2), color)?;
+        self.display.flush()?;
         Ok(())
     }
 
-    /// 删除光标前的字符（backspace）
-    pub fn remove_input_char(&mut self) -> anyhow::Result<()> {
-        match &mut self.state {
-            UiState::WaitingInput {
-                current_input,
-                cursor_pos,
-                ..
-            } => {
-                if *cursor_pos > 0 {
-                    let mut chars: Vec<char> = current_input.chars().collect();
-                    chars.remove(*cursor_pos - 1);
-                    *current_input = chars.into_iter().collect();
-                    *cursor_pos -= 1;
-                    self.refresh_input_display()?;
-                }
-            }
-            UiState::WaitingChoiceAllowCustom {
-                custom_input,
-                cursor_pos,
-                ..
-            } => {
-                if *cursor_pos > 0 {
-                    let mut chars: Vec<char> = custom_input.chars().collect();
-                    chars.remove(*cursor_pos - 1);
-                    *custom_input = chars.into_iter().collect();
-                    *cursor_pos -= 1;
-                    self.refresh_allow_custom_choices_display()?;
-                }
-            }
-            _ => {}
-        }
+    pub fn input_asr_result(&mut self, text: &str) -> anyhow::Result<()> {
+        log::info!("Inserting ASR result: {}", text);
+
+        self.input_mode = true;
+
+        // 将字符索引转换为字节索引（支持中文等多字节字符）
+        let byte_pos = self
+            .asr_input
+            .char_indices()
+            .nth(self.asr_cursor_pos)
+            .map(|(i, _)| i)
+            .unwrap_or(self.asr_input.len());
+
+        self.asr_input.insert_str(byte_pos, text);
+        self.asr_cursor_pos += text.chars().count();
+        self.refresh_input_display()?;
         Ok(())
     }
 
-    #[allow(unused)]
-    /// 删除光标后的字符（delete）
-    pub fn delete_char_at_cursor(&mut self) -> anyhow::Result<()> {
-        match &mut self.state {
-            UiState::WaitingInput {
-                current_input,
-                cursor_pos,
-                ..
-            } => {
-                let mut chars: Vec<char> = current_input.chars().collect();
-                if *cursor_pos < chars.len() {
-                    chars.remove(*cursor_pos);
-                    *current_input = chars.into_iter().collect();
-                    self.refresh_input_display()?;
-                }
-            }
-            UiState::WaitingChoiceAllowCustom {
-                custom_input,
-                cursor_pos,
-                ..
-            } => {
-                let mut chars: Vec<char> = custom_input.chars().collect();
-                if *cursor_pos < chars.len() {
-                    chars.remove(*cursor_pos);
-                    *custom_input = chars.into_iter().collect();
-                    self.refresh_allow_custom_choices_display()?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// 光标左移
+    /// 向左移动光标
     pub fn move_cursor_left(&mut self) -> anyhow::Result<()> {
-        match &mut self.state {
-            UiState::WaitingInput { cursor_pos, .. } => {
-                *cursor_pos = cursor_pos.saturating_sub(1);
-                self.refresh_input_display()?;
-            }
-            UiState::WaitingChoiceAllowCustom { cursor_pos, .. } => {
-                *cursor_pos = cursor_pos.saturating_sub(1);
-                self.refresh_allow_custom_choices_display()?;
-            }
-            _ => {}
+        if self.asr_cursor_pos > 0 {
+            self.asr_cursor_pos -= 1;
+            self.refresh_input_display()?;
         }
         Ok(())
     }
 
-    /// 光标右移
+    /// 向右移动光标
     pub fn move_cursor_right(&mut self) -> anyhow::Result<()> {
-        match &mut self.state {
-            UiState::WaitingInput {
-                current_input,
-                cursor_pos,
-                ..
-            } => {
-                let max_pos = current_input.chars().count();
-                *cursor_pos = (*cursor_pos + 1).min(max_pos);
-                self.refresh_input_display()?;
-            }
-            UiState::WaitingChoiceAllowCustom {
-                custom_input,
-                cursor_pos,
-                ..
-            } => {
-                let max_pos = custom_input.chars().count();
-                *cursor_pos = (*cursor_pos + 1).min(max_pos);
-                self.refresh_allow_custom_choices_display()?;
-            }
-            _ => {}
+        let max_pos = self.asr_input.chars().count();
+        if self.asr_cursor_pos < max_pos {
+            self.asr_cursor_pos += 1;
+            self.refresh_input_display()?;
         }
         Ok(())
     }
 
-    /// 在光标位置插入文本（用于 ASR 结果）
-    pub fn insert_text_at_cursor(&mut self, text: &str) -> anyhow::Result<()> {
-        match &mut self.state {
-            UiState::WaitingInput {
-                current_input,
-                cursor_pos,
-                ..
-            } => {
-                let mut chars: Vec<char> = current_input.chars().collect();
-                let insert_chars: Vec<char> = text.chars().collect();
-                for c in insert_chars {
-                    chars.insert(*cursor_pos, c);
-                    *cursor_pos += 1;
-                }
-                *current_input = chars.into_iter().collect();
-                self.refresh_input_display()?;
-            }
-            UiState::WaitingChoiceAllowCustom {
-                custom_input,
-                cursor_pos,
-                ..
-            } => {
-                let mut chars: Vec<char> = custom_input.chars().collect();
-                let insert_chars: Vec<char> = text.chars().collect();
-                for c in insert_chars {
-                    chars.insert(*cursor_pos, c);
-                    *cursor_pos += 1;
-                }
-                *custom_input = chars.into_iter().collect();
-                self.refresh_allow_custom_choices_display()?;
-            }
-            _ => {}
+    pub fn delete_char_before_cursor(&mut self) -> anyhow::Result<()> {
+        if self.asr_cursor_pos > 0 {
+            // 将字符索引转换为字节索引（支持中文等多字节字符）
+            let byte_pos = self
+                .asr_input
+                .char_indices()
+                .nth(self.asr_cursor_pos - 1)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+
+            self.asr_input.remove(byte_pos);
+            self.asr_cursor_pos -= 1;
+            self.refresh_input_display()?;
         }
         Ok(())
     }
 
-    pub fn insert_text_at_start(&mut self, text: &str) -> anyhow::Result<()> {
-        match &mut self.state {
-            UiState::WaitingInput { current_input, .. } => {
-                *current_input = format!("{}{}", text, current_input);
-                self.refresh_input_display()?;
-            }
-            UiState::WaitingChoiceAllowCustom { custom_input, .. } => {
-                *custom_input = format!("{}{}", text, custom_input);
-                self.refresh_allow_custom_choices_display()?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// 获取当前输入并返回
-    pub fn get_input(&self) -> Option<String> {
-        if let UiState::WaitingInput { current_input, .. } = &self.state {
-            Some(current_input.clone())
-        } else {
-            None
-        }
-    }
-
-    /// 清空当前输入
     pub fn clear_input(&mut self) -> anyhow::Result<()> {
-        let allow_input = self.allow_input();
-        match &mut self.state {
-            UiState::WaitingInput {
-                current_input,
-                cursor_pos,
-                ..
-            } => {
-                self.scroll_offset = 0;
-
-                *current_input = String::new();
-                *cursor_pos = 0;
-                self.refresh_input_display()?;
-            }
-            UiState::WaitingChoiceAllowCustom {
-                custom_input,
-                cursor_pos,
-                ..
-            } if allow_input => {
-                *custom_input = String::new();
-                *cursor_pos = 0;
-                self.refresh_allow_custom_choices_display()?;
-            }
-            _ => {}
-        }
+        self.input_mode = false;
+        self.asr_input.clear();
+        self.asr_cursor_pos = 0;
+        self.refresh_input_display()?;
         Ok(())
     }
 
-    #[allow(unused)]
-    /// 获取光标位置
-    pub fn get_cursor_pos(&self) -> Option<usize> {
-        if let UiState::WaitingInput { cursor_pos, .. } = &self.state {
-            Some(*cursor_pos)
-        } else {
-            None
-        }
-    }
+    pub fn take_waiting_input_prompt(&mut self) -> String {
+        self.asr_cursor_pos = 0;
+        self.input_mode = false;
 
-    /// 刷新输入界面（用于麦克风状态变化时）
-    pub fn refresh_input_if_waiting(&mut self) -> anyhow::Result<()> {
-        match self.state {
-            UiState::WaitingInput { .. } => self.refresh_input_display(),
-            UiState::WaitingChoiceAllowCustom { .. } | UiState::WaitingChoice { .. } => Ok(()),
-            _ => {
-                if self.waiting_input_prompt.is_empty() {
-                    Ok(())
-                } else {
-                    // 之前正在显示通知时收到输入请求，先切换到输入模式
-                    self.state = UiState::WaitingInput {
-                        prompt: self.take_waiting_input_prompt(),
-                        current_input: String::new(),
-                        cursor_pos: 0,
-                    };
-                    self.refresh_input_display()
-                }
-            }
-        }
-    }
-
-    /// 显示选择项
-    pub fn show_choices(
-        &mut self,
-        id: &str,
-        title: &str,
-        options: &[String],
-    ) -> anyhow::Result<()> {
-        if let UiState::WaitingChoice {
-            id: existing_id, ..
-        } = &self.state
-        {
-            if existing_id == id {
-                return Ok(()); // 已经在选择模式，不重复设置
-            }
-        }
-
-        self.state = UiState::WaitingChoice {
-            id: id.to_string(),
-            title: title.to_string(),
-            options: options.to_vec(),
-            selected_index: 0,
-        };
-        self.refresh_choices_display()?;
-        Ok(())
-    }
-
-    /// 刷新选择项显示
-    fn refresh_choices_display(&mut self) -> anyhow::Result<()> {
-        // 提取需要的数据，避免借用冲突
-        let (title, options, selected_index) = if let UiState::WaitingChoice {
-            title,
-            options,
-            selected_index,
-            ..
-        } = &self.state
-        {
-            (title.clone(), options.clone(), *selected_index)
-        } else {
-            return Ok(());
-        };
-
-        // 使用 ANSI 代码构建选择项显示文本
-        // 标题用灰色背景，选中项用蓝色背景
-        let mut display_text = format!("{}\n", title);
-
-        if !options.is_empty() {
-            for (i, option) in options.iter().enumerate() {
-                if i as i32 == selected_index {
-                    // 选中项：蓝色背景，白色文字
-                    display_text.push_str(&format!("\x1b[44;97m[ {} ]\x1b[49m\n", option));
-                } else {
-                    // 未选中项：普通文字
-                    display_text.push_str(&format!(" {}\n", option));
-                }
-            }
-        } else {
-            // Confirm/Cancel 固定显示
-            display_text.push_str("\n\x1b[44m[Accept] Confirm\x1b[0m\t\t\t");
-            display_text.push_str("\x1b[41m[ESC] Cancel\x1b[0m\n");
-        }
-
-        const LINE_HEIGHT: i32 = 14;
-
-        let color = ColorFormat::new(255, 150, 0);
-
-        // 绘制顶部颜色条表示级别
-        let bounding_box = self.display.bounding_box();
-        let top_bar = Rectangle::new(
-            Point::new(0, 0),
-            Size::new(bounding_box.size.width, LINE_HEIGHT as u32),
-        );
-        top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
-        self.draw_text(
-            "● Choose an action",
-            Point::new(0, 2),
-            ColorFormat::CSS_WHITE,
-            None,
-            true,
-        )?;
-
-        self.draw_text_wrapped(
-            &display_text,
-            Point::new(2, 2 + LINE_HEIGHT),
-            self.config.text_color,
-        )?;
-
-        self.display.flush()?;
-        Ok(())
-    }
-
-    pub fn show_allow_custom_choices(
-        &mut self,
-        id: &str,
-        title: &str,
-        options: &[String],
-        multi_select: bool,
-    ) -> anyhow::Result<()> {
-        if let UiState::WaitingChoiceAllowCustom {
-            id: existing_id, ..
-        } = &self.state
-        {
-            if existing_id == id {
-                return Ok(()); // 已经在选择模式，不重复设置
-            }
-        }
-
-        self.state = UiState::WaitingChoiceAllowCustom {
-            id: id.to_string(),
-            title: title.to_string(),
-            options: options.to_vec(),
-            multi_select,
-            current_selected: 0,
-            selected_indices: HashSet::new(),
-            custom_input: String::new(),
-            cursor_pos: 0,
-        };
-        self.refresh_allow_custom_choices_display()?;
-        Ok(())
-    }
-
-    /// 刷新选择项显示
-    fn refresh_allow_custom_choices_display(&mut self) -> anyhow::Result<()> {
-        let display_text = if let UiState::WaitingChoiceAllowCustom {
-            title,
-            options,
-            current_selected,
-            selected_indices,
-            custom_input,
-            cursor_pos,
-            multi_select,
-            ..
-        } = &self.state
-        {
-            // 使用 ANSI 代码构建选择项显示文本
-            // 标题用灰色背景，选中项用蓝色背景
-            let mut display_text = format!("{}\n", title);
-
-            // 格式化 custom_input 显示光标（类似 refresh_input_display）
-            let custom_display = if custom_input.is_empty() {
-                "\x1b[44m_\x1b[49m".to_string()
-            } else {
-                let chars: Vec<char> = custom_input.chars().collect();
-                let mut input_with_cursor = String::new();
-                for (i, c) in chars.iter().enumerate() {
-                    if i == *cursor_pos {
-                        input_with_cursor.push_str(&format!("\x1b[44m{}\x1b[49m", c));
-                    } else {
-                        input_with_cursor.push(*c);
-                    }
-                }
-                if *cursor_pos == chars.len() {
-                    input_with_cursor.push_str("\x1b[44m_\x1b[49m");
-                }
-                input_with_cursor
-            };
-
-            let extra_option = if *multi_select {
-                vec![
-                    format!("[Custom]: {}", custom_display),
-                    "Submit".to_string(),
-                ]
-            } else {
-                vec![format!("[Custom]: {}", custom_display)]
-            };
-
-            for (i, option) in options.iter().chain(&extra_option).enumerate() {
-                let option = if *multi_select && selected_indices.contains(&(i as i32)) {
-                    format!("{} (*)", option)
-                } else {
-                    option.clone()
-                };
-
-                if i as i32 == *current_selected {
-                    // 选中项：蓝色背景，白色文字
-                    display_text.push_str(&format!("\x1b[44;37m> {} <\x1b[49m\n", option));
-                } else {
-                    // 未选中项：普通文字
-                    display_text.push_str(&format!(" {}\n", option));
-                }
-            }
-
-            display_text
-        } else {
-            return Ok(());
-        };
-
-        const LINE_HEIGHT: i32 = 14;
-
-        let color = ColorFormat::new(255, 150, 0);
-
-        // 绘制顶部颜色条表示级别
-        let bounding_box = self.display.bounding_box();
-        let top_bar = Rectangle::new(
-            Point::new(0, 0),
-            Size::new(bounding_box.size.width, LINE_HEIGHT as u32),
-        );
-        top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
-        self.draw_text(
-            "● Choose action",
-            Point::new(0, 2),
-            ColorFormat::CSS_WHITE,
-            None,
-            true,
-        )?;
-
-        self.draw_text_wrapped(
-            &display_text,
-            Point::new(2, 2 + LINE_HEIGHT),
-            self.config.text_color,
-        )?;
-
-        self.display.flush()?;
-        Ok(())
-    }
-
-    pub fn allow_input(&self) -> bool {
-        match &self.state {
-            UiState::WaitingInput { .. } => true,
-            UiState::WaitingChoiceAllowCustom {
-                options,
-                current_selected,
-                ..
-            } => {
-                // 只有选中 Custom 选项时才允许输入
-                *current_selected == options.len() as i32
-            }
-            _ => false,
-        }
-    }
-
-    /// 选择下一项（可循环）
-    pub fn next_choice(&mut self) -> anyhow::Result<()> {
-        match &mut self.state {
-            UiState::WaitingChoice {
-                options,
-                selected_index,
-                ..
-            } => {
-                // 空选项时不做处理（Confirm/Cancel 只能通过按键选择）
-                if options.is_empty() {
-                    return Ok(());
-                }
-                *selected_index = (*selected_index + 1) % options.len() as i32;
-                self.refresh_choices_display()?;
-            }
-            UiState::WaitingChoiceAllowCustom {
-                options,
-                current_selected,
-                multi_select,
-                ..
-            } => {
-                // 空选项时不做处理
-                if options.is_empty() {
-                    return Ok(());
-                }
-                let extra_options = if *multi_select { 2 } else { 1 };
-                *current_selected =
-                    (*current_selected + 1) % (options.len() + extra_options) as i32;
-                self.refresh_allow_custom_choices_display()?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    #[allow(unused)]
-    /// 选择上一项（可循环）
-    pub fn prev_choice(&mut self) -> anyhow::Result<()> {
-        match &mut self.state {
-            UiState::WaitingChoiceAllowCustom {
-                options,
-                current_selected,
-                ..
-            } => {
-                // 空选项时不做处理
-                if options.is_empty() {
-                    return Ok(());
-                }
-                let len = options.len();
-                *current_selected = if *current_selected == 0 {
-                    (len - 1) as i32
-                } else {
-                    *current_selected - 1
-                };
-                self.refresh_allow_custom_choices_display()?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// 确认选择并返回选中的索引
-    pub fn confirm_choice(&mut self) -> Option<ClientMessage> {
-        match &mut self.state {
-            UiState::WaitingChoice { selected_index, .. } => {
-                Some(ClientMessage::choice(*selected_index))
-            }
-            UiState::WaitingChoiceAllowCustom {
-                selected_indices,
-                custom_input,
-                multi_select,
-                current_selected,
-                options,
-                ..
-            } => {
-                if *multi_select {
-                    if *current_selected == options.len() as i32 + 1 {
-                        selected_indices.remove(&(options.len() as i32));
-                        Some(ClientMessage::Choices {
-                            index: selected_indices.iter().cloned().collect(),
-                            custom_input: Some(custom_input.clone()),
-                            multi_select: true,
-                        })
-                    } else {
-                        if selected_indices.contains(current_selected) {
-                            selected_indices.remove(current_selected);
-                        } else {
-                            selected_indices.insert(*current_selected);
-                        }
-                        if let Err(e) = self.refresh_allow_custom_choices_display() {
-                            log::error!("Failed to refresh choices display: {:?}", e);
-                        }
-                        None
-                    }
-                } else {
-                    Some(ClientMessage::Choices {
-                        index: vec![*current_selected],
-                        custom_input: Some(custom_input.clone()),
-                        multi_select: false,
-                    })
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// 检查是否为 confirm/cancel 对话框（空选项）
-    pub fn is_confirm_dialog(&self) -> bool {
-        if let UiState::WaitingChoice { options, .. } = &self.state {
-            options.is_empty()
-        } else {
-            false
-        }
-    }
-
-    /// 刷新通知显示（用于滚动）
-    pub fn refresh_notification(&mut self) -> anyhow::Result<()> {
-        if let UiState::ShowingNotification { color, message } = &self.state {
-            // self.display.fill_color(self.config.notification_bg)?;
-            let message = message.clone();
-            let color = *color;
-
-            const LINE_HEIGHT: i32 = 14;
-
-            // 绘制顶部颜色条表示级别
-            let bounding_box = self.display.bounding_box();
-            let top_bar = Rectangle::new(
-                Point::new(0, 0),
-                Size::new(bounding_box.size.width, LINE_HEIGHT as u32),
-            );
-            top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
-            if !self.waiting_input_prompt.is_empty() {
-                self.draw_text(
-                    "● Waiting for next step",
-                    Point::new(4, 2),
-                    ColorFormat::CSS_WHITE,
-                    None,
-                    true,
-                )?;
-            }
-
-            let status_bar_str = self.status_bar.clone();
-
-            self.draw_text(
-                &status_bar_str,
-                Point::new(4, 2),
-                ColorFormat::CSS_WHITE,
-                None,
-                false,
-            )?;
-
-            let y_offset = LINE_HEIGHT;
-
-            // 显示消息
-            self.draw_text_wrapped(&message, Point::new(2, y_offset), self.config.text_color)?;
-
-            self.display.flush()?;
-        }
-        Ok(())
-    }
-
-    /// 显示 ASR 结果（如果在输入模式，直接插入到光标位置）
-    pub fn show_asr_result(&mut self, text: &str) -> anyhow::Result<()> {
-        // 如果当前在输入模式，直接插入到光标位置
-
-        if self.allow_input() {
-            self.insert_text_at_cursor(text)
-        } else if !self.waiting_input_prompt.is_empty() || matches!(self.state, UiState::Idle) {
-            // 如果之前显示过文本或通知，并且有未进入输入模式的提示，先切换到输入模式再插入
-            self.scroll_offset = 0;
-            self.state = UiState::WaitingInput {
-                prompt: self.take_waiting_input_prompt(),
-                current_input: String::new(),
-                cursor_pos: 0,
-            };
-            self.insert_text_at_cursor(text)
-        } else {
-            self.scroll_offset = 0;
-            // 不在输入模式时，可以显示一个简短的通知
-            let preview = if text.chars().count() > 20 {
-                format!("{}...", text.chars().take(17).collect::<String>())
-            } else {
-                text.to_string()
-            };
-            self.show_notification(NotificationLevel::Info.to_color(), &preview)
-        }
-    }
-
-    /// 获取当前状态
-    pub fn state(&self) -> &UiState {
-        &self.state
-    }
-
-    pub fn set_status(&mut self, status: &str) -> anyhow::Result<()> {
-        self.status_bar = status.to_string();
-        match &self.state {
-            UiState::WaitingInput { .. } => self.refresh_input_display(),
-            _ => Ok(()),
-        }
-    }
-
-    fn take_waiting_input_prompt(&mut self) -> String {
-        std::mem::take(&mut self.waiting_input_prompt)
-    }
-
-    /// 清屏并重置到空闲状态
-    pub fn clear(&mut self) -> anyhow::Result<()> {
-        self.state = UiState::Idle;
-        self.display.fill_color(ColorFormat::CSS_WHITE)?;
-        self.display.flush()?;
-        Ok(())
+        std::mem::take(&mut self.asr_input)
     }
 
     // ========== 辅助方法 ==========
@@ -1673,7 +1022,6 @@ impl UI {
             textbox_style,
         )
         .add_plugin(crate::ansi_plugin::MyAnsiPlugin::new())
-        .set_vertical_offset(self.scroll_offset)
         .draw(&mut self.display)?;
 
         Ok(())
@@ -1698,6 +1046,7 @@ impl From<crate::protocol::ServerMessage> for UiMessage {
                 UiMessage::ScreenImage {
                     data: data.data,
                     format,
+                    is_last: data.is_last,
                 }
             }
             crate::protocol::ServerMessage::Notification(data) => {
@@ -1724,15 +1073,10 @@ impl From<crate::protocol::ServerMessage> for UiMessage {
                     title: data.title,
                 }
             }
-            crate::protocol::ServerMessage::GetInput(data) => UiMessage::GetInput {
-                prompt: data.prompt,
-            },
-            crate::protocol::ServerMessage::Choices(data) => UiMessage::Choices {
-                id: data.id.unwrap_or_default(),
-                title: data.title,
-                options: data.options,
-                multi_select: data.multi_select,
-                allow_custom_input: data.allow_custom_input,
+            crate::protocol::ServerMessage::Title(text) => UiMessage::Notification {
+                color: NotificationLevel::Info.to_color(),
+                message: text,
+                title: None,
             },
             crate::protocol::ServerMessage::AsrResult(text) => UiMessage::AsrResult(text),
             crate::protocol::ServerMessage::PtyOutput(_) => {
@@ -1746,7 +1090,6 @@ impl From<crate::protocol::ServerMessage> for UiMessage {
                     }
                 }
             }
-            crate::protocol::ServerMessage::Status(s) => UiMessage::Status(s),
         }
     }
 }

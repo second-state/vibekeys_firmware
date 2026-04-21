@@ -54,6 +54,21 @@ pub struct KeymapConfig {
 }
 
 impl KeymapConfig {
+    // Key name constants
+    pub const KEY_MIC: &'static str = "MIC";
+    pub const KEY_CUSTOM: &'static str = "CUSTOM";
+    pub const KEY_ESC: &'static str = "ESC";
+    pub const KEY_NEXT: &'static str = "NEXT";
+    pub const KEY_BACKSPACE: &'static str = "BACKSPACE";
+    pub const KEY_SWITCH: &'static str = "SWITCH";
+    pub const KEY_ACCEPT: &'static str = "ACCEPT";
+    pub const KEY_ROTATE: &'static str = "ROTATE";
+
+    pub fn clear_nvs(nvs: &mut esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<()> {
+        nvs.remove("keymap_config")?;
+        Ok(())
+    }
+
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
         Ok(serde_json::from_str(json)?)
     }
@@ -94,14 +109,14 @@ impl KeymapConfig {
     /// Get key name from KeysPin index
     pub fn get_key_name(pin_index: u8) -> &'static str {
         match pin_index {
-            KeysPin::MIC => "MIC",
-            KeysPin::CUSTOM => "CUSTOM",
-            KeysPin::ESC => "ESC",
-            KeysPin::NEXT => "NEXT",
-            KeysPin::BACKSPACE => "BACKSPACE",
-            KeysPin::SWITCH => "SWITCH",
-            KeysPin::ACCEPT => "ACCEPT",
-            KeysPin::ROTATE_BUTTON => "ROTATE",
+            KeysPin::MIC => Self::KEY_MIC,
+            KeysPin::CUSTOM => Self::KEY_CUSTOM,
+            KeysPin::ESC => Self::KEY_ESC,
+            KeysPin::NEXT => Self::KEY_NEXT,
+            KeysPin::BACKSPACE => Self::KEY_BACKSPACE,
+            KeysPin::SWITCH => Self::KEY_SWITCH,
+            KeysPin::ACCEPT => Self::KEY_ACCEPT,
+            KeysPin::ROTATE_BUTTON => Self::KEY_ROTATE,
             _ => "UNKNOWN",
         }
     }

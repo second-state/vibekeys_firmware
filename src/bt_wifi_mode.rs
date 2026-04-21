@@ -23,6 +23,16 @@ pub struct Setting {
 }
 
 impl Setting {
+    pub fn clear_nvs(nvs: &mut esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<()> {
+        nvs.remove("ssid")?;
+        nvs.remove("pass")?;
+        nvs.remove("server_url")?;
+        nvs.remove("background_png")?;
+        nvs.remove("mic_model")?;
+        nvs.remove("state")?;
+        Ok(())
+    }
+
     pub fn load_from_nvs(nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<Self> {
         let mut str_buf = [0; 128];
 

@@ -88,7 +88,11 @@ fn main() -> anyhow::Result<()> {
     let partition = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
 
     let mut bl = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio11)?;
-    bl.set_low()?;
+    if cfg!(feature = "new-screen") {
+        bl.set_high()?;
+    } else {
+        bl.set_low()?;
+    }
 
     // let mut backlight = lcd::backlight_init(peripherals.pins.gpio11.into())?;
     // lcd::set_backlight(&mut backlight, 40).unwrap();

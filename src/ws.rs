@@ -11,7 +11,11 @@ pub struct Server {
 
 impl Server {
     pub async fn new(uri: String) -> anyhow::Result<Self> {
-        let uri = format!("{}?pty=false&img=true&width=288&height=80", uri);
+        let uri = if cfg!(feature = "new-screen") {
+            format!("{}?pty=false&img=true&width=320&height=168", uri)
+        } else {
+            format!("{}?pty=false&img=true&width=288&height=80", uri)
+        };
         let (ws, _resp) = tokio_websockets::ClientBuilder::new()
             .uri(&uri)?
             .connect()

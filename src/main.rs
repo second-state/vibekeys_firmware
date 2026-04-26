@@ -616,7 +616,7 @@ pub fn handle_key_event(
             } else {
                 // Default behavior
                 match pin_index {
-                    KeysPin::MIC => keyboard.press_raw(0xE3, 0x08 | 0x04), // Left ALT + meta
+                    KeysPin::MIC => keyboard.press_raw(0xE2, 0x01 | 0x02), // Ctrl + Option
                     KeysPin::CUSTOM => keyboard.write("/compact\n"),
                     KeysPin::ESC => keyboard.press_raw(0x29, 0),
                     KeysPin::NEXT => keyboard.press_raw(0x51, 0), // Down arrow

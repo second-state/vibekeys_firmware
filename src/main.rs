@@ -653,14 +653,10 @@ pub fn handle_key_event(
             }
         }
         bt_keyboard_mode::ControllerCommand::RotateDown => {
-            keyboard.press_raw(0x4E, 0); // HID Page Down
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            keyboard.release();
+            keyboard.mouse_move(0, 0, -1, 0); // Wheel down
         }
         bt_keyboard_mode::ControllerCommand::RotateUp => {
-            keyboard.press_raw(0x4B, 0); // HID Page Up
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            keyboard.release();
+            keyboard.mouse_move(0, 0, 1, 0); // Wheel up
         }
         bt_keyboard_mode::ControllerCommand::KeymapConfig(_) => {
             // KeymapConfig is handled separately in keyboard_mode_main

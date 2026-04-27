@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
         peripherals.pins.gpio14,
     )?;
 
-    let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::WHITE);
+    let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::BLACK);
     target.flush()?;
 
     let btn3 = new_btn(
@@ -167,7 +167,29 @@ fn ota_task(rx: std::sync::mpsc::Receiver<OtaEvent>) -> anyhow::Result<()> {
     let mut ota = esp_idf_svc::ota::EspOta::new()?;
 
     ota.mark_running_slot_valid()?;
-    let mut ota_update = ota.initiate_update()?;
+
+    let mut ota_update = match rx.recv() {
+        Ok(OtaEvent::DataChunk(data)) => {
+            log::info!("Received OTA data chunk of size: {} bytes", data.len());
+
+            let mut ota_update = ota.initiate_update()?;
+            ota_update.write(&data).map_err(|e| {
+                log::error!("Failed to write OTA chunk: {:?}", e);
+                anyhow::anyhow!("Failed to write OTA chunk: {:?}", e)
+            })?;
+
+            ota_update
+        }
+        Ok(OtaEvent::Complete) => {
+            return Err(anyhow::anyhow!(
+                "Received OTA complete event before any data chunk"
+            ));
+        }
+        Err(e) => {
+            log::error!("OTA data channel closed: {:?}", e);
+            return Err(anyhow::anyhow!("OTA data channel closed: {:?}", e));
+        }
+    };
 
     loop {
         match rx.recv() {
@@ -458,7 +480,7 @@ mod lcd {
 
         fn set_text_color(&mut self, text_color: Option<Self::Color>) {
             self.font_style
-                .set_text_color(Some(text_color.unwrap_or(ColorFormat::CSS_BLACK)));
+                .set_text_color(Some(text_color.unwrap_or(ColorFormat::CSS_WHEAT)));
         }
 
         fn set_background_color(&mut self, background_color: Option<Self::Color>) {
@@ -596,7 +618,7 @@ mod lcd {
             MyTextStyle {
                 font_style: U8g2TextStyle::new(
                     u8g2_fonts::fonts::u8g2_font_wqy12_t_gb2312,
-                    ColorFormat::CSS_BLACK,
+                    ColorFormat::CSS_WHEAT,
                 ),
                 vertical_offset: 3,
                 bg_color: None,

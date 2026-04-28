@@ -97,7 +97,7 @@ impl Setting {
         let state = nvs.get_u8("state")?.unwrap_or(0);
         nvs.set_u8("state", 0)?;
 
-        let mic_model = nvs.get_u8("mic_model")?.unwrap_or(0);
+        let mic_model = nvs.get_u8("mic_model")?.unwrap_or(1);
 
         Ok(Setting {
             ssid,

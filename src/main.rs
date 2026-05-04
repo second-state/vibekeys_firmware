@@ -392,7 +392,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if setting.server_url.starts_with("wss") {
-        _ = rustls_rustcrypto::provider().install_default();
+        // _ = rustls_rustcrypto::provider().install_default();
         lcd::display_text(&mut target, "Syncing time...", 0)?;
         let r = sync_time(&mut target);
         if r.is_err() {

@@ -439,7 +439,7 @@ pub mod key_task {
 
     impl Default for MicMode {
         fn default() -> Self {
-            Self::PushToTalk
+            Self::Toggle
         }
     }
 

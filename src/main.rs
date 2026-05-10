@@ -386,9 +386,7 @@ fn main() -> anyhow::Result<()> {
         log::error!("Failed to connect to WiFi: {:?}", r.err());
         lcd::display_text(&mut target, " WiFi connection failed\n", 0)?;
         std::thread::sleep(std::time::Duration::from_secs(60));
-        unsafe {
-            esp_idf_svc::sys::esp_restart();
-        }
+        esp_idf_svc::hal::reset::restart();
     }
 
     if setting.server_url.starts_with("wss") {
@@ -399,9 +397,7 @@ fn main() -> anyhow::Result<()> {
             log::error!("Failed to sync time: {:?}", r.err());
             lcd::display_text(&mut target, " Time sync failed\n", 0)?;
             std::thread::sleep(std::time::Duration::from_secs(60));
-            unsafe {
-                esp_idf_svc::sys::esp_restart();
-            }
+            esp_idf_svc::hal::reset::restart();
         }
     }
 
@@ -442,9 +438,7 @@ fn main() -> anyhow::Result<()> {
         log::info!("App exited successfully");
     }
 
-    unsafe {
-        esp_idf_svc::sys::esp_restart();
-    }
+    esp_idf_svc::hal::reset::restart();
 }
 
 pub fn log_heap() {

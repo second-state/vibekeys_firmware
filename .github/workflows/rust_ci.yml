@@ -23,6 +23,8 @@ jobs:
         action:
           - command: build
             args: --release
+          - command: build
+            args: --release --features max2
           - command: fmt
             args: --all -- --check --color always
     steps:

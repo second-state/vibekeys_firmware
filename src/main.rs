@@ -88,7 +88,7 @@ fn main() -> anyhow::Result<()> {
     let partition = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
 
     let mut bl = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio11)?;
-    if cfg!(feature = "new-screen") {
+    if cfg!(feature = "max2") {
         bl.set_high()?;
     } else {
         bl.set_low()?;

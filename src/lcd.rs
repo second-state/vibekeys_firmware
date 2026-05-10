@@ -20,14 +20,14 @@ use esp_idf_svc::{
 };
 use u8g2_fonts::U8g2TextStyle;
 
-#[cfg(feature = "new-screen")]
+#[cfg(feature = "max2")]
 pub const DISPLAY_WIDTH: usize = 320;
-#[cfg(feature = "new-screen")]
+#[cfg(feature = "max2")]
 pub const DISPLAY_HEIGHT: usize = 170;
 
-#[cfg(not(feature = "new-screen"))]
+#[cfg(not(feature = "max2"))]
 pub const DISPLAY_WIDTH: usize = 284;
-#[cfg(not(feature = "new-screen"))]
+#[cfg(not(feature = "max2"))]
 pub const DISPLAY_HEIGHT: usize = 78;
 
 static mut ESP_LCD_PANEL_HANDLE: esp_idf_svc::sys::esp_lcd_panel_handle_t = std::ptr::null_mut();
@@ -84,14 +84,14 @@ pub fn init_lcd(cs: Gpio12, dc: Gpio13, rst: Gpio14) -> Result<(), EspError> {
     const DISPLAY_MIRROR_X: bool = true;
     const DISPLAY_MIRROR_Y: bool = false;
     const DISPLAY_SWAP_XY: bool = true;
-    #[cfg(feature = "new-screen")]
+    #[cfg(feature = "max2")]
     const DISPLAY_INVERT_COLOR: bool = true;
-    #[cfg(not(feature = "new-screen"))]
+    #[cfg(not(feature = "max2"))]
     const DISPLAY_INVERT_COLOR: bool = false;
 
     ::log::info!("Reset LCD panel");
     unsafe {
-        if cfg!(feature = "new-screen") {
+        if cfg!(feature = "max2") {
             esp!(esp_lcd_panel_set_gap(panel, 0, 36))?;
         } else {
             esp!(esp_lcd_panel_set_gap(panel, 18, 82))?;
@@ -440,7 +440,7 @@ mod new_jpg {
 
         pub fn flush_to_lcd(&self) -> i32 {
             let ptr = unsafe { std::slice::from_raw_parts(self.ptr.cast_const(), self.size) };
-            if cfg!(feature = "new-screen") {
+            if cfg!(feature = "max2") {
                 super::flush_display(ptr, 0, 0, 320, 168)
             } else {
                 super::flush_display(ptr, 0, 0, 288, 80)
@@ -466,7 +466,7 @@ mod new_jpg {
             let mut config = jpeg_dec_config_t::default();
             config.output_type = jpeg_pixel_format_t_JPEG_PIXEL_FORMAT_RGB565_LE;
 
-            if cfg!(feature = "new-screen") {
+            if cfg!(feature = "max2") {
                 config.clipper.height = 168;
                 config.clipper.width = 320;
             } else {

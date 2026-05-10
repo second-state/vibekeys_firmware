@@ -92,7 +92,7 @@ pub fn init_lcd(cs: Gpio12, dc: Gpio13, rst: Gpio14) -> Result<(), EspError> {
     ::log::info!("Reset LCD panel");
     unsafe {
         if cfg!(feature = "max2") {
-            esp!(esp_lcd_panel_set_gap(panel, 0, 36))?;
+            esp!(esp_lcd_panel_set_gap(panel, 0, 34))?;
         } else {
             esp!(esp_lcd_panel_set_gap(panel, 18, 82))?;
         }

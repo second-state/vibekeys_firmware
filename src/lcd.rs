@@ -44,7 +44,7 @@ pub fn init_spi(_spi: SPI3, mosi: Gpio21, clk: Gpio47) -> Result<(), EspError> {
     buscfg.sclk_io_num = clk.pin();
     buscfg.__bindgen_anon_3.quadwp_io_num = GPIO_NUM_NC;
     buscfg.__bindgen_anon_4.quadhd_io_num = GPIO_NUM_NC;
-    buscfg.max_transfer_sz = (DISPLAY_WIDTH * DISPLAY_HEIGHT * std::mem::size_of::<u16>()) as i32;
+    buscfg.max_transfer_sz = 4096;
     esp!(unsafe { spi_bus_initialize(SPI3::device(), &buscfg, spi_common_dma_t_SPI_DMA_CH_AUTO,) })
 }
 

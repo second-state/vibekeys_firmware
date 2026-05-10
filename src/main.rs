@@ -208,8 +208,20 @@ fn main() -> anyhow::Result<()> {
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .unwrap();
+        .build();
+
+    if let Err(e) = runtime {
+        log::error!("Failed to create Tokio runtime: {:?}", e);
+        lcd::display_text(
+            &mut target,
+            &format!("Failed to create Tokio runtime:\n{:?}", e),
+            0,
+        )?;
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        esp_idf_svc::hal::reset::restart();
+    }
+
+    let runtime = runtime.unwrap();
 
     let mut mode = 3;
 

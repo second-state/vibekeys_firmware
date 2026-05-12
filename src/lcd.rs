@@ -23,7 +23,7 @@ use u8g2_fonts::U8g2TextStyle;
 #[cfg(feature = "max2")]
 pub const DISPLAY_WIDTH: usize = 320;
 #[cfg(feature = "max2")]
-pub const DISPLAY_HEIGHT: usize = 170;
+pub const DISPLAY_HEIGHT: usize = 172;
 
 #[cfg(not(feature = "max2"))]
 pub const DISPLAY_WIDTH: usize = 284;

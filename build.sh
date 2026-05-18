@@ -42,7 +42,7 @@ case "$MODE" in
     max2_ota_bin)
         echo "Building max2 binary image with OTA header..."
         cargo build --bin vibekeys --release --features max2
-        cargo build --bin ota --release
+        cargo build --bin ota --release --features max2
         espflash save-image --chip esp32s3 --merge --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys_max2.bin
         espflash save-image --chip esp32s3 --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_0 target/xtensa-esp32s3-espidf/release/ota ./ota.bin
         dd if=ota.bin of=vibekeys_max2.bin bs=1 seek=$((0x210000)) conv=notrunc

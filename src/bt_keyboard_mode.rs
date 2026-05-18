@@ -662,8 +662,6 @@ impl Keyboard {
 
         hid.report_map(HID_KEYBOARD_REPORT_DISCRIPTOR);
 
-        hid.set_battery_level(battery_level);
-
         let hid_service_id = hid.hid_service().lock().uuid();
 
         Ok(Self {

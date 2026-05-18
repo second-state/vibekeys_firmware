@@ -724,7 +724,9 @@ impl UI {
             } => {
                 self.image_buffer.extend_from_slice(&data);
                 if is_last {
-                    self.show_self_image_buffer(format)?;
+                    if let Err(e) = self.show_self_image_buffer(format) {
+                        log::error!("Failed to display image: {:?}", e);
+                    }
                     self.image_buffer.clear();
                 }
                 Ok(())

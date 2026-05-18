@@ -88,7 +88,11 @@ fn main() -> anyhow::Result<()> {
     let partition = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
 
     let mut bl = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio11)?;
-    bl.set_low()?;
+    if cfg!(feature = "max2") {
+        bl.set_high()?;
+    } else {
+        bl.set_low()?;
+    }
 
     // let mut backlight = lcd::backlight_init(peripherals.pins.gpio11.into())?;
     // lcd::set_backlight(&mut backlight, 40).unwrap();
@@ -204,8 +208,20 @@ fn main() -> anyhow::Result<()> {
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .unwrap();
+        .build();
+
+    if let Err(e) = runtime {
+        log::error!("Failed to create Tokio runtime: {:?}", e);
+        lcd::display_text(
+            &mut target,
+            &format!("Failed to create Tokio runtime:\n{:?}", e),
+            0,
+        )?;
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        esp_idf_svc::hal::reset::restart();
+    }
+
+    let runtime = runtime.unwrap();
 
     let mut mode = 3;
 
@@ -382,22 +398,18 @@ fn main() -> anyhow::Result<()> {
         log::error!("Failed to connect to WiFi: {:?}", r.err());
         lcd::display_text(&mut target, " WiFi connection failed\n", 0)?;
         std::thread::sleep(std::time::Duration::from_secs(60));
-        unsafe {
-            esp_idf_svc::sys::esp_restart();
-        }
+        esp_idf_svc::hal::reset::restart();
     }
 
     if setting.server_url.starts_with("wss") {
-        _ = rustls_rustcrypto::provider().install_default();
+        // _ = rustls_rustcrypto::provider().install_default();
         lcd::display_text(&mut target, "Syncing time...", 0)?;
         let r = sync_time(&mut target);
         if r.is_err() {
             log::error!("Failed to sync time: {:?}", r.err());
             lcd::display_text(&mut target, " Time sync failed\n", 0)?;
             std::thread::sleep(std::time::Duration::from_secs(60));
-            unsafe {
-                esp_idf_svc::sys::esp_restart();
-            }
+            esp_idf_svc::hal::reset::restart();
         }
     }
 
@@ -438,9 +450,7 @@ fn main() -> anyhow::Result<()> {
         log::info!("App exited successfully");
     }
 
-    unsafe {
-        esp_idf_svc::sys::esp_restart();
-    }
+    esp_idf_svc::hal::reset::restart();
 }
 
 pub fn log_heap() {

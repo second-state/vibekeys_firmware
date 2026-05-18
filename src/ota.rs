@@ -78,7 +78,11 @@ fn main() -> anyhow::Result<()> {
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
 
     let mut bl = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio11)?;
-    bl.set_low()?;
+    if cfg!(feature = "max2") {
+        bl.set_high()?;
+    } else {
+        bl.set_low()?;
+    }
 
     lcd::init_spi(
         peripherals.spi3,
@@ -302,8 +306,16 @@ mod lcd {
     };
     use u8g2_fonts::U8g2TextStyle;
 
+    #[cfg(feature = "max2")]
+    pub const DISPLAY_WIDTH: usize = 320;
+    #[cfg(feature = "max2")]
+    pub const DISPLAY_HEIGHT: usize = 172;
+
+    #[cfg(not(feature = "max2"))]
     pub const DISPLAY_WIDTH: usize = 284;
+    #[cfg(not(feature = "max2"))]
     pub const DISPLAY_HEIGHT: usize = 78;
+
     static mut ESP_LCD_PANEL_HANDLE: esp_idf_svc::sys::esp_lcd_panel_handle_t =
         std::ptr::null_mut();
     pub type ColorFormat = Rgb565;
@@ -363,11 +375,18 @@ mod lcd {
         const DISPLAY_MIRROR_X: bool = true;
         const DISPLAY_MIRROR_Y: bool = false;
         const DISPLAY_SWAP_XY: bool = true;
+        #[cfg(feature = "max2")]
+        const DISPLAY_INVERT_COLOR: bool = true;
+        #[cfg(not(feature = "max2"))]
         const DISPLAY_INVERT_COLOR: bool = false;
 
         ::log::info!("Reset LCD panel");
         unsafe {
-            esp!(esp_lcd_panel_set_gap(panel, 18, 82))?;
+            if cfg!(feature = "max2") {
+                esp!(esp_lcd_panel_set_gap(panel, 0, 34))?;
+            } else {
+                esp!(esp_lcd_panel_set_gap(panel, 18, 82))?;
+            }
             esp!(esp_lcd_panel_reset(panel))?;
             esp!(esp_lcd_panel_init(panel))?;
             esp!(esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR))?;

@@ -1,6 +1,6 @@
 [package]
 name = "vibekeys"
-version = "0.2.2"
+version = "0.2.4"
 authors = ["csh <458761603@qq.com>"]
 edition = "2021"
 resolver = "2"
@@ -25,6 +25,7 @@ opt-level = "z"
 
 [features]
 default = []
+max2 = []
 
 experimental = ["esp-idf-svc/experimental"]
 
@@ -55,7 +56,7 @@ image = { version = "0.25.6", default-features = false, features = [
     "webp",
 ] }
 
-tokio = { version = "1.43.0", features = [
+tokio = { version = "=1.48.0", features = [
     "net",
     "rt",
     "time",
@@ -70,8 +71,8 @@ tokio-websockets = { version = "0.13", features = [
     "rustls-webpki-roots"
 ] }
 
-rustls-rustcrypto = { git = "https://github.com/RustCrypto/rustls-rustcrypto",rev="aecee37208823f6a4ffabeb7c0a1227015b131cb" }
-elliptic-curve = { version = "=0.14.0-rc.29", default-features = false }
+# rustls-rustcrypto = { git = "https://github.com/RustCrypto/rustls-rustcrypto",rev="aecee37208823f6a4ffabeb7c0a1227015b131cb" }
+# elliptic-curve = { version = "=0.14.0-rc.29", default-features = false }
 
 http = "1.3"
 

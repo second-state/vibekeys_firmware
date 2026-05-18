@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt::Debug};
+use std::fmt::Debug;
 
 use embedded_graphics::{
     framebuffer::{buffer_size, Framebuffer},
@@ -20,10 +20,16 @@ use esp_idf_svc::{
 };
 use u8g2_fonts::U8g2TextStyle;
 
-use crate::protocol::ClientMessage;
+#[cfg(feature = "max2")]
+pub const DISPLAY_WIDTH: usize = 320;
+#[cfg(feature = "max2")]
+pub const DISPLAY_HEIGHT: usize = 172;
 
+#[cfg(not(feature = "max2"))]
 pub const DISPLAY_WIDTH: usize = 284;
+#[cfg(not(feature = "max2"))]
 pub const DISPLAY_HEIGHT: usize = 78;
+
 static mut ESP_LCD_PANEL_HANDLE: esp_idf_svc::sys::esp_lcd_panel_handle_t = std::ptr::null_mut();
 pub type ColorFormat = Rgb565;
 
@@ -38,7 +44,7 @@ pub fn init_spi(_spi: SPI3, mosi: Gpio21, clk: Gpio47) -> Result<(), EspError> {
     buscfg.sclk_io_num = clk.pin();
     buscfg.__bindgen_anon_3.quadwp_io_num = GPIO_NUM_NC;
     buscfg.__bindgen_anon_4.quadhd_io_num = GPIO_NUM_NC;
-    buscfg.max_transfer_sz = (DISPLAY_WIDTH * DISPLAY_HEIGHT * std::mem::size_of::<u16>()) as i32;
+    buscfg.max_transfer_sz = 4096;
     esp!(unsafe { spi_bus_initialize(SPI3::device(), &buscfg, spi_common_dma_t_SPI_DMA_CH_AUTO,) })
 }
 
@@ -78,11 +84,18 @@ pub fn init_lcd(cs: Gpio12, dc: Gpio13, rst: Gpio14) -> Result<(), EspError> {
     const DISPLAY_MIRROR_X: bool = true;
     const DISPLAY_MIRROR_Y: bool = false;
     const DISPLAY_SWAP_XY: bool = true;
+    #[cfg(feature = "max2")]
+    const DISPLAY_INVERT_COLOR: bool = true;
+    #[cfg(not(feature = "max2"))]
     const DISPLAY_INVERT_COLOR: bool = false;
 
     ::log::info!("Reset LCD panel");
     unsafe {
-        esp!(esp_lcd_panel_set_gap(panel, 18, 82))?;
+        if cfg!(feature = "max2") {
+            esp!(esp_lcd_panel_set_gap(panel, 0, 34))?;
+        } else {
+            esp!(esp_lcd_panel_set_gap(panel, 18, 82))?;
+        }
         esp!(esp_lcd_panel_reset(panel))?;
         esp!(esp_lcd_panel_init(panel))?;
         esp!(esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR))?;
@@ -427,7 +440,11 @@ mod new_jpg {
 
         pub fn flush_to_lcd(&self) -> i32 {
             let ptr = unsafe { std::slice::from_raw_parts(self.ptr.cast_const(), self.size) };
-            super::flush_display(ptr, 0, 0, 288, 80)
+            if cfg!(feature = "max2") {
+                super::flush_display(ptr, 0, 0, 320, 168)
+            } else {
+                super::flush_display(ptr, 0, 0, 288, 80)
+            }
         }
     }
 
@@ -448,8 +465,14 @@ mod new_jpg {
             // Generate default configuration
             let mut config = jpeg_dec_config_t::default();
             config.output_type = jpeg_pixel_format_t_JPEG_PIXEL_FORMAT_RGB565_LE;
-            config.clipper.height = 80;
-            config.clipper.width = 288;
+
+            if cfg!(feature = "max2") {
+                config.clipper.height = 168;
+                config.clipper.width = 320;
+            } else {
+                config.clipper.height = 80;
+                config.clipper.width = 288;
+            }
 
             // Create jpeg_dec handle
             let decoder = JpegDecoder::open(&config)
@@ -476,10 +499,10 @@ mod new_jpg {
 
             // Calculate output length based on pixel format
             // Default to RGB565 (2 bytes per pixel)
-            let out_len = (*out_info).width * (*out_info).height * 2;
+            let out_len = (*out_info).width as usize * (*out_info).height as usize * 2;
 
             // Allocate aligned output buffer
-            let out_buf = JpegBuffer::new(out_len as usize, 16)?;
+            let out_buf = JpegBuffer::new(out_len, 16)?;
 
             jpeg_io.outbuf = out_buf.ptr;
 
@@ -701,7 +724,9 @@ impl UI {
             } => {
                 self.image_buffer.extend_from_slice(&data);
                 if is_last {
-                    self.show_self_image_buffer(format)?;
+                    if let Err(e) = self.show_self_image_buffer(format) {
+                        log::error!("Failed to display image: {:?}", e);
+                    }
                     self.image_buffer.clear();
                 }
                 Ok(())

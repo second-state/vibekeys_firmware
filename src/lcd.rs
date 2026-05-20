@@ -44,7 +44,7 @@ pub fn init_spi(_spi: SPI3, mosi: Gpio21, clk: Gpio47) -> Result<(), EspError> {
     buscfg.sclk_io_num = clk.pin() as _;
     buscfg.__bindgen_anon_3.quadwp_io_num = GPIO_NUM_NC;
     buscfg.__bindgen_anon_4.quadhd_io_num = GPIO_NUM_NC;
-    buscfg.max_transfer_sz = 4096;
+    buscfg.max_transfer_sz = 1024 * 4;
     esp!(unsafe { spi_bus_initialize(SPI3::device(), &buscfg, spi_common_dma_t_SPI_DMA_CH_AUTO,) })
 }
 
@@ -57,7 +57,7 @@ pub fn init_lcd(cs: Gpio12, dc: Gpio13, rst: Gpio14) -> Result<(), EspError> {
     io_config.cs_gpio_num = cs.pin() as _;
     io_config.dc_gpio_num = dc.pin() as _;
     io_config.spi_mode = 3;
-    io_config.pclk_hz = 40 * 1000 * 1000;
+    io_config.pclk_hz = 60 * 1000 * 1000;
     io_config.trans_queue_depth = 10;
     io_config.lcd_cmd_bits = 8;
     io_config.lcd_param_bits = 8;
@@ -334,9 +334,27 @@ impl DisplayTargetDrive for FrameBuffer {
         let x_end = bounding_box.top_left.x + bounding_box.size.width as i32;
         let y_end = bounding_box.top_left.y + bounding_box.size.height as i32;
 
-        let e = flush_display(self.buffers.data(), x_start, y_start, x_end, y_end);
-        if e != 0 {
-            return Err(anyhow::anyhow!("Failed to flush display: error code {}", e));
+        for i in 0..5 {
+            let e = flush_display(self.buffers.data(), x_start, y_start, x_end, y_end);
+            if e != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                crate::log_heap();
+                if i < 4 {
+                    log::warn!(
+                        "flush_display failed (attempt {}), retrying... error code: {}",
+                        i + 1,
+                        e
+                    );
+                } else {
+                    log::error!(
+                        "flush_display failed after {} attempts. error code: {}",
+                        i + 1,
+                        e
+                    );
+                    anyhow::bail!("Failed to flush display after multiple attempts");
+                }
+                continue;
+            }
         }
 
         self.buffers.clone_from(&self.background_buffers);

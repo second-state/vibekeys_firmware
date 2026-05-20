@@ -26,6 +26,7 @@ opt-level = "z"
 [features]
 default = []
 max2 = []
+i2c_oled = []
 
 experimental = ["esp-idf-svc/experimental"]
 

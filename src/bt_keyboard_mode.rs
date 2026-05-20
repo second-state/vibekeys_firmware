@@ -558,6 +558,7 @@ pub async fn key_event(
 pub async fn wait_key_event(key_pins: &mut KeysPin) -> ControllerCommand {
     tokio::select! {
         _ = key_pins.mic.wait_for_any_edge() => {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await; // Debounce delay
             if key_pins.mic.is_low() {
                 ControllerCommand::KeyboardPress(KeysPin::MIC)
             } else {
@@ -565,6 +566,7 @@ pub async fn wait_key_event(key_pins: &mut KeysPin) -> ControllerCommand {
             }
         },
         _ = key_pins.custom.wait_for_any_edge() => {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await; // Debounce delay
             if key_pins.custom.is_low() {
                 ControllerCommand::KeyboardPress(KeysPin::CUSTOM)
             } else {
@@ -572,6 +574,7 @@ pub async fn wait_key_event(key_pins: &mut KeysPin) -> ControllerCommand {
             }
         }
         _ = key_pins.esc.wait_for_any_edge() => {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await; // Debounce delay
             if key_pins.esc.is_low() {
                 log::info!("ESC key pressed");
                 ControllerCommand::KeyboardPress(KeysPin::ESC)
@@ -581,6 +584,7 @@ pub async fn wait_key_event(key_pins: &mut KeysPin) -> ControllerCommand {
             }
         },
         _ = key_pins.next.wait_for_any_edge() => {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await; // Debounce delay
             if key_pins.next.is_low() {
                 ControllerCommand::KeyboardPress(KeysPin::NEXT)
             } else {
@@ -588,6 +592,7 @@ pub async fn wait_key_event(key_pins: &mut KeysPin) -> ControllerCommand {
             }
         },
         _ = key_pins.switch.wait_for_any_edge() => {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await; // Debounce delay
             if key_pins.switch.is_low() {
                 ControllerCommand::KeyboardPress(KeysPin::SWITCH)
             } else {
@@ -595,6 +600,7 @@ pub async fn wait_key_event(key_pins: &mut KeysPin) -> ControllerCommand {
             }
         },
         _ = key_pins.backspace.wait_for_any_edge() => {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await; // Debounce delay
             if key_pins.backspace.is_low() {
                 ControllerCommand::KeyboardPress(KeysPin::BACKSPACE)
             } else {
@@ -602,6 +608,7 @@ pub async fn wait_key_event(key_pins: &mut KeysPin) -> ControllerCommand {
             }
         },
         _ = key_pins.accept.wait_for_any_edge() => {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await; // Debounce delay
             if key_pins.accept.is_low() {
                 ControllerCommand::KeyboardPress(KeysPin::ACCEPT)
             } else {
@@ -624,6 +631,7 @@ pub async fn wait_key_event(key_pins: &mut KeysPin) -> ControllerCommand {
             }
         },
         _ = key_pins.rotate_button.wait_for_any_edge() => {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await; // Debounce delay
             if key_pins.rotate_button.is_low() {
                 ControllerCommand::KeyboardPress(KeysPin::ROTATE_BUTTON)
             } else {
@@ -786,7 +794,7 @@ impl KeyboardAndMouse {
 
         hid.report_map(HID_REPORT_DISCRIPTOR);
 
-        hid.set_battery_level(battery_level);
+        // hid.set_battery_level(battery_level);
 
         let hid_service_id = hid.hid_service().lock().uuid();
 
@@ -932,14 +940,24 @@ const CONTROLLER_SERVICE_ID: BleUuid = super::bt_wifi_mode::SERVICE_ID;
 const KEYBOARD_DISPLAY_ID: BleUuid = uuid128!("cdaa6472-67a8-4241-93cf-145051608573");
 const KEYBOARD_NOTIFY_ID: BleUuid = uuid128!("d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f");
 const KEYMAP_CONFIG_ID: BleUuid = uuid128!("6f2a291c-0e4d-4f0f-9446-50bcd0b73bb0");
+const KEYMAP_ASR_RESULT_ID: BleUuid = uuid128!("f67f3c25-c9f0-456e-955e-cd9d9dd91051");
+const KEYMAP_ASR_CONFIG_ID: BleUuid = uuid128!("faf9e22c-e8fc-421b-afef-8b5236813fb1");
 
 pub struct ControllerService {
     pub notify_characteristic: Arc<Mutex<BLECharacteristic>>,
+    pub paster_characteristic: Arc<Mutex<BLECharacteristic>>,
 }
 
 impl ControllerService {
     pub fn notify(&self, message: &str) {
         self.notify_characteristic
+            .lock()
+            .set_value(message.as_bytes())
+            .notify();
+    }
+
+    pub fn notify_asr(&self, message: &str) {
+        self.paster_characteristic
             .lock()
             .set_value(message.as_bytes())
             .notify();
@@ -954,6 +972,8 @@ pub enum ControllerCommand {
     RotateDown,
     RotateUp,
     KeymapConfig(String),
+    Paste(u8),
+    AsrConfig(String),
 }
 
 pub fn new_controller_service(
@@ -974,23 +994,52 @@ pub fn new_controller_service(
         let _ = tx_.blocking_send(ControllerCommand::DisplayKeyboard(s));
     });
 
+    let paster_characteristic = service.create_characteristic(
+        KEYMAP_ASR_RESULT_ID,
+        NimbleProperties::WRITE | NimbleProperties::NOTIFY,
+    );
+
+    let tx_ = tx.clone();
+    paster_characteristic.lock().on_write(move |args| {
+        let data = args.recv_data();
+        if !data.is_empty() {
+            let _ = tx_.blocking_send(ControllerCommand::Paste(data[0]));
+        }
+    });
+
     let notify_characteristic =
         service.create_characteristic(KEYBOARD_NOTIFY_ID, NimbleProperties::NOTIFY);
 
     let keymap_config_characteristic =
         service.create_characteristic(KEYMAP_CONFIG_ID, NimbleProperties::WRITE);
 
+    let tx_ = tx.clone();
     keymap_config_characteristic.lock().on_write(move |args| {
         log::info!("Wrote to keymap config characteristic");
         let data = args.recv_data();
         log::info!("Received keymap data: {:?}", data);
         let s = String::from_utf8_lossy(&data).to_string();
 
-        let _ = tx.blocking_send(ControllerCommand::KeymapConfig(s));
+        let _ = tx_.blocking_send(ControllerCommand::KeymapConfig(s));
     });
+
+    let keymap_asr_config_characteristic =
+        service.create_characteristic(KEYMAP_ASR_CONFIG_ID, NimbleProperties::WRITE);
+
+    keymap_asr_config_characteristic
+        .lock()
+        .on_write(move |args| {
+            log::info!("Wrote to ASR config characteristic");
+            let data = args.recv_data();
+            log::info!("Received ASR config data: {:?}", data);
+            let s = String::from_utf8_lossy(&data).to_string();
+
+            let _ = tx.blocking_send(ControllerCommand::AsrConfig(s));
+        });
 
     Ok(ControllerService {
         notify_characteristic,
+        paster_characteristic,
     })
 }
 

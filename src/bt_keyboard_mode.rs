@@ -78,13 +78,12 @@ impl KeymapConfig {
     }
 
     pub fn load_from_nvs(nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<Self> {
-        if !nvs.contains("keymap_config")? {
-            log::info!("No keymap config found in NVS, using default");
-            return Ok(Self::default());
-        }
-
         let keymap_size = nvs.blob_len("keymap_config")?.unwrap_or_default();
         log::info!("Keymap config size in NVS: {} bytes", keymap_size);
+        if keymap_size == 0 {
+            log::warn!("Keymap config blob is empty, using default");
+            return Ok(Self::default());
+        }
 
         let mut buf = vec![0; keymap_size];
         nvs.get_blob("keymap_config", &mut buf)?;

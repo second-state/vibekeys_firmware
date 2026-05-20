@@ -30,10 +30,10 @@ fn new_btn(
 }
 
 const DEFAULT_SNTP_SERVERS: [&str; 4] = [
-    "pool.ntp.org",
     "time.apple.com",
     "time.windows.com",
     "time.google.com",
+    "pool.ntp.org",
 ];
 
 pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
@@ -58,6 +58,7 @@ pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
             let status = ntp_client.get_sync_status();
             log::info!("sntp sync status {:?}", status);
             if status == SyncStatus::Completed {
+                lcd::display_text(display_target, "Syncing time Completed", 0)?;
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
@@ -82,7 +83,7 @@ pub fn goto_next_firmware() -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    let peripherals = esp_idf_svc::hal::prelude::Peripherals::take().unwrap();
+    let peripherals = esp_idf_svc::hal::peripherals::Peripherals::take().unwrap();
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
     let _fs = esp_idf_svc::io::vfs::MountedEventfs::mount(20)?;
     let partition = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;

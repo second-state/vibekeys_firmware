@@ -33,9 +33,9 @@ experimental = ["esp-idf-svc/experimental"]
 log = "0.4"
 anyhow = "1.0"
 
-esp-idf-svc = "0.51"
-esp32-nimble = "0.11.1"
-embedded-svc = "0.28.1"
+esp-idf-svc = "0.52.1"
+esp32-nimble = "0.12.0"
+embedded-svc = "0.29.0"
 
 
 zerocopy = "0.8.33"

@@ -233,11 +233,11 @@ fn audio_task_run(
 }
 
 pub struct AudioWorker {
-    pub in_i2s: I2S0,
-    pub in_ws: AnyIOPin,
-    pub in_clk: AnyIOPin,
-    pub din: AnyIOPin,
-    pub in_mclk: Option<AnyIOPin>,
+    pub in_i2s: I2S0<'static>,
+    pub in_ws: AnyIOPin<'static>,
+    pub in_clk: AnyIOPin<'static>,
+    pub din: AnyIOPin<'static>,
+    pub in_mclk: Option<AnyIOPin<'static>>,
 }
 
 impl AudioWorker {

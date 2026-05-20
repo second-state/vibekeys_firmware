@@ -10,36 +10,38 @@ mod app;
 mod audio;
 mod bt_keyboard_mode;
 mod bt_wifi_mode;
+#[cfg(feature = "i2c_oled")]
 mod i2c;
 mod lcd;
 mod protocol;
+mod util;
 mod wifi;
 mod ws;
 
-type AnyBtn = PinDriver<'static, esp_idf_svc::hal::gpio::AnyIOPin, esp_idf_svc::hal::gpio::Input>;
+type AnyBtn = PinDriver<'static, esp_idf_svc::hal::gpio::Input>;
 
 fn new_btn(
-    pin: AnyIOPin,
+    pin: AnyIOPin<'static>,
     pull: esp_idf_svc::hal::gpio::Pull,
     interrupt: esp_idf_svc::hal::gpio::InterruptType,
 ) -> anyhow::Result<AnyBtn> {
-    let mut btn = PinDriver::input(pin)?;
-    btn.set_pull(pull)?;
+    let mut btn = PinDriver::input(pin, pull)?;
     btn.set_interrupt_type(interrupt)?;
     Ok(btn)
 }
 
 const DEFAULT_SNTP_SERVERS: [&str; 4] = [
-    "pool.ntp.org",
     "time.apple.com",
     "time.windows.com",
     "time.google.com",
+    "pool.ntp.org",
 ];
 
 pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
     use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode, SyncStatus};
 
     for i in 0..DEFAULT_SNTP_SERVERS.len() {
+        log_heap();
         log::info!("SNTP sync time with server: {}", DEFAULT_SNTP_SERVERS[i]);
         lcd::display_text(
             display_target,
@@ -54,10 +56,12 @@ pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
         };
         let ntp_client = EspSntp::new(&conf)?;
 
-        for _ in 0..30 {
+        for _ in 0..15 {
             let status = ntp_client.get_sync_status();
             log::info!("sntp sync status {:?}", status);
+            log_heap();
             if status == SyncStatus::Completed {
+                lcd::display_text(display_target, "Syncing time Completed", 0)?;
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
@@ -82,7 +86,7 @@ pub fn goto_next_firmware() -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    let peripherals = esp_idf_svc::hal::prelude::Peripherals::take().unwrap();
+    let peripherals = esp_idf_svc::hal::peripherals::Peripherals::take().unwrap();
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
     let _fs = esp_idf_svc::io::vfs::MountedEventfs::mount(20)?;
     let partition = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
@@ -198,6 +202,7 @@ fn main() -> anyhow::Result<()> {
     // Load keymap config before moving nvs
     let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
     log::info!("Loaded keymap config with {} keys", keymap.keys.len());
+    let asr_config = audio::AsrConfig::load_from_nvs(&nvs);
 
     let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
     let mac = wifi.sta_netif().get_mac().unwrap();
@@ -298,12 +303,12 @@ fn main() -> anyhow::Result<()> {
         let service = server.create_service(bt_wifi_mode::SERVICE_ID);
 
         let mut keyboard = bt_keyboard_mode::KeyboardAndMouse::new(ble_device, 100)?;
-        let service_id = {
+        let (controller, service_id) = {
             let mut lock = service.lock();
-            bt_keyboard_mode::new_controller_service(&mut lock, tx)?;
+            let controller = bt_keyboard_mode::new_controller_service(&mut lock, tx)?;
             // Start setting service
             bt_wifi_mode::new_setting_service(&mut lock, setting_arc.clone(), Some(setting_tx))?;
-            lock.uuid()
+            (controller, lock.uuid())
         };
 
         let server = ble_device.get_server();
@@ -326,6 +331,54 @@ fn main() -> anyhow::Result<()> {
             rotate_button: pin18,
         };
 
+        let mut driver: Option<audio::Driver> = None;
+
+        let r = wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone());
+        if r.is_err() {
+            let e = r.err();
+            log::error!("Failed to connect to WiFi: {:?}", e);
+            lcd::display_text(
+                &mut target,
+                &format!(" WiFi connection failed: {:?}\n", e),
+                0,
+            )?;
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        } else {
+            log::info!("WiFi connected successfully");
+            log::info!("ASR config loaded from NVS: {:?}", asr_config);
+
+            if let Some(ref asr_config) = asr_config {
+                if asr_config.requires_tls() {
+                    let r = sync_time(&mut target);
+                    if r.is_err() {
+                        log::error!("Failed to sync time: {:?}", r.err());
+                        let _ = lcd::display_text(&mut target, " Time sync failed\n", 0);
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                    } else {
+                        let worker = audio::AudioWorker {
+                            in_i2s: peripherals.i2s0,
+                            in_ws: peripherals.pins.gpio41.into(),
+                            in_clk: peripherals.pins.gpio42.into(),
+                            din: peripherals.pins.gpio40.into(),
+                            in_mclk: None,
+                        };
+                        let _ = driver.insert(audio::Driver::new(worker)?);
+                    }
+                } else {
+                    let worker = audio::AudioWorker {
+                        in_i2s: peripherals.i2s0,
+                        in_ws: peripherals.pins.gpio41.into(),
+                        in_clk: peripherals.pins.gpio42.into(),
+                        din: peripherals.pins.gpio40.into(),
+                        in_mclk: None,
+                    };
+                    let _ = driver.insert(audio::Driver::new(worker)?);
+                }
+            }
+        }
+
+        log_heap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
         lcd::display_text(&mut target, "Keyboard Mode", 0)?;
 
         runtime.block_on(keyboard_mode_main(
@@ -337,6 +390,9 @@ fn main() -> anyhow::Result<()> {
             setting_rx,
             rx,
             &mut keymap,
+            driver,
+            asr_config,
+            controller,
         ));
     }
 
@@ -517,6 +573,35 @@ fn handle_keymap_config(
     }
 }
 
+fn handle_keymap_asr_config(
+    config: String,
+    nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
+) -> anyhow::Result<String> {
+    log::info!("Received keymap config: {}", config);
+    if config.is_empty() {
+        nvs.remove("asr_config").ok();
+        return Ok("ASR config cleared".to_string());
+    }
+    match audio::AsrConfig::from_json(&config) {
+        Ok(config) => match config.save_to_nvs(nvs) {
+            Ok(()) => {
+                log::info!("asr config merged and saved to NVS successfully");
+                Ok(format!(
+                    "ASR config updated: {}",
+                    serde_json::to_string_pretty(&config)
+                        .unwrap_or_else(|_| "Failed to serialize ASR config".to_string())
+                ))
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to save asr_config to NVS: {:?}", e);
+            }
+        },
+        Err(e) => {
+            anyhow::bail!("Failed to parse asr_config JSON: {:?}", e);
+        }
+    }
+}
+
 async fn keyboard_mode_main(
     display: &mut lcd::FrameBuffer,
     ble_device: &mut esp32_nimble::BLEDevice,
@@ -526,6 +611,9 @@ async fn keyboard_mode_main(
     mut setting_rx: tokio::sync::mpsc::Receiver<bt_wifi_mode::BTevent>,
     mut rx: tokio::sync::mpsc::Receiver<bt_keyboard_mode::ControllerCommand>,
     keymap: &mut bt_keyboard_mode::KeymapConfig,
+    mut driver: Option<audio::Driver>,
+    asr_config: Option<audio::AsrConfig>,
+    controller: bt_keyboard_mode::ControllerService,
 ) -> ! {
     loop {
         let event = tokio::select! {
@@ -533,6 +621,8 @@ async fn keyboard_mode_main(
             Some(bt_wifi_mode::BTevent::Reset) = setting_rx.recv() => {
                 handle_reset_event(setting_arc);
             }
+            // Handle physical key events
+            key_evt = bt_keyboard_mode::wait_key_event(key_pins) => key_evt,
             // Handle controller commands from BLE
             Some(evt) = rx.recv() => {
                 match evt {
@@ -545,12 +635,45 @@ async fn keyboard_mode_main(
                         lcd::display_text(display, "keymap updated!", 0).unwrap();
                         continue;
                     }
+                    bt_keyboard_mode::ControllerCommand::AsrConfig(config) => {
+                        match handle_keymap_asr_config(config, &mut setting_arc.lock().unwrap().1) {
+                            Ok(msg) => {
+                                lcd::display_text(display, &msg, 0).unwrap();
+                            }
+                            Err(e) => {
+                                log::error!("Failed to update ASR config: {:?}", e);
+                                lcd::display_text(display, &format!("Failed to update ASR config:\n{:?}", e), 0).unwrap();
+                            }
+                        }
+                        continue;
+                    }
                     controller_evt => controller_evt,
                 }
             }
-            // Handle physical key events
-            key_evt = bt_keyboard_mode::wait_key_event(key_pins) => key_evt
         };
+
+        if let (Some(driver), Some(asr_config)) = (driver.as_mut(), asr_config.as_ref()) {
+            if matches!(
+                event,
+                bt_keyboard_mode::ControllerCommand::KeyboardPress(bt_keyboard_mode::KeysPin::MIC)
+            ) {
+                match driver.start_asr(
+                    asr_config,
+                    || lcd::display_text(display, "start recording", 0).unwrap(),
+                    || key_pins.mic.is_high(),
+                ) {
+                    Ok(asr) => {
+                        lcd::display_text(display, &format!("ASR:{asr}"), 0).unwrap();
+                        controller.notify_asr(&asr);
+                    }
+                    Err(e) => {
+                        log::error!("ASR error: {:?}", e);
+                        lcd::display_text(display, &format!("ASR error: {:?}", e), 0).unwrap();
+                    }
+                }
+                continue;
+            }
+        }
 
         let _ = handle_key_event(display, ble_device, keyboard, event, keymap);
     }
@@ -607,6 +730,15 @@ pub fn handle_key_event(
     log::info!("Handling controller command: {:?}", event);
     use bt_keyboard_mode::KeysPin;
     match event {
+        bt_keyboard_mode::ControllerCommand::Paste(p) => {
+            if p == 0x01 {
+                keyboard.ctrl_press(b'v');
+                keyboard.release();
+            } else if p == 0x02 {
+                keyboard.gui_press(b'v');
+                keyboard.release();
+            }
+        }
         bt_keyboard_mode::ControllerCommand::DisplayKeyboard(text) => {
             lcd::display_text(display, &text, 0)?;
         }
@@ -670,6 +802,9 @@ pub fn handle_key_event(
         }
         bt_keyboard_mode::ControllerCommand::KeymapConfig(_) => {
             // KeymapConfig is handled separately in keyboard_mode_main
+        }
+        bt_keyboard_mode::ControllerCommand::AsrConfig(_) => {
+            // AsrConfig is handled separately in keyboard_mode_main
         }
     }
 

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use esp_idf_svc::hal::gpio::AnyIOPin;
-use esp_idf_svc::hal::i2s::{config, I2sDriver, I2S0};
+use esp_idf_svc::hal::i2s::{config, I2sDriver, I2sRx, I2S0};
 
 use esp_idf_svc::sys::esp_sr;
 
-const SAMPLE_RATE: u32 = 16000;
+pub const SAMPLE_RATE: u32 = 16000;
 
 pub static mut AFE_LINEAR_GAIN: f32 = 1.5;
 pub static mut AGC_TARGET_LEVEL_DBFS: i32 = 3;
@@ -233,11 +233,11 @@ fn audio_task_run(
 }
 
 pub struct AudioWorker {
-    pub in_i2s: I2S0,
-    pub in_ws: AnyIOPin,
-    pub in_clk: AnyIOPin,
-    pub din: AnyIOPin,
-    pub in_mclk: Option<AnyIOPin>,
+    pub in_i2s: I2S0<'static>,
+    pub in_ws: AnyIOPin<'static>,
+    pub in_clk: AnyIOPin<'static>,
+    pub din: AnyIOPin<'static>,
+    pub in_mclk: Option<AnyIOPin<'static>>,
 }
 
 impl AudioWorker {
@@ -291,5 +291,224 @@ impl AudioWorker {
         })?;
 
         audio_task_run(&mut fn_read, afe_handle)
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "platform")]
+pub enum AsrConfig {
+    #[serde(alias = "whisper")]
+    Whisper {
+        uri: String,
+        api_key: String,
+        model: String,
+    },
+}
+
+impl AsrConfig {
+    pub fn from_json(json: &str) -> anyhow::Result<Self> {
+        let config = serde_json::from_str(json)?;
+        Ok(config)
+    }
+
+    pub fn load_from_nvs(nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> Option<Self> {
+        let asr_config_len = nvs.str_len("asr_config").ok()??; // Check if the key exists
+        if asr_config_len == 0 {
+            return None; // No config stored
+        }
+
+        let mut buffer = vec![0u8; asr_config_len];
+
+        let json = nvs.get_str("asr_config", &mut buffer).ok()??;
+
+        Self::from_json(&json).ok()
+    }
+
+    pub fn save_to_nvs(&self, nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<()> {
+        let json = serde_json::to_string(self)?;
+        nvs.set_str("asr_config", &json)?;
+        Ok(())
+    }
+
+    pub fn requires_tls(&self) -> bool {
+        match self {
+            AsrConfig::Whisper { uri, .. } => uri.starts_with("https://"),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AsrResult {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    error: Option<serde_json::Value>,
+}
+
+impl AsrResult {
+    fn parse_text(&self) -> String {
+        if self.text.trim().starts_with("[") {
+            let mut texts = vec![];
+            for line in self.text.lines() {
+                if let Some((_, t)) = line.split_once("] ") {
+                    texts.push(t.to_string());
+                } else {
+                    texts.push(line.to_string());
+                }
+            }
+            texts.join("\n")
+        } else {
+            self.text.clone()
+        }
+    }
+}
+
+pub struct Driver(I2sDriver<'static, I2sRx>);
+
+impl Driver {
+    pub fn new(worker: AudioWorker) -> anyhow::Result<Self> {
+        let i2s_config = config::StdConfig::new(
+            config::Config::default()
+                .auto_clear(true)
+                .dma_buffer_count(2)
+                .frames_per_buffer(512),
+            config::StdClkConfig::from_sample_rate_hz(SAMPLE_RATE),
+            config::StdSlotConfig::philips_slot_default(
+                config::DataBitWidth::Bits16,
+                config::SlotMode::Mono,
+            ),
+            config::StdGpioConfig::default(),
+        );
+
+        let mut rx_driver = I2sDriver::new_std_rx(
+            worker.in_i2s,
+            &i2s_config,
+            worker.in_clk,
+            worker.din,
+            worker.in_mclk,
+            worker.in_ws,
+        )
+        .map_err(|e| anyhow::anyhow!("Error create RX: {:?}", e))?;
+        rx_driver.rx_enable()?;
+
+        Ok(Self(rx_driver))
+    }
+
+    pub fn read(&mut self, buffer: &mut [u8]) -> anyhow::Result<usize> {
+        let len = self
+            .0
+            .read(buffer, esp_idf_svc::hal::delay::TickType::new_millis(100).0)?;
+
+        Ok(len)
+    }
+
+    pub fn start_whisper(
+        &mut self,
+        uri: &str,
+        api_key: &str,
+        model: &str,
+        mut on_start_listen: impl FnMut(),
+        is_stop: impl Fn() -> bool,
+    ) -> anyhow::Result<String> {
+        let config = esp_idf_svc::http::client::Configuration {
+            crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
+            ..Default::default()
+        };
+        let conn = esp_idf_svc::http::client::EspHttpConnection::new(&config)?;
+        let mut client = embedded_svc::http::client::Client::wrap(conn);
+
+        // 手动构造 multipart
+        let boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+        let content_type = format!("multipart/form-data; boundary={}", boundary);
+
+        let header_value = format!("Bearer {}", api_key);
+
+        let headers = [
+            ("Content-Type", content_type.as_str()),
+            ("Authorization", header_value.as_str()),
+        ];
+        let mut req: esp_idf_svc::http::client::Request<
+            &mut esp_idf_svc::http::client::EspHttpConnection,
+        > = client.post(
+            uri,
+            if api_key.is_empty() {
+                &headers[..1]
+            } else {
+                &headers
+            },
+        )?;
+
+        // 写 multipart 头部
+        let header = format!(
+            "--{}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n",
+            boundary
+        );
+        req.write(header.as_bytes())?;
+
+        let wav_header = crate::util::create_unlimited_wav_header(&crate::util::WavConfig {
+            sample_rate: SAMPLE_RATE,
+            channels: 1,
+            bits_per_sample: 16,
+        });
+        req.write(&wav_header)?;
+
+        on_start_listen();
+
+        // 边录边写音频数据
+        let mut buffer = vec![0u8; 2 * SAMPLE_RATE as usize / 10];
+        let max_chunks = 10 * 30; // 30s
+
+        for _ in 0..max_chunks {
+            if is_stop() {
+                break;
+            }
+            let len = self.read(&mut buffer)?;
+            if len > 0 {
+                let n = req.write(&buffer[..len])?;
+                log::debug!("Wrote {} bytes of audio data", n);
+            }
+        }
+
+        // 写 model 字段
+        let model_field = format!(
+            "\r\n--{}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{}\r\n",
+            boundary, model
+        );
+        req.write(model_field.as_bytes())?;
+
+        // 写结束标记
+        let footer = format!("--{}--", boundary);
+        req.write(footer.as_bytes())?;
+        req.flush()?;
+        let mut resp = req.submit()?;
+        // buffer.clear();
+        log::info!("resp code: {}", resp.status());
+        let bytes_read =
+            embedded_svc::utils::io::try_read_full(&mut resp, &mut buffer).map_err(|e| e.0)?;
+        let resp_body = std::str::from_utf8(&buffer[0..bytes_read])?;
+        let asr_result: AsrResult = serde_json::from_str(resp_body)?;
+        log::info!("{asr_result:?}");
+        if let Some(ref e) = asr_result.error {
+            log::error!("error: {}", serde_json::to_string(e).unwrap())
+        }
+
+        // let v = serde_json::from_str::<serde_json::Value>(resp_body)?;
+
+        Ok(asr_result.parse_text())
+    }
+
+    pub fn start_asr<F: Fn() -> bool, F2: FnMut()>(
+        &mut self,
+        asr_config: &AsrConfig,
+        on_start_listen: F2,
+        is_stop: F,
+    ) -> anyhow::Result<String> {
+        match asr_config {
+            AsrConfig::Whisper {
+                uri,
+                api_key,
+                model,
+            } => self.start_whisper(uri, api_key, model, on_start_listen, is_stop),
+        }
     }
 }

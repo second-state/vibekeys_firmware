@@ -39,12 +39,12 @@ pub fn init_spi(_spi: SPI3, mosi: Gpio21, clk: Gpio47) -> Result<(), EspError> {
     const GPIO_NUM_NC: i32 = -1;
 
     let mut buscfg = spi_bus_config_t::default();
-    buscfg.__bindgen_anon_1.mosi_io_num = mosi.pin();
+    buscfg.__bindgen_anon_1.mosi_io_num = mosi.pin() as _;
     buscfg.__bindgen_anon_2.miso_io_num = GPIO_NUM_NC;
-    buscfg.sclk_io_num = clk.pin();
+    buscfg.sclk_io_num = clk.pin() as _;
     buscfg.__bindgen_anon_3.quadwp_io_num = GPIO_NUM_NC;
     buscfg.__bindgen_anon_4.quadhd_io_num = GPIO_NUM_NC;
-    buscfg.max_transfer_sz = 4096;
+    buscfg.max_transfer_sz = 1024 * 4;
     esp!(unsafe { spi_bus_initialize(SPI3::device(), &buscfg, spi_common_dma_t_SPI_DMA_CH_AUTO,) })
 }
 
@@ -54,10 +54,10 @@ pub fn init_lcd(cs: Gpio12, dc: Gpio13, rst: Gpio14) -> Result<(), EspError> {
     ::log::info!("Install panel IO");
     let mut panel_io: esp_lcd_panel_io_handle_t = std::ptr::null_mut();
     let mut io_config = esp_lcd_panel_io_spi_config_t::default();
-    io_config.cs_gpio_num = cs.pin();
-    io_config.dc_gpio_num = dc.pin();
+    io_config.cs_gpio_num = cs.pin() as _;
+    io_config.dc_gpio_num = dc.pin() as _;
     io_config.spi_mode = 3;
-    io_config.pclk_hz = 40 * 1000 * 1000;
+    io_config.pclk_hz = 60 * 1000 * 1000;
     io_config.trans_queue_depth = 10;
     io_config.lcd_cmd_bits = 8;
     io_config.lcd_param_bits = 8;
@@ -70,7 +70,7 @@ pub fn init_lcd(cs: Gpio12, dc: Gpio13, rst: Gpio14) -> Result<(), EspError> {
     let mut panel_config = esp_lcd_panel_dev_config_t::default();
     let mut panel: esp_lcd_panel_handle_t = std::ptr::null_mut();
 
-    panel_config.reset_gpio_num = rst.pin();
+    panel_config.reset_gpio_num = rst.pin() as _;
     panel_config.data_endian = lcd_rgb_data_endian_t_LCD_RGB_DATA_ENDIAN_LITTLE;
     panel_config.__bindgen_anon_1.rgb_ele_order = lcd_rgb_element_order_t_LCD_RGB_ELEMENT_ORDER_RGB;
     panel_config.bits_per_pixel = 16;
@@ -334,9 +334,27 @@ impl DisplayTargetDrive for FrameBuffer {
         let x_end = bounding_box.top_left.x + bounding_box.size.width as i32;
         let y_end = bounding_box.top_left.y + bounding_box.size.height as i32;
 
-        let e = flush_display(self.buffers.data(), x_start, y_start, x_end, y_end);
-        if e != 0 {
-            return Err(anyhow::anyhow!("Failed to flush display: error code {}", e));
+        for i in 0..5 {
+            let e = flush_display(self.buffers.data(), x_start, y_start, x_end, y_end);
+            if e != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                crate::log_heap();
+                if i < 4 {
+                    log::warn!(
+                        "flush_display failed (attempt {}), retrying... error code: {}",
+                        i + 1,
+                        e
+                    );
+                } else {
+                    log::error!(
+                        "flush_display failed after {} attempts. error code: {}",
+                        i + 1,
+                        e
+                    );
+                    anyhow::bail!("Failed to flush display after multiple attempts");
+                }
+                continue;
+            }
         }
 
         self.buffers.clone_from(&self.background_buffers);

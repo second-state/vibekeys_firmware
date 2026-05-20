@@ -6,15 +6,14 @@ use esp_idf_svc::{
 
 mod wifi;
 
-type AnyBtn = PinDriver<'static, esp_idf_svc::hal::gpio::AnyIOPin, esp_idf_svc::hal::gpio::Input>;
+type AnyBtn = PinDriver<'static, esp_idf_svc::hal::gpio::Input>;
 
 fn new_btn(
-    pin: AnyIOPin,
+    pin: AnyIOPin<'static>,
     pull: esp_idf_svc::hal::gpio::Pull,
     interrupt: esp_idf_svc::hal::gpio::InterruptType,
 ) -> anyhow::Result<AnyBtn> {
-    let mut btn = PinDriver::input(pin)?;
-    btn.set_pull(pull)?;
+    let mut btn = PinDriver::input(pin, pull)?;
     btn.set_interrupt_type(interrupt)?;
     Ok(btn)
 }
@@ -74,7 +73,7 @@ fn main() -> anyhow::Result<()> {
     let partition = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
     let nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
 
-    let peripherals = esp_idf_svc::hal::prelude::Peripherals::take().unwrap();
+    let peripherals = esp_idf_svc::hal::peripherals::Peripherals::take().unwrap();
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
 
     let mut bl = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio11)?;
@@ -326,9 +325,9 @@ mod lcd {
         const GPIO_NUM_NC: i32 = -1;
 
         let mut buscfg = spi_bus_config_t::default();
-        buscfg.__bindgen_anon_1.mosi_io_num = mosi.pin();
+        buscfg.__bindgen_anon_1.mosi_io_num = mosi.pin() as _;
         buscfg.__bindgen_anon_2.miso_io_num = GPIO_NUM_NC;
-        buscfg.sclk_io_num = clk.pin();
+        buscfg.sclk_io_num = clk.pin() as _;
         buscfg.__bindgen_anon_3.quadwp_io_num = GPIO_NUM_NC;
         buscfg.__bindgen_anon_4.quadhd_io_num = GPIO_NUM_NC;
         buscfg.max_transfer_sz =
@@ -344,8 +343,8 @@ mod lcd {
         ::log::info!("Install panel IO");
         let mut panel_io: esp_lcd_panel_io_handle_t = std::ptr::null_mut();
         let mut io_config = esp_lcd_panel_io_spi_config_t::default();
-        io_config.cs_gpio_num = cs.pin();
-        io_config.dc_gpio_num = dc.pin();
+        io_config.cs_gpio_num = cs.pin() as _;
+        io_config.dc_gpio_num = dc.pin() as _;
         io_config.spi_mode = 3;
         io_config.pclk_hz = 40 * 1000 * 1000;
         io_config.trans_queue_depth = 10;
@@ -360,7 +359,7 @@ mod lcd {
         let mut panel_config = esp_lcd_panel_dev_config_t::default();
         let mut panel: esp_lcd_panel_handle_t = std::ptr::null_mut();
 
-        panel_config.reset_gpio_num = rst.pin();
+        panel_config.reset_gpio_num = rst.pin() as _;
         panel_config.data_endian = lcd_rgb_data_endian_t_LCD_RGB_DATA_ENDIAN_LITTLE;
         panel_config.__bindgen_anon_1.rgb_ele_order =
             lcd_rgb_element_order_t_LCD_RGB_ELEMENT_ORDER_RGB;

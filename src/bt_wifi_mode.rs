@@ -64,14 +64,14 @@ impl Setting {
             .unwrap_or_default()
             .to_string();
 
-        let background_png = if nvs.contains("background_png")? {
-            let background_png_size = nvs
-                .blob_len("background_png")
-                .map_err(|e| log::error!("Failed to get background_png size: {:?}", e))
-                .ok()
-                .flatten()
-                .unwrap_or(1024 * 1024);
+        let background_png_size = nvs
+            .blob_len("background_png")
+            .map_err(|e| log::error!("Failed to get background_png size: {:?}", e))
+            .ok()
+            .flatten()
+            .unwrap_or(0);
 
+        let background_png = if background_png_size != 0 {
             log::info!("Background PNG size in NVS: {} bytes", background_png_size);
 
             let mut png_buf = vec![0; background_png_size];

@@ -615,6 +615,7 @@ async fn keyboard_mode_main(
     asr_config: Option<audio::AsrConfig>,
     controller: bt_keyboard_mode::ControllerService,
 ) -> ! {
+    let mut keys_pressed = false;
     loop {
         let event = tokio::select! {
             // Handle setting events (e.g., reset)
@@ -675,7 +676,29 @@ async fn keyboard_mode_main(
             }
         }
 
+        let mut is_display_event = false;
+
+        match &event {
+            bt_keyboard_mode::ControllerCommand::KeyboardPress(pin) => {
+                log::info!("Physical key pressed: {:?}", pin);
+                keys_pressed = true;
+            }
+            bt_keyboard_mode::ControllerCommand::KeyboardRelease(pin) => {
+                log::info!("Physical key released: {:?}", pin);
+                keys_pressed = false;
+            }
+            bt_keyboard_mode::ControllerCommand::DisplayKeyboard(_) => {
+                is_display_event = true;
+            }
+            _ => {}
+        }
+
         let _ = handle_key_event(display, ble_device, keyboard, event, keymap);
+
+        if is_display_event && keys_pressed && key_pins.all_is_high() {
+            keys_pressed = false;
+            keyboard.release();
+        }
     }
 }
 
@@ -778,20 +801,7 @@ pub fn handle_key_event(
                 log::info!("Releasing custom keymap for {}: {:?}", key_name, action);
                 let _ = execute_key_action(keyboard, action, false);
             } else {
-                // Default behavior
-                match pin_index {
-                    KeysPin::MIC
-                    | KeysPin::CUSTOM
-                    | KeysPin::NEXT
-                    | KeysPin::SWITCH
-                    | KeysPin::BACKSPACE
-                    | KeysPin::ACCEPT
-                    | KeysPin::ESC
-                    | KeysPin::ROTATE_BUTTON => {
-                        keyboard.release();
-                    }
-                    _ => {}
-                }
+                keyboard.release();
             }
         }
         bt_keyboard_mode::ControllerCommand::RotateDown => {

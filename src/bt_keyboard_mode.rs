@@ -460,6 +460,47 @@ pub struct KeysPin {
 }
 
 impl KeysPin {
+    pub fn any_is_low(&self) -> bool {
+        self.mic.is_low()
+            || self.custom.is_low()
+            || self.esc.is_low()
+            || self.next.is_low()
+            || self.backspace.is_low()
+            || self.switch.is_low()
+            || self.accept.is_low()
+            || self.rotate_a.is_low()
+            || self.rotate_b.is_low()
+            || self.rotate_button.is_low()
+    }
+
+    pub fn all_is_low(&self) -> bool {
+        self.mic.is_low()
+            && self.custom.is_low()
+            && self.esc.is_low()
+            && self.next.is_low()
+            && self.backspace.is_low()
+            && self.switch.is_low()
+            && self.accept.is_low()
+            && self.rotate_a.is_low()
+            && self.rotate_b.is_low()
+            && self.rotate_button.is_low()
+    }
+
+    pub fn all_is_high(&self) -> bool {
+        self.mic.is_high()
+            && self.custom.is_high()
+            && self.esc.is_high()
+            && self.next.is_high()
+            && self.backspace.is_high()
+            && self.switch.is_high()
+            && self.accept.is_high()
+            && self.rotate_a.is_high()
+            && self.rotate_b.is_high()
+            && self.rotate_button.is_high()
+    }
+}
+
+impl KeysPin {
     pub const MIC: u8 = 0;
     pub const CUSTOM: u8 = 1;
     pub const ESC: u8 = 2;

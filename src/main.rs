@@ -13,10 +13,10 @@ mod bt_wifi_mode;
 #[cfg(feature = "i2c_oled")]
 mod i2c;
 mod lcd;
+mod mqtt;
 mod protocol;
 mod util;
 mod wifi;
-mod ws;
 
 type AnyBtn = PinDriver<'static, esp_idf_svc::hal::gpio::Input>;
 
@@ -119,8 +119,8 @@ fn main() -> anyhow::Result<()> {
     target.flush()?;
     lcd::display_text(&mut target, "VibeKeys Starting...\n Read setting", 0)?;
 
-    // MIC
-    let btn0 = new_btn(
+    // MIC(远程模式下由 app::run 直接持有,用于本地 ASR,故声明为 mut)
+    let mut btn0 = new_btn(
         peripherals.pins.gpio0.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -206,8 +206,8 @@ fn main() -> anyhow::Result<()> {
 
     let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
     let mac = wifi.sta_netif().get_mac().unwrap();
-    let _dev_id = format!(
-        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+    let client_id = format!(
+        "vibekeys-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
 
@@ -416,7 +416,7 @@ fn main() -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
 
     {
-        runtime.spawn(app::key_task::mic_key(btn0, setting.mic_model.into()));
+        // btn0 (MIC) 由 app::run 直接持有用于本地 ASR,不在此 spawn。
 
         runtime.spawn(app::key_task::listen_key_event(
             btn2,
@@ -457,8 +457,9 @@ fn main() -> anyhow::Result<()> {
         esp_idf_svc::hal::reset::restart();
     }
 
-    if setting.server_url.starts_with("wss") {
-        // _ = rustls_rustcrypto::provider().install_default();
+    if setting.server_url.starts_with("mqtts")
+        || asr_config.as_ref().map_or(false, |c| c.requires_tls())
+    {
         lcd::display_text(&mut target, "Syncing time...", 0)?;
         let r = sync_time(&mut target);
         if r.is_err() {
@@ -469,6 +470,8 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // 远程模式改用本地 ASR(MQTT 无语音通道):创建 audio::Driver 持有 I2S,
+    // 不再把音频流发给服务器。
     let worker = audio::AudioWorker {
         in_i2s: peripherals.i2s0,
         in_ws: peripherals.pins.gpio41.into(),
@@ -476,29 +479,24 @@ fn main() -> anyhow::Result<()> {
         din: peripherals.pins.gpio40.into(),
         in_mclk: None,
     };
-
-    const AUDIO_STACK_SIZE: usize = 15 * 1024;
-
-    let audio_tx = tx.clone();
-    let _ = std::thread::Builder::new()
-        .stack_size(AUDIO_STACK_SIZE)
-        .spawn(move || {
-            log::info!(
-                "Starting audio worker thread in core {:?}",
-                esp_idf_svc::hal::cpu::core()
-            );
-            let r = worker.run(audio_tx);
-            if let Err(e) = r {
-                log::error!("Audio worker error: {:?}", e);
-            }
-        })
-        .map_err(|e| anyhow::anyhow!("Failed to spawn audio worker thread: {:?}", e))?;
+    let mut driver = audio::Driver::new(worker)
+        .map_err(|e| log::error!("Failed to create audio driver: {e:?}"))
+        .ok();
 
     lcd::display_text(&mut target, "Connecting the Server...", 0)?;
 
     let mut ui = lcd::UI::new_with_target(target);
 
-    let app_fut = app::run(setting.server_url, &mut ui, rx, &keymap);
+    let app_fut = app::run(
+        setting.server_url,
+        &client_id,
+        &mut ui,
+        rx,
+        &keymap,
+        driver.as_mut(),
+        asr_config.as_ref(),
+        &mut btn0,
+    );
     let r = runtime.block_on(app_fut);
     if let Err(e) = r {
         log::error!("App error: {:?}", e);

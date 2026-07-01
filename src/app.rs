@@ -7,6 +7,7 @@ use crate::{
 };
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub enum Event {
     MicAudioChunk(Vec<i16>),
     MicAudioChunkEnd,
@@ -42,69 +43,58 @@ impl std::fmt::Debug for Event {
 enum SelectResult {
     Event(Event),
     ServerMessage(protocol::ServerMessage),
+    /// MIC 按键按下(falling edge)。
+    MicPressed,
 }
 
+/// 同时等待三类事件:`select!` 只负责 select,真正会借用 `server` 的处理放在外层
+/// `match` 里 —— 这样各 future 返回后即被释放,避免 `server.recv()` future 与
+/// `server.send()` 在同一 `select!` 内的借用冲突。
 async fn select_event(
-    server: &mut crate::ws::Server,
+    server: &mut crate::mqtt::MqttServer,
     rx: &mut tokio::sync::mpsc::Receiver<Event>,
+    mic_btn: &mut crate::AnyBtn,
 ) -> Option<SelectResult> {
     tokio::select! {
-        Some(evt) = rx.recv() => {
-            Some(SelectResult::Event(evt))
-        },
-        Some(msg) = server.recv() => {
-            Some(SelectResult::ServerMessage(msg))
-        },
+        Some(evt) = rx.recv() => Some(SelectResult::Event(evt)),
+        Some(msg) = server.recv() => Some(SelectResult::ServerMessage(msg)),
+        _ = mic_btn.wait_for_low() => Some(SelectResult::MicPressed),
         else => None,
     }
 }
 
 pub async fn run(
     uri: String,
+    client_id: &str,
     ui: &mut crate::lcd::UI,
     mut rx: crate::audio::EventRx,
     keymaps: &KeymapConfig,
+    mut driver: Option<&mut crate::audio::Driver>,
+    asr_config: Option<&crate::audio::AsrConfig>,
+    mic_btn: &mut crate::AnyBtn,
 ) -> anyhow::Result<()> {
-    let server = crate::ws::Server::new(uri).await;
-    if server.is_err() {
-        log::error!("Server connection failed:\n{:?}", server.err());
-        ui.show_notification(ColorFormat::CSS_DARK_RED, "Failed to connect to server")?;
+    let server = crate::mqtt::MqttServer::new(&uri, client_id).await;
+    if let Err(e) = &server {
+        log::error!("MQTT broker connection failed:\n{e:?}");
+        ui.show_notification(ColorFormat::CSS_DARK_RED, "Failed to connect to MQTT")?;
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        return Err(anyhow::anyhow!("Failed to connect to server"));
+        return Err(anyhow::anyhow!("Failed to connect to MQTT broker"));
     }
-
     let mut server = server.unwrap();
-    let mut start_submit_audio = false;
 
-    while let Some(evt) = select_event(&mut server, &mut rx).await {
+    loop {
+        // 把 desired_prefix 落实为 subscribe(必须在 select 之外,不可被取消)。
+        server.flush_pending().await?;
+
+        let Some(evt) = select_event(&mut server, &mut rx, mic_btn).await else {
+            log::warn!("All event sources closed, exiting run loop");
+            break;
+        };
+
         match evt {
             SelectResult::Event(e) => match e {
-                Event::MicAudioChunk(chunk) => {
-                    if !start_submit_audio {
-                        start_submit_audio = true;
-                        log::info!("Starting to submit audio chunks to server");
-                        server
-                            .send(protocol::ClientMessage::voice_input_start(Some(16000)))
-                            .await?;
-                        // ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Voice input started")?;
-                        ui.start_input("")?;
-                    }
-                    let audio_buffer_u8 = unsafe {
-                        std::slice::from_raw_parts(chunk.as_ptr() as *const u8, chunk.len() * 2)
-                    };
-                    server
-                        .send(protocol::ClientMessage::voice_input_chunk(
-                            audio_buffer_u8.to_vec(),
-                        ))
-                        .await?;
-                }
-                Event::MicAudioChunkEnd => {
-                    start_submit_audio = false;
-                    server
-                        .send(protocol::ClientMessage::voice_input_end())
-                        .await?;
-                    ui.refresh_input_display()?;
-                }
+                // 远程模式已改为本地 ASR,音频 chunk 事件不再产生。
+                Event::MicAudioChunk(_) | Event::MicAudioChunkEnd => {}
                 Event::RotateUp => {
                     if ui.is_input_mode() {
                         ui.move_cursor_left()?;
@@ -213,13 +203,46 @@ pub async fn run(
             SelectResult::ServerMessage(msg) => match msg {
                 protocol::ServerMessage::PtyOutput(..) => {
                     log::trace!("Received PTY output, ignoring for now");
-                    continue;
                 }
                 msg => {
                     let ui_msg = lcd::UiMessage::from(msg);
                     ui.handle_message(ui_msg)?;
                 }
             },
+            SelectResult::MicPressed => {
+                if !mic_btn.is_low() {
+                    continue; // 误触发/错误,跳过
+                }
+                // 本地 ASR(复刻键盘模式):is_stop 同步读 GPIO 电平,不依赖 tokio 唤醒,
+                // 规避 ASR 同步阻塞期间 runtime 冻结导致松手检测失效。
+                let d = match (driver.as_mut(), asr_config) {
+                    (Some(d), Some(cfg)) => (d, cfg),
+                    _ => {
+                        log::warn!("MIC pressed but ASR unavailable, ignoring");
+                        let _ = mic_btn.wait_for_high().await; // 等松开,避免重复触发
+                        continue;
+                    }
+                };
+                let (d, cfg) = d;
+                let on_start_listen = || {
+                    let _ = ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Listening...");
+                };
+                match (*d).start_asr(cfg, on_start_listen, || mic_btn.is_high()) {
+                    Ok(text) if !text.trim().is_empty() => {
+                        log::info!("Local ASR result: {text}");
+                        ui.show_notification(ColorFormat::CSS_DARK_GREEN, &format!("ASR: {text}"))?;
+                        server.send(protocol::ClientMessage::Input(text)).await?;
+                    }
+                    Ok(_) => {
+                        log::info!("Local ASR returned empty");
+                        ui.show_notification(ColorFormat::CSS_DARK_RED, "ASR: (empty)")?;
+                    }
+                    Err(e) => {
+                        log::error!("Local ASR error: {e:?}");
+                        ui.show_notification(ColorFormat::CSS_DARK_RED, "ASR error")?;
+                    }
+                }
+            }
         }
     }
 
@@ -384,6 +407,7 @@ pub fn key_action_to_ansi(action: &bt_keyboard_mode::KeyAction) -> Option<Vec<u8
     }
 }
 
+#[allow(dead_code)]
 pub mod key_task {
 
     pub async fn esc_key(btn: crate::AnyBtn, tx: crate::audio::EventTx) -> anyhow::Result<()> {

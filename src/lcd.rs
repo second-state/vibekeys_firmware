@@ -784,6 +784,7 @@ impl UI {
     }
 
     /// 显示图片
+    #[allow(dead_code)]
     pub fn show_image(&mut self, data: &[u8], format: ImageFormat) -> anyhow::Result<()> {
         match format {
             ImageFormat::Png => {
@@ -828,6 +829,7 @@ impl UI {
     }
 
     /// 开始输入模式
+    #[allow(dead_code)]
     pub fn start_input(&mut self, prompt: &str) -> anyhow::Result<()> {
         self.input_mode = true;
 

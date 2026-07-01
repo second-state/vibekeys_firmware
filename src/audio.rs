@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+// 远程模式 ASR 重构后,AFE 音频管线(AudioWorker::run / afe_worker 等)不再使用
+// (改由 audio::Driver 本地录音直发 Whisper),但保留以备将来复用。
+
 use std::sync::Arc;
 
 use esp_idf_svc::hal::gpio::AnyIOPin;

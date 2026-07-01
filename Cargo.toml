@@ -60,26 +60,16 @@ image = { version = "0.25.6", default-features = false, features = [
 tokio = { version = "=1.48.0", features = [
     "net",
     "rt",
+    "sync",
     "time",
     "io-std",
     "io-util",
     "macros",
 ] }
-tokio-websockets = { version = "0.13", features = [
-    "client",
-    "fastrand",
-    "sha1_smol",
-    "rustls-webpki-roots"
-] }
-
-# rustls-rustcrypto = { git = "https://github.com/RustCrypto/rustls-rustcrypto",rev="aecee37208823f6a4ffabeb7c0a1227015b131cb" }
-# elliptic-curve = { version = "=0.14.0-rc.29", default-features = false }
-
 http = "1.3"
 
 
 futures-lite = "2.6.1"
-futures-util = { version = "0.3.31", features = ["sink"] }
 bytes = "1.11.1"
 
 [build-dependencies]

@@ -81,6 +81,9 @@ pub async fn run(
         return Err(anyhow::anyhow!("Failed to connect to MQTT broker"));
     }
     let mut server = server.unwrap();
+    // Remote 外壳:连接/首屏前的 stop 占位(收到 vibetty 屏幕后由 ui.handle_message 覆盖)。
+    let _ = crate::ui::render_remote_view(ui.display_mut(), false);
+    let mut popup = crate::ui::popup_centered(ui.display_mut());
 
     loop {
         // 把 desired_prefix 落实为 subscribe(必须在 select 之外,不可被取消)。
@@ -90,6 +93,9 @@ pub async fn run(
             log::warn!("All event sources closed, exiting run loop");
             break;
         };
+
+        // 每轮事件先关闭上一轮弹窗(增量 restore),再处理新事件
+        let _ = popup.hide(ui.display_mut());
 
         match evt {
             SelectResult::Event(e) => match e {
@@ -225,21 +231,21 @@ pub async fn run(
                 };
                 let (d, cfg) = d;
                 let on_start_listen = || {
-                    let _ = ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Listening...");
+                    let _ = popup.show(ui.display_mut(), "listening...");
                 };
                 match (*d).start_asr(cfg, on_start_listen, || mic_btn.is_high()) {
                     Ok(text) if !text.trim().is_empty() => {
                         log::info!("Local ASR result: {text}");
-                        ui.show_notification(ColorFormat::CSS_DARK_GREEN, &format!("ASR: {text}"))?;
+                        let _ = popup.show(ui.display_mut(), &format!("ASR: {text}"));
                         server.send(protocol::ClientMessage::Input(text)).await?;
                     }
                     Ok(_) => {
                         log::info!("Local ASR returned empty");
-                        ui.show_notification(ColorFormat::CSS_DARK_RED, "ASR: (empty)")?;
+                        let _ = popup.show(ui.display_mut(), "ASR: (empty)");
                     }
                     Err(e) => {
                         log::error!("Local ASR error: {e:?}");
-                        ui.show_notification(ColorFormat::CSS_DARK_RED, "ASR error")?;
+                        let _ = popup.show(ui.display_mut(), "ASR error");
                     }
                 }
             }

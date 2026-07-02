@@ -15,6 +15,7 @@ mod i2c;
 mod lcd;
 mod mqtt;
 mod protocol;
+mod ui;
 mod util;
 mod wifi;
 
@@ -169,14 +170,14 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // Rotate A
-    let pin16 = new_btn(
+    let mut pin16 = new_btn(
         peripherals.pins.gpio16.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
     // Rotate B
-    let pin17 = new_btn(
+    let mut pin17 = new_btn(
         peripherals.pins.gpio17.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -198,7 +199,7 @@ fn main() -> anyhow::Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    let setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
+    let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
     // Load keymap config before moving nvs
     let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
     log::info!("Loaded keymap config with {} keys", keymap.keys.len());
@@ -228,38 +229,41 @@ fn main() -> anyhow::Result<()> {
 
     let runtime = runtime.unwrap();
 
-    let mut mode = 3;
-
-    for i in 0..5 {
-        lcd::display_text(&mut target, format!(" <ESC> -> OTA mode\n <Accept> -> Remote Control mode\n{}s later enter Keyboard mode", 5-i).as_str(), 0).unwrap();
-
-        mode = runtime.block_on(async {
-            tokio::select! {
-                _ = btn3.wait_for_low() => {
-                    log::info!("Button ESC is pressed, Goto ota mode");
-                    0
-                },
-                _ = btn7.wait_for_low() => {
-                    log::info!("Button Accept is pressed, Starting in Remote Control mode");
-                    1
-                },
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                    log::info!("No button is pressed, Starting in normal mode");
-                    3
+    let mode = loop {
+        let choice = runtime.block_on(ui::boot_menu(
+            &mut target,
+            &mut btn7,
+            &mut btn3,
+            &mut pin16,
+            &mut pin17,
+        ));
+        match choice {
+            ui::BootChoice::Keyboard => break 3,
+            ui::BootChoice::Remote => break 1,
+            ui::BootChoice::Setting => {
+                match runtime.block_on(ui::setting_page(
+                    &mut target,
+                    &mut wifi,
+                    sysloop.clone(),
+                    &mut btn7,
+                    &mut btn3,
+                    &mut pin16,
+                    &mut pin17,
+                    &mut setting,
+                    &mut nvs,
+                )) {
+                    ui::SettingOutcome::Back => continue,
+                    ui::SettingOutcome::Ota => {
+                        lcd::display_text(&mut target, "Entering OTA...", 0)?;
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        goto_next_firmware()?;
+                    }
                 }
             }
-        });
-        if mode != 3 {
-            break;
         }
-    }
+    };
 
-    if mode == 0 {
-        log::info!("Button ESC is pressed, Goto ota mode");
-        lcd::display_text(&mut target, "Entering OTA mode...", 0)?;
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        goto_next_firmware()?;
-    } else {
+    {
         let mut ota = esp_idf_svc::ota::EspOta::new()?;
         ota.mark_running_slot_valid()?;
     }
@@ -613,7 +617,14 @@ async fn keyboard_mode_main(
     asr_config: Option<audio::AsrConfig>,
     controller: bt_keyboard_mode::ControllerService,
 ) -> ! {
+    let _ = ui::render_keyboard_view(
+        display,
+        true,
+        ble_device.get_server().connected_count() > 0,
+        "Keyboard",
+    );
     let mut keys_pressed = false;
+    let mut popup = ui::popup_centered(display);
     loop {
         let event = tokio::select! {
             // Handle setting events (e.g., reset)
@@ -651,6 +662,9 @@ async fn keyboard_mode_main(
             }
         };
 
+        // 每轮事件先关闭上一轮的弹窗(增量 restore),再处理新事件
+        let _ = popup.hide(display);
+
         if let (Some(driver), Some(asr_config)) = (driver.as_mut(), asr_config.as_ref()) {
             if matches!(
                 event,
@@ -658,16 +672,18 @@ async fn keyboard_mode_main(
             ) {
                 match driver.start_asr(
                     asr_config,
-                    || lcd::display_text(display, "start recording", 0).unwrap(),
+                    || {
+                        let _ = popup.show(display, "recording...");
+                    },
                     || key_pins.mic.is_high(),
                 ) {
                     Ok(asr) => {
-                        lcd::display_text(display, &format!("ASR:{asr}"), 0).unwrap();
+                        let _ = popup.show(display, &format!("ASR: {asr}"));
                         controller.notify_asr(&asr);
                     }
                     Err(e) => {
                         log::error!("ASR error: {:?}", e);
-                        lcd::display_text(display, &format!("ASR error: {:?}", e), 0).unwrap();
+                        let _ = popup.show(display, "ASR error");
                     }
                 }
                 continue;

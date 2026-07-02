@@ -308,6 +308,45 @@ impl GetPixel for FrameBuffer {
     }
 }
 
+impl FrameBuffer {
+    /// 只把指定矩形区域推送到 LCD(增量重绘用),不刷新整屏。
+    /// `rect` 会被裁剪到屏幕范围内。
+    pub fn flush_rect(&mut self, rect: Rectangle) -> anyhow::Result<()> {
+        let bb = self.bounding_box();
+        let r = rect.intersection(&bb);
+        if r.size.width == 0 || r.size.height == 0 {
+            return Ok(());
+        }
+        let data = self.buffers.data();
+        let x0 = r.top_left.x as usize;
+        let y0 = r.top_left.y as usize;
+        let x1 = x0 + r.size.width as usize;
+        let y1 = y0 + r.size.height as usize;
+        let w = DISPLAY_WIDTH;
+        let mut sub: Vec<u8> = Vec::with_capacity((x1 - x0) * (y1 - y0) * 2);
+        for y in y0..y1 {
+            let s = (y * w + x0) * 2;
+            let e = (y * w + x1) * 2;
+            sub.extend_from_slice(&data[s..e]);
+        }
+        let xe = r.top_left.x + r.size.width as i32;
+        let ye = r.top_left.y + r.size.height as i32;
+        for i in 0..5 {
+            let code = flush_display(&sub, r.top_left.x, r.top_left.y, xe, ye);
+            if code == 0 {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if i < 4 {
+                log::warn!("flush_rect retry {}", i + 1);
+            } else {
+                log::error!("flush_rect failed after retries, code={}", code);
+            }
+        }
+        anyhow::bail!("flush_rect failed after retries")
+    }
+}
+
 impl DisplayTargetDrive for FrameBuffer {
     fn new(color: ColorFormat) -> Self {
         let mut s = Self {
@@ -708,6 +747,11 @@ pub struct UI {
 }
 
 impl UI {
+    /// 借出底层 FrameBuffer,供外部直接绘制(如模式外壳)。
+    pub fn display_mut(&mut self) -> &mut FrameBuffer {
+        &mut self.display
+    }
+
     /// 创建新的 UI 实例
     pub fn new() -> Self {
         Self {

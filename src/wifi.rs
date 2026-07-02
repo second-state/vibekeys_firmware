@@ -49,3 +49,23 @@ pub fn connect(
 
     Ok(())
 }
+
+/// 扫描周围 WiFi,返回去重(保序)后的 ssid 列表。
+pub fn scan(
+    esp_wifi: &mut EspWifi<'static>,
+    sysloop: esp_idf_svc::eventloop::EspSystemEventLoop,
+) -> anyhow::Result<Vec<String>> {
+    let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)?;
+    // scan 需要驱动已 start;若已 start 则忽略错误
+    let _ = wifi.start();
+    let results = wifi.scan()?;
+    let mut seen = std::collections::HashSet::new();
+    let mut ssids = Vec::new();
+    for ap in results {
+        let s = ap.ssid.as_str().to_string();
+        if !s.is_empty() && seen.insert(s.clone()) {
+            ssids.push(s);
+        }
+    }
+    Ok(ssids)
+}

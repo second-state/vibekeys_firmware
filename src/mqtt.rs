@@ -17,8 +17,7 @@ use esp_idf_svc::mqtt::client::{
 
 use crate::protocol::{ClientMessage, ImageFormat, ScreenImageChunk, ServerMessage};
 
-/// 宽通配的 presence 发现 topic(匹配正好 4 段:`{user}/{device}/{pid}/vibetty`)。
-const DISCOVERY_TOPIC: &str = "+/+/+/vibetty";
+/// discovery topic 在 `MqttServer::new` 动态构造:`{user}/+/+/vibetty`,user = username 或 `root`。
 
 /// 单张 screen 重组上限,超过则丢弃防 OOM。
 const REASSEMBLY_MAX: usize = 256 * 1024;
@@ -58,8 +57,8 @@ impl MqttServer {
 
         let mut conf = MqttClientConfiguration {
             client_id: Some(client_id),
-            username: Some(&username),
-            password: Some(&password),
+            username: username.as_deref(),
+            password: password.as_deref(),
             buffer_size: 64 * 1024, // 收,需装下整张 screen
             out_buffer_size: 8 * 1024,
             keep_alive_interval: Some(Duration::from_secs(20)),
@@ -92,12 +91,19 @@ impl MqttServer {
         .await;
         wait.map_err(|_| anyhow::anyhow!("MQTT connect timeout (30s)"))?;
 
-        // Discovery:retained → 一连上立即收到所有现存实例的 presence。
+        // Discovery:订阅 `{user}/+/+/vibetty`(user = username,匿名时回退 `root`)。
+        // retained → 一连上立即收到该 user 下所有现存实例的 presence。
+        let user = username
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("root");
+        let discovery = format!("{user}/+/+/vibetty");
         client
-            .subscribe(DISCOVERY_TOPIC, QoS::AtLeastOnce)
+            .subscribe(&discovery, QoS::AtLeastOnce)
             .await
             .map_err(|e| anyhow::anyhow!("subscribe discovery failed: {e:?}"))?;
-        log::info!("Subscribed discovery topic: {DISCOVERY_TOPIC}");
+        log::info!("Subscribed discovery topic: {discovery}");
 
         Ok(Self {
             client,
@@ -329,8 +335,8 @@ fn detect_format(data: &[u8]) -> ImageFormat {
 
 struct BrokerInfo {
     broker_url: String,
-    username: String,
-    password: String,
+    username: Option<String>,
+    password: Option<String>,
     use_tls: bool,
 }
 
@@ -357,14 +363,12 @@ fn parse_broker_uri(uri: &str) -> anyhow::Result<BrokerInfo> {
 
     let (username, password) = match userinfo {
         Some(u) => match u.split_once(':') {
-            Some((user, pass)) => (user.to_string(), pass.to_string()),
-            None => (u.to_string(), String::new()),
+            Some((user, pass)) => (Some(user.to_string()), Some(pass.to_string())),
+            None => (Some(u.to_string()), None),
         },
-        None => {
-            anyhow::bail!(
-                "MQTT URI missing username:password (expected mqtt://user:pass@host:port)"
-            )
-        }
+        // 无账号(匿名 URL):username/password 都 None → CONNECT 不带凭证(真匿名)。
+        // topic 的 user 段则回退 `root`(见 MqttServer::new 的 discovery 订阅)。
+        None => (None, None),
     };
 
     let default_port = if use_tls { 8883 } else { 1883 };
@@ -399,8 +403,8 @@ mod tests {
     fn parse_mqtt_plain() {
         let i = parse_broker_uri("mqtt://alice:secret@broker.example.com:1883").unwrap();
         assert_eq!(i.broker_url, "mqtt://broker.example.com:1883");
-        assert_eq!(i.username, "alice");
-        assert_eq!(i.password, "secret");
+        assert_eq!(i.username.as_deref(), Some("alice"));
+        assert_eq!(i.password.as_deref(), Some("secret"));
         assert!(!i.use_tls);
     }
 
@@ -408,6 +412,7 @@ mod tests {
     fn parse_mqtts_default_port() {
         let i = parse_broker_uri("mqtts://bob:p@host.io").unwrap();
         assert_eq!(i.broker_url, "mqtts://host.io:8883");
+        assert_eq!(i.username.as_deref(), Some("bob"));
         assert!(i.use_tls);
     }
 
@@ -415,9 +420,18 @@ mod tests {
     fn parse_password_with_special_chars() {
         // 密码里含 '@' 会干扰 rfind('@');这里只验证无 @ 的常见情形
         let i = parse_broker_uri("mqtt://u:p-a-ss@1.2.3.4:1883").unwrap();
-        assert_eq!(i.username, "u");
-        assert_eq!(i.password, "p-a-ss");
+        assert_eq!(i.username.as_deref(), Some("u"));
+        assert_eq!(i.password.as_deref(), Some("p-a-ss"));
         assert_eq!(i.broker_url, "mqtt://1.2.3.4:1883");
+    }
+
+    #[test]
+    fn parse_anonymous_is_none() {
+        // 无 user:pass@(匿名 URL):username/password 都 None(真匿名 CONNECT)
+        let i = parse_broker_uri("mqtt://192.168.1.10:1883").unwrap();
+        assert!(i.username.is_none());
+        assert!(i.password.is_none());
+        assert_eq!(i.broker_url, "mqtt://192.168.1.10:1883");
     }
 
     #[test]

@@ -42,7 +42,7 @@ impl std::fmt::Debug for Event {
 
 enum SelectResult {
     Event(Event),
-    ServerMessage(protocol::ServerMessage),
+    Mqtt(crate::mqtt::MqttEvent),
     /// MIC 按键按下(falling edge)。
     MicPressed,
 }
@@ -57,7 +57,7 @@ async fn select_event(
 ) -> Option<SelectResult> {
     tokio::select! {
         Some(evt) = rx.recv() => Some(SelectResult::Event(evt)),
-        Some(msg) = server.recv() => Some(SelectResult::ServerMessage(msg)),
+        Some(msg) = server.recv() => Some(SelectResult::Mqtt(msg)),
         _ = mic_btn.wait_for_low() => Some(SelectResult::MicPressed),
         else => None,
     }
@@ -73,6 +73,7 @@ pub async fn run(
     asr_config: Option<&crate::audio::AsrConfig>,
     mic_btn: &mut crate::AnyBtn,
 ) -> anyhow::Result<()> {
+    log::info!("Connecting to MQTT broker at {uri} with client_id {client_id}");
     let server = crate::mqtt::MqttServer::new(&uri, client_id).await;
     if let Err(e) = &server {
         log::error!("MQTT broker connection failed:\n{e:?}");
@@ -176,19 +177,8 @@ pub async fn run(
                     }
                 }
                 Event::RotatePush => {
-                    if let Some(bytes) = keymaps
-                        .keys
-                        .get(KeymapConfig::KEY_ROTATE)
-                        .and_then(|action| key_action_to_ansi(action))
-                    {
-                        server
-                            .send(protocol::ClientMessage::PtyInput(bytes))
-                            .await?;
-                    } else {
-                        server
-                            .send(protocol::ClientMessage::PtyInput(b"/".to_vec()))
-                            .await?;
-                    }
+                    // 旋钮按下:不再发按键,改为弹出会话选择器(NEXT 切换 / ACCEPT 确认 / ESC 取消)。
+                    open_session_picker(&mut server, ui, &mut rx, &mut popup).await?;
                 }
                 Event::Custom => {
                     if let Some(bytes) = keymaps
@@ -206,13 +196,23 @@ pub async fn run(
                     }
                 }
             },
-            SelectResult::ServerMessage(msg) => match msg {
-                protocol::ServerMessage::PtyOutput(..) => {
-                    log::trace!("Received PTY output, ignoring for now");
-                }
-                msg => {
-                    let ui_msg = lcd::UiMessage::from(msg);
+            SelectResult::Mqtt(ev) => match ev {
+                crate::mqtt::MqttEvent::ActiveScreen(chunk) => {
+                    log::info!(
+                        "Received screen image chunk: {} bytes is_last:{}",
+                        chunk.data.len(),
+                        chunk.is_last
+                    );
+                    let ui_msg = lcd::UiMessage::from(protocol::ServerMessage::ScreenImage(chunk));
                     ui.handle_message(ui_msg)?;
+                }
+                crate::mqtt::MqttEvent::Presence { prefix, online } => {
+                    if online {
+                        log::info!("Session registered: {prefix}");
+                    } else {
+                        log::info!("Session went offline: {prefix}");
+                        let _ = popup.show(ui.display_mut(), "session offline");
+                    }
                 }
             },
             SelectResult::MicPressed => {
@@ -236,12 +236,12 @@ pub async fn run(
                 match (*d).start_asr(cfg, on_start_listen, || mic_btn.is_high()) {
                     Ok(text) if !text.trim().is_empty() => {
                         log::info!("Local ASR result: {text}");
-                        let _ = popup.show(ui.display_mut(), &format!("ASR: {text}"));
+                        let _ = popup.show(ui.display_mut(), &text);
                         server.send(protocol::ClientMessage::Input(text)).await?;
                     }
                     Ok(_) => {
                         log::info!("Local ASR returned empty");
-                        let _ = popup.show(ui.display_mut(), "ASR: (empty)");
+                        let _ = popup.show(ui.display_mut(), "(empty)");
                     }
                     Err(e) => {
                         log::error!("Local ASR error: {e:?}");
@@ -253,6 +253,51 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// 会话选择器:旋钮按下时弹出。NEXT 移动焦点、ACCEPT 切换活跃会话、ESC 取消。
+/// 只在 `rx` 上等按键;期间 MQTT 消息缓冲在 esp-mqtt 内部队列,短交互无碍。
+async fn open_session_picker(
+    server: &mut crate::mqtt::MqttServer,
+    ui: &mut crate::lcd::UI,
+    rx: &mut tokio::sync::mpsc::Receiver<Event>,
+    popup: &mut crate::ui::Popup,
+) -> anyhow::Result<()> {
+    let labels = server.session_labels();
+    if labels.len() <= 1 {
+        let _ = popup.show(ui.display_mut(), "no other session");
+        return Ok(());
+    }
+    let items: Vec<String> = labels.iter().map(|(_, label, _)| label.clone()).collect();
+    let mut focus = labels
+        .iter()
+        .position(|(_, _, is_active)| *is_active)
+        .unwrap_or(0);
+
+    loop {
+        let _ = crate::ui::render_list(ui.display_mut(), "Session (ESC=cancel)", &items, focus);
+        match rx.recv().await {
+            Some(Event::NEXT) => {
+                if !items.is_empty() {
+                    focus = (focus + 1) % items.len();
+                }
+            }
+            Some(Event::Accept) => {
+                let (prefix, label, _) = &labels[focus];
+                server.set_active(prefix);
+                // 让新活跃会话立刻推一帧,免得干等下一帧。
+                let _ = server.send(protocol::ClientMessage::Sync).await;
+                let _ = popup.show(ui.display_mut(), &format!("-> {label}"));
+                return Ok(());
+            }
+            Some(Event::Esc) | None => {
+                // 取消:活跃未变。发个 sync 让当前会话立即重绘一帧覆盖列表。
+                let _ = server.send(protocol::ClientMessage::Sync).await;
+                return Ok(());
+            }
+            _ => {} // 旋钮方向 / 其它键在选择器里忽略
+        }
+    }
 }
 
 /// Convert KeyAction to ANSI escape sequences for terminal input

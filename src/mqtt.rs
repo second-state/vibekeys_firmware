@@ -15,7 +15,7 @@ use esp_idf_svc::mqtt::client::{
     EspAsyncMqttClient, EspAsyncMqttConnection, MqttClientConfiguration,
 };
 
-use crate::protocol::{ClientMessage, ImageFormat, ScreenImageChunk, ServerMessage};
+use crate::protocol::{ClientMessage, ImageFormat, ScreenImageChunk};
 
 /// discovery topic 在 `MqttServer::new` 动态构造:`{user}/+/+/vibetty`,user = username 或 `root`。
 
@@ -25,21 +25,35 @@ const REASSEMBLY_MAX: usize = 256 * 1024;
 pub struct MqttServer {
     client: EspAsyncMqttClient,
     conn: EspAsyncMqttConnection,
-    /// recv 写入:当前想跟随的实例 prefix(由 presence 决定)。
-    desired_prefix: Option<String>,
-    /// flush_pending 写入:已经 subscribe 了 pty_out/screen 的实例 prefix。
+    /// 会话注册表:presence 公告得到的 prefix -> 会话元信息。
+    sessions: HashMap<String, Session>,
+    /// 用户选定的活跃会话(= screen 订阅目标 = input 发送目标)。
+    /// 当前无活跃时,首个注册会话自动激活;此后不再自动切换。
+    active: Option<String>,
+    /// 已落实 screen 订阅的实例 prefix(flush_pending 维护)。
     subscribed_prefix: Option<String>,
-    /// 多实例择优:跟随 presence ts 最大的实例。
-    presence_ts: u64,
     /// screen 分片重组缓冲,key = topic。
     reassembly: HashMap<String, Vec<u8>>,
+}
+
+/// 单个 vibetty 会话的注册信息。
+struct Session {
+    client_id: String,
+    ts: u64,
+}
+
+/// `recv()` 上报给 app 的事件。
+pub enum MqttEvent {
+    /// 活跃会话的 screen 组装完成,交给 UI 显示。
+    ActiveScreen(ScreenImageChunk),
+    /// 会话注册表变化:上线(online=true)/下线 LWT(online=false)。
+    Presence { prefix: String, online: bool },
 }
 
 /// vibetty presence 公告。
 #[derive(serde::Deserialize)]
 struct Presence {
     prefix: String,
-    #[allow(dead_code)]
     client_id: String,
     ts: u64,
 }
@@ -99,8 +113,8 @@ impl MqttServer {
             .filter(|s| !s.is_empty())
             .unwrap_or("root");
         let discovery = format!("{user}/+/+/vibetty");
-        client
-            .subscribe(&discovery, QoS::AtLeastOnce)
+        log::info!("Subscribing discovery topic: {discovery}");
+        Self::pump_cmd(&mut conn, client.subscribe(&discovery, QoS::AtLeastOnce))
             .await
             .map_err(|e| anyhow::anyhow!("subscribe discovery failed: {e:?}"))?;
         log::info!("Subscribed discovery topic: {discovery}");
@@ -108,50 +122,77 @@ impl MqttServer {
         Ok(Self {
             client,
             conn,
-            desired_prefix: None,
+            sessions: HashMap::new(),
+            active: None,
             subscribed_prefix: None,
-            presence_ts: 0,
             reassembly: HashMap::new(),
         })
     }
 
-    /// 把 `desired_prefix` 落实为 subscribe。
+    /// 把 `active` 落实为 screen 订阅。
     ///
-    /// **必须在 `select!` 之外被 await**:`client.subscribe/unsubscribe` 的 future 若被
-    /// select 中途 drop,会让 client 命令通道进入未定义状态甚至死锁。
+    /// 内部走 `pump_cmd`:命令 future 不会被中途 drop(避免污染 client 命令通道),
+    /// 同时并发排掉 conn 事件(esp-idf-svc async MQTT 的硬性要求,见 `pump_cmd`)。
     pub async fn flush_pending(&mut self) -> anyhow::Result<()> {
-        if self.desired_prefix == self.subscribed_prefix {
+        if self.active == self.subscribed_prefix {
             return Ok(());
         }
 
-        // 先退订旧实例的输出通道
+        // 先退订旧活跃会话的 screen
         if let Some(old) = self.subscribed_prefix.take() {
-            log::info!("Unsubscribing old instance output: {old}");
-            let _ = self.client.unsubscribe(&format!("{old}/pty_out")).await;
-            let _ = self.client.unsubscribe(&format!("{old}/screen")).await;
+            log::info!("Unsubscribing old session screen: {old}");
+            let _ = Self::pump_cmd(
+                &mut self.conn,
+                self.client.unsubscribe(&format!("{old}/screen")),
+            )
+            .await;
             self.reassembly.clear();
         }
 
-        // 再订阅新实例
-        if let Some(new) = self.desired_prefix.clone() {
-            log::info!("Subscribing instance output: {new}");
-            self.client
-                .subscribe(&format!("{new}/pty_out"), QoS::AtLeastOnce)
-                .await
-                .map_err(|e| anyhow::anyhow!("subscribe pty_out failed: {e:?}"))?;
-            self.client
-                .subscribe(&format!("{new}/screen"), QoS::AtLeastOnce)
-                .await
-                .map_err(|e| anyhow::anyhow!("subscribe screen failed: {e:?}"))?;
+        // 再订阅新活跃会话的 screen
+        if let Some(new) = self.active.clone() {
+            log::info!("Subscribing session screen: {new}");
+            Self::pump_cmd(
+                &mut self.conn,
+                self.client
+                    .subscribe(&format!("{new}/screen"), QoS::AtMostOnce),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("subscribe screen failed: {e:?}"))?;
             self.subscribed_prefix = Some(new);
         }
 
         Ok(())
     }
 
-    /// 阻塞等待下一条需要 app 处理的消息(presence / 连接事件在内部消化)。
+    /// esp-idf-svc 的 async MQTT 硬性要求:client 命令(subscribe/unsubscribe/publish)
+    /// 必须在与 `conn.next()` 并发排水的状态下 await。原因 —— 事件回调是带 backpressure
+    /// 的(`channel.share` 阻塞到事件被 `next()` 取走),若不排水,broker 任务会被回调
+    /// 冻住,命令进而拿不到 client 锁而**死锁**(典型现象:打了 `MQTT connected` 后卡住)。
+    ///
+    /// 这里用 pinned-select 把命令 future 跑到完成,期间排掉(并丢弃)conn 上的事件;
+    /// 命令 future 不会被中途 drop,故不会污染 client 命令通道。命令窗口很短,偶尔丢一帧
+    /// screen / 一条 presence 心跳可接受(下一帧 / 下一次 15s 心跳即恢复)。
+    async fn pump_cmd<F: std::future::Future>(
+        conn: &mut EspAsyncMqttConnection,
+        cmd: F,
+    ) -> F::Output {
+        tokio::pin!(cmd);
+        loop {
+            tokio::select! {
+                out = &mut cmd => return out,
+                ev = conn.next() => {
+                    if let Err(e) = ev {
+                        log::warn!("MQTT conn event during command: {e:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// 阻塞等待下一条需要 app 处理的事件(连接事件在内部消化)。
     /// 返回 `None` 表示连接已关闭。
-    pub async fn recv(&mut self) -> Option<ServerMessage> {
+    pub async fn recv(&mut self) -> Option<MqttEvent> {
         loop {
             // 先把事件数据拷贝成 owned,并把 `ev`(借用 self.conn)的作用域限制在内层
             // block 里 —— 否则下面 `self.reassemble_screen(&mut self)` 会与 ev 的借用冲突。
@@ -194,24 +235,41 @@ impl MqttServer {
                 None => continue,
             };
 
-            // presence:正好 4 段且以 /vibetty 结尾
+            // presence:正好 4 段且以 /vibetty 结尾。topic 本身即实例 prefix。
             if topic.matches('/').count() == 3 && topic.ends_with("/vibetty") {
                 if data.is_empty() {
                     // LWT:实例下线(空 payload = 删除 retained)
-                    log::info!("Instance offline (LWT): {topic}");
-                    if self.desired_prefix.as_deref() == Some(topic.as_str()) {
-                        self.desired_prefix = None;
+                    log::info!("Session offline (LWT): {topic}");
+                    self.sessions.remove(&topic);
+                    if self.active.as_deref() == Some(topic.as_str()) {
+                        self.active = None; // flush_pending 会退订 screen
                     }
+                    return Some(MqttEvent::Presence {
+                        prefix: topic,
+                        online: false,
+                    });
                 } else {
                     match serde_json::from_slice::<Presence>(&data) {
                         Ok(p) => {
-                            if p.ts >= self.presence_ts
-                                && self.desired_prefix.as_deref() != Some(p.prefix.as_str())
-                            {
-                                log::info!("Presence switch -> {}", p.prefix);
-                                self.desired_prefix = Some(p.prefix);
-                                self.presence_ts = p.ts;
+                            // 注册/刷新:保留已存在的 entry(不干扰进行中的重组),只更新元信息。
+                            let s = self.sessions.entry(p.prefix.clone()).or_insert(Session {
+                                client_id: p.client_id.clone(),
+                                ts: p.ts,
+                            });
+                            s.client_id = p.client_id;
+                            s.ts = p.ts;
+                            self.cap_sessions();
+
+                            // 首会话自动活跃;此后不再自动切(由用户通过旋钮弹窗手动切换)。
+                            let prefix = p.prefix;
+                            if self.active.is_none() {
+                                log::info!("Auto-activate first session: {prefix}");
+                                self.active = Some(prefix.clone());
                             }
+                            return Some(MqttEvent::Presence {
+                                prefix,
+                                online: true,
+                            });
                         }
                         Err(e) => log::warn!("Bad presence JSON: {e}"),
                     }
@@ -219,13 +277,10 @@ impl MqttServer {
                 continue;
             }
 
-            if topic.ends_with("/pty_out") {
-                return Some(ServerMessage::PtyOutput(data));
-            }
-
+            // screen:只订阅了活跃会话,组装完成的必是活跃帧。
             if topic.ends_with("/screen") {
-                if let Some(msg) = self.reassemble_screen(&topic, &data, details) {
-                    return Some(msg);
+                if let Some(chunk) = self.reassemble_screen(&topic, &data, details) {
+                    return Some(MqttEvent::ActiveScreen(chunk));
                 }
                 continue;
             }
@@ -240,7 +295,7 @@ impl MqttServer {
         topic: &str,
         data: &[u8],
         details: Details,
-    ) -> Option<ServerMessage> {
+    ) -> Option<ScreenImageChunk> {
         match details {
             Details::Complete => {
                 // buffer 非空表示之前累积过分片,拼上最后一块
@@ -251,11 +306,11 @@ impl MqttServer {
                 } else {
                     data.to_vec()
                 };
-                Some(ServerMessage::ScreenImage(ScreenImageChunk {
+                Some(ScreenImageChunk {
                     format: detect_format(&complete),
                     is_last: true,
                     data: complete,
-                }))
+                })
             }
             Details::InitialChunk(_) => {
                 let buf = self.reassembly.entry(topic.to_string()).or_default();
@@ -281,23 +336,26 @@ impl MqttServer {
 
     /// 发送按键 / 控制消息。`PtyInput` 走 `{P}/pty_in` raw;`VoiceInput*` 在 MQTT 上
     /// 不支持(无语音通道);其余走 `{P}/control` 的 JSON(serde tag 已匹配协议)。
+    /// 目标 = 用户选定的活跃会话(与 screen 订阅是否已落实无关)。
     pub async fn send(&mut self, msg: ClientMessage) -> anyhow::Result<()> {
         let prefix = self
-            .subscribed_prefix
+            .active
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("No vibetty instance subscribed yet"))?;
+            .ok_or_else(|| anyhow::anyhow!("No active vibetty session"))?;
 
         match msg {
             ClientMessage::PtyInput(bytes) => {
-                self.client
-                    .publish(
+                Self::pump_cmd(
+                    &mut self.conn,
+                    self.client.publish(
                         &format!("{prefix}/pty_in"),
                         QoS::AtLeastOnce,
                         false,
                         &bytes[..],
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("publish pty_in failed: {e:?}"))?;
+                    ),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("publish pty_in failed: {e:?}"))?;
             }
             ClientMessage::VoiceInputStart(_)
             | ClientMessage::VoiceInputChunk(_)
@@ -306,18 +364,70 @@ impl MqttServer {
             }
             other => {
                 let json = other.to_json()?;
-                self.client
-                    .publish(
+                Self::pump_cmd(
+                    &mut self.conn,
+                    self.client.publish(
                         &format!("{prefix}/control"),
                         QoS::AtLeastOnce,
                         false,
                         json.as_bytes(),
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("publish control failed: {e:?}"))?;
+                    ),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("publish control failed: {e:?}"))?;
             }
         }
         Ok(())
+    }
+
+    /// 当前已知会话列表,供选择器渲染。按 ts 升序(再按 prefix)排序,保证 NEXT 稳定。
+    /// 返回 (prefix, 显示标签, 是否活跃)。标签优先 client_id,空则回退 prefix。
+    pub fn session_labels(&self) -> Vec<(String, String, bool)> {
+        let mut entries: Vec<(&String, &Session)> = self.sessions.iter().collect();
+        entries.sort_by(|a, b| a.1.ts.cmp(&b.1.ts).then_with(|| a.0.cmp(b.0)));
+        entries
+            .into_iter()
+            .map(|(prefix, s)| {
+                let label = if s.client_id.is_empty() {
+                    prefix.clone()
+                } else {
+                    s.client_id.clone()
+                };
+                (
+                    prefix.clone(),
+                    label,
+                    self.active.as_deref() == Some(prefix.as_str()),
+                )
+            })
+            .collect()
+    }
+
+    /// 用户在弹窗里选定一个会话。仅当该 prefix 已注册才生效;
+    /// 实际的 screen 订阅切换由随后的 `flush_pending` 落实。
+    pub fn set_active(&mut self, prefix: &str) {
+        if self.sessions.contains_key(prefix) {
+            self.active = Some(prefix.to_string());
+        } else {
+            log::warn!("set_active: unknown session {prefix}, ignored");
+        }
+    }
+
+    /// 注册表上限:超过时丢弃 ts 最旧的会话,防 OOM(注册信息很小,安全兜底)。
+    fn cap_sessions(&mut self) {
+        const MAX_SESSIONS: usize = 8;
+        while self.sessions.len() > MAX_SESSIONS {
+            let oldest = self
+                .sessions
+                .iter()
+                .min_by_key(|(_, s)| s.ts)
+                .map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => {
+                    self.sessions.remove(&k);
+                }
+                None => break,
+            }
+        }
     }
 }
 

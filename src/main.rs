@@ -674,7 +674,7 @@ async fn keyboard_mode_main(
                     || key_pins.mic.is_high(),
                 ) {
                     Ok(asr) => {
-                        let _ = popup.show(display, &format!("ASR: {asr}"));
+                        let _ = popup.show(display, &asr);
                         controller.notify_asr(&asr);
                     }
                     Err(e) => {

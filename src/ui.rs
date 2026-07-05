@@ -16,7 +16,10 @@ use embedded_text::{
     style::{HeightMode, TextBoxStyleBuilder, VerticalOverdraw},
     TextBox,
 };
-use u8g2_fonts::{fonts::u8g2_font_open_iconic_all_2x_t, U8g2TextStyle};
+use u8g2_fonts::{
+    fonts::{u8g2_font_open_iconic_all_2x_t, u8g2_font_wqy12_t_gb2312},
+    U8g2TextStyle,
+};
 
 use crate::lcd::{ColorFormat, DisplayTargetDrive, FrameBuffer};
 
@@ -34,7 +37,7 @@ fn fill_rect(target: &mut FrameBuffer, rect: Rectangle, color: ColorFormat) -> a
     Ok(rect.draw_styled(&PrimitiveStyle::with_fill(color), target)?)
 }
 
-/// 在 `rect` 内画文本(支持中英)。`bg=Some` 时给文本填背景(用于焦点高亮)。
+/// 在 `rect` 内画文本(**仅 ASCII**,菜单/标签用)。`bg=Some` 时给文本填背景(用于焦点高亮)。
 fn draw_text(
     target: &mut FrameBuffer,
     text: &str,
@@ -55,6 +58,34 @@ fn draw_text(
         text,
         rect,
         MonoTextStyle::new(&FONT_7X13_BOLD, color),
+        style,
+    )
+    .draw(target)?;
+    Ok(())
+}
+
+/// 与 `draw_text` 同形,但用 u8g2 文泉驿字体(**支持中文**),给 ASR 等可能含中文的文本用。
+/// 字体缺字时 U8g2TextStyle 默认跳过(`ignore_unknown_chars`),不会乱码。
+fn draw_text_cjk(
+    target: &mut FrameBuffer,
+    text: &str,
+    rect: Rectangle,
+    color: ColorFormat,
+    bg: Option<ColorFormat>,
+    align: HorizontalAlignment,
+) -> anyhow::Result<()> {
+    if let Some(bg) = bg {
+        fill_rect(target, rect, bg)?;
+    }
+    let style = TextBoxStyleBuilder::new()
+        .alignment(align)
+        .height_mode(HeightMode::ShrinkToText(VerticalOverdraw::FullRowsOnly))
+        .line_height(LineHeight::Pixels(LINE_H))
+        .build();
+    TextBox::with_textbox_style(
+        text,
+        rect,
+        U8g2TextStyle::new(u8g2_font_wqy12_t_gb2312, color),
         style,
     )
     .draw(target)?;
@@ -405,7 +436,7 @@ fn render_setting_menu(
     flush(target)
 }
 
-fn render_list(
+pub fn render_list(
     target: &mut FrameBuffer,
     title: &str,
     items: &[String],
@@ -719,7 +750,7 @@ fn draw_popup(target: &mut FrameBuffer, rect: Rectangle, text: &str) -> anyhow::
             r.size.height.saturating_sub(4),
         ),
     );
-    draw_text(
+    draw_text_cjk(
         target,
         text,
         inner,

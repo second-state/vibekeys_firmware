@@ -200,6 +200,7 @@ enum InputEvt {
 pub enum SettingOutcome {
     Back,
     Ota,
+    ClearConfig,
 }
 
 /// 等一个输入事件。旋钮方向在返回后用 rot_a/rot_b 电平判断。
@@ -281,23 +282,8 @@ pub async fn setting_page(
                             state = SettingState::Password;
                         }
                         2 => return SettingOutcome::Ota,
-                        3 => {
-                            // 清空所有配置(wifi setting + keymap),提示后回 boot menu 重新加载
-                            let _ = clear(target, ColorFormat::CSS_BLACK);
-                            let _ = draw_text(
-                                target,
-                                "Clear all config",
-                                target.bounding_box(),
-                                ColorFormat::CSS_WHEAT,
-                                None,
-                                HorizontalAlignment::Center,
-                            );
-                            let _ = flush(target);
-                            let _ = crate::bt_wifi_mode::Setting::clear_nvs(nvs);
-                            let _ = crate::bt_keyboard_mode::KeymapConfig::clear_nvs(nvs);
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            return SettingOutcome::Back;
-                        }
+                        // 清空配置的实际动作(操作 nvs)交给 main,这里只回报意图。
+                        3 => return SettingOutcome::ClearConfig,
                         _ => {}
                     },
                     InputEvt::Esc => {

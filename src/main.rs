@@ -128,7 +128,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // NEXT
-    let btn4 = new_btn(
+    let mut btn4 = new_btn(
         peripherals.pins.gpio4.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -192,13 +192,6 @@ fn main() -> anyhow::Result<()> {
 
     let mut nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
 
-    if btn3.is_low() {
-        lcd::display_text(&mut target, "Clear all config", 0)?;
-        bt_wifi_mode::Setting::clear_nvs(&mut nvs)?;
-        bt_keyboard_mode::KeymapConfig::clear_nvs(&mut nvs)?;
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-
     let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
     // Load keymap config before moving nvs
     let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
@@ -230,13 +223,7 @@ fn main() -> anyhow::Result<()> {
     let runtime = runtime.unwrap();
 
     let mode = loop {
-        let choice = runtime.block_on(ui::boot_menu(
-            &mut target,
-            &mut btn7,
-            &mut btn3,
-            &mut pin16,
-            &mut pin17,
-        ));
+        let choice = runtime.block_on(ui::boot_menu(&mut target, &mut btn7, &mut btn3, &mut btn4));
         match choice {
             ui::BootChoice::Keyboard => break 3,
             ui::BootChoice::Remote => break 1,
@@ -247,6 +234,7 @@ fn main() -> anyhow::Result<()> {
                     sysloop.clone(),
                     &mut btn7,
                     &mut btn3,
+                    &mut btn4,
                     &mut pin16,
                     &mut pin17,
                     &mut setting,

@@ -1,7 +1,8 @@
 //! 手写 UI:开机菜单 / Setting / 各模式外壳。
 //!
 //! 基于 embedded-graphics + u8g2 中文字体,直接画到 `lcd::FrameBuffer`。
-//! vibekeys 无触屏,导航用旋钮(pin16/17)上下移动焦点、Accept(btn7)确认。
+//! vibekeys 无触屏,菜单用 Next(btn4)切换选项、Accept(btn7)确认;子列表(WiFi/密码字符)
+//! 仍可用旋钮(pin16/17)双向滚动。
 
 use embedded_graphics::{
     image::GetPixel,
@@ -101,47 +102,35 @@ const BOOT_CHOICES: [BootChoice; 3] = [
 ];
 
 enum MenuEvt {
-    Rotate,
+    Next,
     Accept,
     Esc,
 }
 
-/// 开机主菜单:旋钮上下选,Accept 进入。返回选中的模式。
+/// 开机主菜单:Next 键正向切换选项、Accept 进入、Esc 逆向。返回选中的模式。
 pub async fn boot_menu(
     target: &mut FrameBuffer,
     accept: Btn<'_>,
     esc: Btn<'_>,
-    rot_a: Btn<'_>,
-    rot_b: Btn<'_>,
+    next: Btn<'_>,
 ) -> BootChoice {
     let mut focus: usize = 0;
     let width = target.bounding_box().size.width;
+    let n = BOOT_LABELS.len();
 
     loop {
         let _ = render_boot_menu(target, focus, width);
 
-        // select 只负责等事件;读旋钮电平放到 select 之外,避免 future 与 &mut 借用冲突。
         let evt = tokio::select! {
-            _ = rot_a.wait_for_any_edge() => MenuEvt::Rotate,
+            _ = next.wait_for_low() => MenuEvt::Next,
             _ = accept.wait_for_low() => MenuEvt::Accept,
             _ = esc.wait_for_low() => MenuEvt::Esc,
         };
 
         match evt {
-            MenuEvt::Rotate => {
-                let down = rot_a.is_high() == rot_b.is_low();
-                let n = BOOT_LABELS.len();
-                focus = if down {
-                    (focus + 1) % n
-                } else {
-                    (focus + n - 1) % n
-                };
-            }
+            MenuEvt::Next => focus = (focus + 1) % n,
             MenuEvt::Accept => return BOOT_CHOICES[focus],
-            MenuEvt::Esc => {
-                let n = BOOT_LABELS.len();
-                focus = (focus + n - 1) % n;
-            }
+            MenuEvt::Esc => focus = (focus + n - 1) % n,
         }
     }
 }
@@ -205,6 +194,7 @@ enum InputEvt {
     Rotate,
     Accept,
     Esc,
+    Next,
 }
 
 pub enum SettingOutcome {
@@ -213,11 +203,13 @@ pub enum SettingOutcome {
 }
 
 /// 等一个输入事件。旋钮方向在返回后用 rot_a/rot_b 电平判断。
-async fn wait_input(rot_a: Btn<'_>, accept: Btn<'_>, esc: Btn<'_>) -> InputEvt {
+/// Next(btn4)是主菜单切换选项的主力;旋钮在子列表(WiFi/密码字符)里仍可滚动。
+async fn wait_input(rot_a: Btn<'_>, accept: Btn<'_>, esc: Btn<'_>, next: Btn<'_>) -> InputEvt {
     tokio::select! {
         _ = rot_a.wait_for_any_edge() => InputEvt::Rotate,
         _ = accept.wait_for_low() => InputEvt::Accept,
         _ = esc.wait_for_low() => InputEvt::Esc,
+        _ = next.wait_for_low() => InputEvt::Next,
     }
 }
 
@@ -241,6 +233,7 @@ pub async fn setting_page(
     sysloop: esp_idf_svc::eventloop::EspSystemEventLoop,
     accept: Btn<'_>,
     esc: Btn<'_>,
+    next: Btn<'_>,
     rot_a: Btn<'_>,
     rot_b: Btn<'_>,
     setting: &mut crate::bt_wifi_mode::Setting,
@@ -257,10 +250,12 @@ pub async fn setting_page(
         match state {
             SettingState::Menu => {
                 let _ = render_setting_menu(target, menu_focus, setting, &password);
-                match wait_input(rot_a, accept, esc).await {
-                    InputEvt::Rotate => {
-                        menu_focus = rotate_index(menu_focus, 3, rot_down(rot_a, rot_b));
+                match wait_input(rot_a, accept, esc, next).await {
+                    // 主菜单改用 Next 键切换选项;滚轮在这里不再切换(避免误触/跳格)。
+                    InputEvt::Next => {
+                        menu_focus = rotate_index(menu_focus, 4, true);
                     }
+                    InputEvt::Rotate => {}
                     InputEvt::Accept => match menu_focus {
                         0 => {
                             // 扫描 WiFi
@@ -286,6 +281,23 @@ pub async fn setting_page(
                             state = SettingState::Password;
                         }
                         2 => return SettingOutcome::Ota,
+                        3 => {
+                            // 清空所有配置(wifi setting + keymap),提示后回 boot menu 重新加载
+                            let _ = clear(target, ColorFormat::CSS_BLACK);
+                            let _ = draw_text(
+                                target,
+                                "Clear all config",
+                                target.bounding_box(),
+                                ColorFormat::CSS_WHEAT,
+                                None,
+                                HorizontalAlignment::Center,
+                            );
+                            let _ = flush(target);
+                            let _ = crate::bt_wifi_mode::Setting::clear_nvs(nvs);
+                            let _ = crate::bt_keyboard_mode::KeymapConfig::clear_nvs(nvs);
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            return SettingOutcome::Back;
+                        }
                         _ => {}
                     },
                     InputEvt::Esc => {
@@ -296,7 +308,10 @@ pub async fn setting_page(
             }
             SettingState::WifiList => {
                 let _ = render_list(target, "WiFi (ESC=back)", &ssids, wifi_focus);
-                match wait_input(rot_a, accept, esc).await {
+                match wait_input(rot_a, accept, esc, next).await {
+                    InputEvt::Next => {
+                        wifi_focus = rotate_index(wifi_focus, ssids.len(), true);
+                    }
                     InputEvt::Rotate => {
                         wifi_focus = rotate_index(wifi_focus, ssids.len(), rot_down(rot_a, rot_b));
                     }
@@ -313,7 +328,10 @@ pub async fn setting_page(
             }
             SettingState::Password => {
                 let _ = render_password(target, &password, cur_char);
-                match wait_input(rot_a, accept, esc).await {
+                match wait_input(rot_a, accept, esc, next).await {
+                    InputEvt::Next => {
+                        cur_char = rotate_index(cur_char, CHARSET.len(), true);
+                    }
                     InputEvt::Rotate => {
                         cur_char = rotate_index(cur_char, CHARSET.len(), rot_down(rot_a, rot_b));
                     }
@@ -368,6 +386,7 @@ fn render_setting_menu(
         format!("WiFi: {}", setting.ssid),
         format!("Pass: {}", pass_label),
         "OTA Update".to_string(),
+        "Clear config".to_string(),
     ];
     let item_h = LINE_H + 4;
     let start_y: i32 = 24;
@@ -466,7 +485,7 @@ fn render_password(target: &mut FrameBuffer, password: &str, focus: usize) -> an
         None,
         HorizontalAlignment::Left,
     )?;
-    // 字符轮盘:一排字符,中间高亮(= focus),旋钮/左右键滑动
+    // 字符轮盘:一排字符,中间高亮(= focus),Next 键/旋钮滑动
     let n = ((width / 16) as usize).clamp(5, 11);
     let cell_w = width / n as u32;
     let half = n / 2;

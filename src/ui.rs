@@ -170,7 +170,7 @@ fn render_boot_menu(target: &mut FrameBuffer, focus: usize, width: u32) -> anyho
     clear(target, ColorFormat::CSS_BLACK)?;
     draw_text(
         target,
-        "VibeKeys",
+        &format!("VibeKeys v{}", env!("CARGO_PKG_VERSION")),
         Rectangle::new(Point::new(4, 0), Size::new(width - 4, LINE_H + 2)),
         ColorFormat::CSS_WHEAT,
         None,

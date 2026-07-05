@@ -760,3 +760,164 @@ fn draw_popup(target: &mut FrameBuffer, rect: Rectangle, text: &str) -> anyhow::
     )?;
     Ok(())
 }
+
+// ========== ASR 文本编辑器 ==========
+//
+// 远程模式里 ASR 结果不直接发 MQTT,先进这个编辑器:文本带光标(高亮)显示,
+// 滚轮左右移光标、退格删字、再按 MIC 在光标处插入新一轮 ASR、Accept 才提交。
+// 样式与 ui.rs 弹窗一致(黑底白框),不复用 lcd::UI 那套(带麦克风状态条、风格不同)。
+// 光标高亮靠 ansi_plugin:把光标处字符包进 `\x1b[44m…\x1b[49m`,渲染时用 lcd::MyTextStyle
+// 这套「U8g2TextStyle + 背景色」桥接(纯渲染原语,不带 lcd::UI 的那一套界面)。
+
+pub struct AsrEditor {
+    text: String,
+    /// 光标位置,字符索引(不是字节),支持中文等多字节字符。
+    cursor: usize,
+}
+
+impl AsrEditor {
+    pub fn new() -> Self {
+        Self {
+            text: String::new(),
+            cursor: 0,
+        }
+    }
+
+    /// 在光标处插入一段文本,光标移到插入段之后。
+    pub fn insert_str(&mut self, s: &str) {
+        let byte_pos = self
+            .text
+            .char_indices()
+            .nth(self.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.text.len());
+        self.text.insert_str(byte_pos, s);
+        self.cursor += s.chars().count();
+    }
+
+    /// 删除光标前一个字符(按字符算,中文删一个字)。
+    pub fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let byte_pos = self
+            .text
+            .char_indices()
+            .nth(self.cursor - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        self.text.remove(byte_pos);
+        self.cursor -= 1;
+    }
+
+    pub fn move_left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    pub fn move_right(&mut self) {
+        if self.cursor < self.text.chars().count() {
+            self.cursor += 1;
+        }
+    }
+
+    /// 取走全部文本并清空(Accept 提交时用)。
+    pub fn take(&mut self) -> String {
+        self.cursor = 0;
+        std::mem::take(&mut self.text)
+    }
+
+    /// 全量重绘编辑器:清屏 → 白框 → 标题 → 正文(光标高亮)→ 底部提示。
+    pub fn render(&self, target: &mut FrameBuffer) -> anyhow::Result<()> {
+        let bb = target.bounding_box();
+        let w = bb.size.width as i32;
+        let h = bb.size.height as i32;
+
+        clear(target, ColorFormat::CSS_BLACK)?;
+
+        // 外框:内缩 2px,白色 1px 描边(与 draw_popup 同款 TUI 描边)。
+        let outer = Rectangle::new(
+            Point::new(2, 2),
+            Size::new((w - 4).max(0) as u32, (h - 4).max(0) as u32),
+        );
+        outer.draw_styled(&PrimitiveStyle::with_stroke(ColorFormat::CSS_WHITE, 1), target)?;
+
+        // 标题
+        let title_rect = Rectangle::new(
+            Point::new(4, 3),
+            Size::new((w - 8).max(0) as u32, LINE_H + 2),
+        );
+        draw_text(
+            target,
+            "ASR",
+            title_rect,
+            ColorFormat::CSS_WHEAT,
+            None,
+            HorizontalAlignment::Left,
+        )?;
+
+        // 正文区:标题下方 ~ 提示上方
+        let content_top = 3 + LINE_H as i32 + 2;
+        let hint_h = LINE_H as i32 + 4;
+        let content_h = (h - 4 - content_top - hint_h).max(LINE_H as i32) as u32;
+        let content_rect = Rectangle::new(
+            Point::new(4, content_top),
+            Size::new((w - 8).max(0) as u32, content_h),
+        );
+
+        let display = self.cursor_text();
+        let style = TextBoxStyleBuilder::new()
+            .alignment(HorizontalAlignment::Left)
+            .height_mode(HeightMode::ShrinkToText(VerticalOverdraw::FullRowsOnly))
+            .line_height(LineHeight::Pixels(LINE_H))
+            .build();
+        TextBox::with_textbox_style(
+            &display,
+            content_rect,
+            crate::lcd::MyTextStyle {
+                font_style: U8g2TextStyle::new(u8g2_font_wqy12_t_gb2312, ColorFormat::CSS_WHITE),
+                vertical_offset: 3,
+                bg_color: None,
+            },
+            style,
+        )
+        .add_plugin(crate::ansi_plugin::MyAnsiPlugin::new())
+        .draw(target)?;
+
+        // 底部提示
+        let hint_rect = Rectangle::new(
+            Point::new(4, h - 4 - LINE_H as i32 - 1),
+            Size::new((w - 8).max(0) as u32, LINE_H + 2),
+        );
+        draw_text(
+            target,
+            "Accept=Send  Esc=Cancel  Wheel=Move",
+            hint_rect,
+            ColorFormat::CSS_WHEAT,
+            None,
+            HorizontalAlignment::Left,
+        )?;
+
+        target.flush()?;
+        Ok(())
+    }
+
+    /// 把光标处字符包进 ANSI 蓝底转义;光标在末尾时补一个蓝底空格(块状光标)。
+    fn cursor_text(&self) -> String {
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut s = String::with_capacity(self.text.len() + 16);
+        for (i, c) in chars.iter().enumerate() {
+            if i == self.cursor {
+                s.push_str(&format!("\x1b[44m{}\x1b[49m", c));
+            } else {
+                s.push(*c);
+            }
+        }
+        if self.cursor >= chars.len() {
+            s.push_str("\x1b[44m \x1b[49m");
+        }
+        s
+    }
+}
+

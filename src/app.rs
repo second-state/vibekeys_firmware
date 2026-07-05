@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use embedded_graphics::prelude::WebColors;
 
 use crate::{
@@ -69,7 +72,7 @@ pub async fn run(
     ui: &mut crate::lcd::UI,
     mut rx: crate::audio::EventRx,
     keymaps: &KeymapConfig,
-    mut driver: Option<&mut crate::audio::Driver>,
+    asr_tx: std::sync::mpsc::Sender<crate::audio::AsrRequest>,
     asr_config: Option<&crate::audio::AsrConfig>,
     mic_btn: &mut crate::AnyBtn,
 ) -> anyhow::Result<()> {
@@ -85,6 +88,9 @@ pub async fn run(
     // Remote 外壳:连接/首屏前的 stop 占位(收到 vibetty 屏幕后由 ui.handle_message 覆盖)。
     let _ = crate::ui::render_remote_view(ui.display_mut(), false);
     let mut popup = crate::ui::popup_centered(ui.display_mut());
+    // ASR 文本编辑器:Some = 正在编辑(屏幕显示编辑器,不刷会话屏);None = 空闲。
+    // 用 ui::AsrEditor(ui.rs 弹窗风格),不用 lcd::UI 那套(麦克风状态条,风格不一致)。
+    let mut asr_editor: Option<crate::ui::AsrEditor> = None;
 
     loop {
         // 把 desired_prefix 落实为 subscribe(必须在 select 之外,不可被取消)。
@@ -103,22 +109,26 @@ pub async fn run(
                 // 远程模式已改为本地 ASR,音频 chunk 事件不再产生。
                 Event::MicAudioChunk(_) | Event::MicAudioChunkEnd => {}
                 Event::RotateUp => {
-                    if ui.is_input_mode() {
-                        ui.move_cursor_left()?;
+                    if let Some(e) = asr_editor.as_mut() {
+                        e.move_left();
+                        e.render(ui.display_mut())?;
                     } else {
                         server.send(protocol::ClientMessage::ScrollUp).await?;
                     }
                 }
                 Event::RotateDown => {
-                    if ui.is_input_mode() {
-                        ui.move_cursor_right()?;
+                    if let Some(e) = asr_editor.as_mut() {
+                        e.move_right();
+                        e.render(ui.display_mut())?;
                     } else {
                         server.send(protocol::ClientMessage::ScrollDown).await?;
                     }
                 }
                 Event::Esc => {
-                    if ui.is_input_mode() {
-                        ui.clear_input()?;
+                    if asr_editor.is_some() {
+                        // 放弃编辑,回屏幕。
+                        asr_editor = None;
+                        let _ = server.send(protocol::ClientMessage::Sync).await;
                     } else {
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x1b]))
@@ -126,9 +136,16 @@ pub async fn run(
                     }
                 }
                 Event::Accept => {
-                    if ui.is_input_mode() {
-                        let input = ui.take_waiting_input_prompt();
-                        server.send(protocol::ClientMessage::Input(input)).await?;
+                    if let Some(mut e) = asr_editor.take() {
+                        let input = e.take();
+                        let trimmed = input.trim_end();
+                        if !trimmed.is_empty() {
+                            server
+                                .send(protocol::ClientMessage::Input(trimmed.to_string()))
+                                .await?;
+                        }
+                        // 退出编辑后要一帧把屏幕刷回来(编辑期间 ActiveScreen 被排空了)。
+                        let _ = server.send(protocol::ClientMessage::Sync).await;
                     } else {
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x0d]))
@@ -136,6 +153,9 @@ pub async fn run(
                     }
                 }
                 Event::NEXT => {
+                    if asr_editor.is_some() {
+                        continue; // 编辑 ASR 文本时忽略这些键
+                    }
                     if let Some(bytes) = keymaps
                         .keys
                         .get(KeymapConfig::KEY_NEXT)
@@ -152,8 +172,9 @@ pub async fn run(
                     }
                 }
                 Event::Backspace => {
-                    if ui.is_input_mode() {
-                        ui.delete_char_before_cursor()?;
+                    if let Some(e) = asr_editor.as_mut() {
+                        e.backspace();
+                        e.render(ui.display_mut())?;
                     } else {
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x08]))
@@ -161,6 +182,9 @@ pub async fn run(
                     }
                 }
                 Event::SwitchMode => {
+                    if asr_editor.is_some() {
+                        continue; // 编辑 ASR 文本时忽略这些键
+                    }
                     if let Some(bytes) = keymaps
                         .keys
                         .get(KeymapConfig::KEY_SWITCH)
@@ -177,10 +201,16 @@ pub async fn run(
                     }
                 }
                 Event::RotatePush => {
+                    if asr_editor.is_some() {
+                        continue; // 编辑 ASR 文本时忽略这些键
+                    }
                     // 旋钮按下:不再发按键,改为弹出会话选择器(NEXT 切换 / ACCEPT 确认 / ESC 取消)。
                     open_session_picker(&mut server, ui, &mut rx, &mut popup).await?;
                 }
                 Event::Custom => {
+                    if asr_editor.is_some() {
+                        continue; // 编辑 ASR 文本时忽略这些键
+                    }
                     if let Some(bytes) = keymaps
                         .keys
                         .get(KeymapConfig::KEY_CUSTOM)
@@ -198,13 +228,22 @@ pub async fn run(
             },
             SelectResult::Mqtt(ev) => match ev {
                 crate::mqtt::MqttEvent::ActiveScreen(chunk) => {
-                    log::info!(
-                        "Received screen image chunk: {} bytes is_last:{}",
-                        chunk.data.len(),
-                        chunk.is_last
-                    );
-                    let ui_msg = lcd::UiMessage::from(protocol::ServerMessage::ScreenImage(chunk));
-                    ui.handle_message(ui_msg)?;
+                    if asr_editor.is_some() {
+                        // 编辑 ASR 文本期间不刷屏,避免覆盖编辑器;只排空保活。
+                        log::debug!(
+                            "Draining screen chunk ({}B) while in ASR editor",
+                            chunk.data.len()
+                        );
+                    } else {
+                        log::info!(
+                            "Received screen image chunk: {} bytes is_last:{}",
+                            chunk.data.len(),
+                            chunk.is_last
+                        );
+                        let ui_msg =
+                            lcd::UiMessage::from(protocol::ServerMessage::ScreenImage(chunk));
+                        ui.handle_message(ui_msg)?;
+                    }
                 }
                 crate::mqtt::MqttEvent::Presence { prefix, online } => {
                     if online {
@@ -219,25 +258,67 @@ pub async fn run(
                 if !mic_btn.is_low() {
                     continue; // 误触发/错误,跳过
                 }
-                // 本地 ASR(复刻键盘模式):is_stop 同步读 GPIO 电平,不依赖 tokio 唤醒,
-                // 规避 ASR 同步阻塞期间 runtime 冻结导致松手检测失效。
-                let d = match (driver.as_mut(), asr_config) {
-                    (Some(d), Some(cfg)) => (d, cfg),
-                    _ => {
-                        log::warn!("MIC pressed but ASR unavailable, ignoring");
+                // ASR 跑在独立 OS 线程(见 main.rs 的 asr-worker):Whisper 流式录音 + 网络往返
+                // 耗时数十秒,绝不能阻塞本 async 任务(否则 single-thread runtime 冻死 →
+                // MQTT conn.next() 不被 poll → backpressure 冻死 broker task →
+                // "No PING_RESP, disconnected")。这里只发请求、收结果,select! 里继续排水
+                // server.recv() 保活 MQTT,松手时置 cancel 打断录音。
+                let cfg = match asr_config {
+                    Some(c) => c.clone(),
+                    None => {
+                        log::warn!("MIC pressed but ASR not configured, ignoring");
                         let _ = mic_btn.wait_for_high().await; // 等松开,避免重复触发
                         continue;
                     }
                 };
-                let (d, cfg) = d;
-                let on_start_listen = || {
-                    let _ = popup.show(ui.display_mut(), "listening...");
+                let (otx, orx) = tokio::sync::oneshot::channel();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let _ = popup.show(ui.display_mut(), "listening...");
+                let req = crate::audio::AsrRequest {
+                    config: cfg,
+                    cancel: cancel.clone(),
+                    respond: otx,
                 };
-                match (*d).start_asr(cfg, on_start_listen, || mic_btn.is_high()) {
+                if asr_tx.send(req).is_err() {
+                    // worker 线程没起来 / 已退出。
+                    let _ = popup.show(ui.display_mut(), "ASR unavailable");
+                    let _ = mic_btn.wait_for_high().await;
+                    continue;
+                }
+
+                let mut released = false;
+                let mut conn_dead = false;
+                tokio::pin!(orx);
+                let asr_result = loop {
+                    tokio::select! {
+                        biased;
+                        r = &mut orx => break r.unwrap_or_else(|_| {
+                            Err(anyhow::anyhow!("ASR worker dropped request"))
+                        }),
+                        _ = mic_btn.wait_for_high(), if !released => {
+                            released = true;
+                            cancel.store(true, Ordering::Relaxed);
+                        }
+                        // 仅排水保活:不更新 UI,避免覆盖 listening 弹窗。
+                        // 连接已断时禁用本分支,免得 recv() 持续返回 None 空转。
+                        ev = server.recv(), if !conn_dead => {
+                            if ev.is_none() {
+                                conn_dead = true;
+                            }
+                        }
+                    }
+                };
+
+                match asr_result {
                     Ok(text) if !text.trim().is_empty() => {
                         log::info!("Local ASR result: {text}");
-                        let _ = popup.show(ui.display_mut(), &text);
-                        server.send(protocol::ClientMessage::Input(text)).await?;
+                        // 进 ASR 编辑模式:关掉 listening 弹窗,把文本插入光标处,末尾默认补一个空格,
+                        // 然后用 ui::AsrEditor(ui.rs 弹窗风格)重绘。
+                        let _ = popup.hide(ui.display_mut());
+                        let t = text.trim();
+                        let e = asr_editor.get_or_insert_with(crate::ui::AsrEditor::new);
+                        e.insert_str(&format!("{t} "));
+                        e.render(ui.display_mut())?;
                     }
                     Ok(_) => {
                         log::info!("Local ASR returned empty");

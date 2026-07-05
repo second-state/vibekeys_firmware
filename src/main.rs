@@ -479,9 +479,39 @@ fn main() -> anyhow::Result<()> {
         din: peripherals.pins.gpio40.into(),
         in_mclk: None,
     };
-    let mut driver = audio::Driver::new(worker)
+    let driver = audio::Driver::new(worker)
         .map_err(|e| log::error!("Failed to create audio driver: {e:?}"))
         .ok();
+
+    log::info!("start ASR worker thread");
+    log_heap();
+
+    // ASR 跑在独立 OS 线程上,栈 64KB(与主任务一致,够跑 Whisper HTTP+TLS 流式录音;
+    // tokio::spawn_blocking 的池线程栈太小会溢出)。Driver 由该线程独占,app_fut 通过
+    // channel 发请求/收结果,避免长阻塞冻死 async runtime 上的 MQTT keepalive。
+    // app_fut 结束 → asr_tx drop → channel 关闭 → worker 的 recv() 返回 Err → 线程退出。
+    let (asr_tx, asr_rx) = std::sync::mpsc::channel::<audio::AsrRequest>();
+    if let Err(e) = std::thread::Builder::new()
+        .name("asr-worker".to_string())
+        .stack_size(1024 * 16)
+        .spawn(move || {
+            let mut driver = driver;
+            while let Ok(req) = asr_rx.recv() {
+                let r = match driver.as_mut() {
+                    Some(d) => d.start_asr(
+                        &req.config,
+                        || {},
+                        || req.cancel.load(std::sync::atomic::Ordering::Relaxed),
+                    ),
+                    None => Err(anyhow::anyhow!("audio driver unavailable")),
+                };
+                let _ = req.respond.send(r);
+            }
+            log::info!("ASR worker thread exited");
+        })
+    {
+        log::error!("Failed to spawn ASR worker thread: {e:?}");
+    }
 
     lcd::display_text(&mut target, "Connecting the Server...", 0)?;
 
@@ -493,7 +523,7 @@ fn main() -> anyhow::Result<()> {
         &mut ui,
         rx,
         &keymap,
-        driver.as_mut(),
+        asr_tx,
         asr_config.as_ref(),
         &mut btn0,
     );

@@ -341,6 +341,17 @@ impl AsrConfig {
     }
 }
 
+/// `app_fut` → ASR worker 线程的一次识别请求。
+///
+/// ASR(Whisper 流式录音 + 网络往返)是长阻塞调用,不能跑在 single-thread async
+/// runtime 上(会冻死 MQTT keepalive)。worker 是独立 std::thread,持有 Driver,
+/// 通过这个结构收命令、用 oneshot 回结果。`cancel` 让 app_fut 在松手时打断录音。
+pub struct AsrRequest {
+    pub config: AsrConfig,
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    pub respond: tokio::sync::oneshot::Sender<anyhow::Result<String>>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct AsrResult {
     #[serde(default)]

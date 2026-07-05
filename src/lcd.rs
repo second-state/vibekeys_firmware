@@ -948,6 +948,7 @@ impl UI {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn is_input_mode(&self) -> bool {
         self.input_mode
     }
@@ -978,6 +979,7 @@ impl UI {
     }
 
     /// 向左移动光标
+    #[allow(dead_code)]
     pub fn move_cursor_left(&mut self) -> anyhow::Result<()> {
         if self.asr_cursor_pos > 0 {
             self.asr_cursor_pos -= 1;
@@ -987,6 +989,7 @@ impl UI {
     }
 
     /// 向右移动光标
+    #[allow(dead_code)]
     pub fn move_cursor_right(&mut self) -> anyhow::Result<()> {
         let max_pos = self.asr_input.chars().count();
         if self.asr_cursor_pos < max_pos {
@@ -996,6 +999,7 @@ impl UI {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn delete_char_before_cursor(&mut self) -> anyhow::Result<()> {
         if self.asr_cursor_pos > 0 {
             // 将字符索引转换为字节索引（支持中文等多字节字符）
@@ -1013,6 +1017,7 @@ impl UI {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn clear_input(&mut self) -> anyhow::Result<()> {
         self.input_mode = false;
         self.asr_input.clear();
@@ -1021,6 +1026,7 @@ impl UI {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn take_waiting_input_prompt(&mut self) -> String {
         self.asr_cursor_pos = 0;
         self.input_mode = false;

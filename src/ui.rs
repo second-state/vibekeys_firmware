@@ -116,6 +116,12 @@ fn flush(target: &mut FrameBuffer) -> anyhow::Result<()> {
     target.flush()
 }
 
+/// 显示一帧 JPEG 屏幕帧(直接刷 LCD,等价 `lcd::display_jpeg`)。
+/// 放在 ui.rs 便于 app.rs 与 popup 等统一从 `ui::` 调用。
+pub fn display_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
+    crate::lcd::display_jpeg(jpeg)
+}
+
 // ========== 开机菜单 ==========
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -700,9 +706,9 @@ impl Popup {
     }
 }
 
-/// 便捷构造:按屏幕 bounding_box 居中弹窗。
-pub fn popup_centered(target: &FrameBuffer) -> Popup {
-    Popup::new_centered(target.bounding_box())
+/// 便捷构造:按给定 bounding_box 居中弹窗(调用方传 `fb.bounding_box()`)。
+pub fn popup_centered(bb: Rectangle) -> Popup {
+    Popup::new_centered(bb)
 }
 
 fn backup_rect(target: &FrameBuffer, rect: Rectangle) -> Vec<ColorFormat> {

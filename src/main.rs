@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use embedded_graphics::prelude::WebColors;
+use embedded_graphics::prelude::{Dimensions, WebColors};
 use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver};
 
 use crate::lcd::DisplayTargetDrive;
@@ -14,6 +14,7 @@ mod bt_wifi_mode;
 mod i2c;
 mod lcd;
 mod mqtt;
+mod new_jpg;
 mod protocol;
 mod ui;
 mod util;
@@ -650,7 +651,7 @@ async fn keyboard_mode_main(
         "Keyboard",
     );
     let mut keys_pressed = false;
-    let mut popup = ui::popup_centered(display);
+    let mut popup = ui::popup_centered(display.bounding_box());
     loop {
         let event = tokio::select! {
             // Handle setting events (e.g., reset)

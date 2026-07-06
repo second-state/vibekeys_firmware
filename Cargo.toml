@@ -84,8 +84,3 @@ bindings_module = "esp_sr"
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/esp_new_jpeg", version = "^1.0.0" }
 bindings_header = "components/esp_new_jpeg/bindgen.h"
-
-[[package.metadata.esp-idf-sys.extra_components]]
-component_dirs = ["components/pngel"]
-bindings_header = "components/pngel/wrapper.h"
-bindings_module = "pngel"

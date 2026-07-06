@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use embedded_graphics::prelude::WebColors;
+use embedded_graphics::prelude::{Dimensions, WebColors};
 
 use crate::{
     bt_keyboard_mode::{self, KeymapConfig},
-    lcd::{self, ColorFormat},
+    lcd::ColorFormat,
     protocol::{self},
 };
 
@@ -87,7 +87,7 @@ pub async fn run(
     let mut server = server.unwrap();
     // Remote 外壳:连接/首屏前的 stop 占位(收到 vibetty 屏幕后由 ui.handle_message 覆盖)。
     let _ = crate::ui::render_remote_view(ui.display_mut(), false);
-    let mut popup = crate::ui::popup_centered(ui.display_mut());
+    let mut popup = crate::ui::popup_centered(ui.display_mut().bounding_box());
     // ASR 文本编辑器:Some = 正在编辑(屏幕显示编辑器,不刷会话屏);None = 空闲。
     // 用 ui::AsrEditor(ui.rs 弹窗风格),不用 lcd::UI 那套(麦克风状态条,风格不一致)。
     let mut asr_editor: Option<crate::ui::AsrEditor> = None;
@@ -236,15 +236,12 @@ pub async fn run(
                             "Draining screen chunk ({}B) while in ASR editor",
                             chunk.data.len()
                         );
+                    } else if matches!(chunk.format, protocol::ImageFormat::Jpeg) {
+                        log::info!("Received screen image: {} bytes (jpeg)", chunk.data.len());
+                        crate::ui::display_jpeg(&chunk.data)?;
                     } else {
-                        log::info!(
-                            "Received screen image chunk: {} bytes is_last:{}",
-                            chunk.data.len(),
-                            chunk.is_last
-                        );
-                        let ui_msg =
-                            lcd::UiMessage::from(protocol::ServerMessage::ScreenImage(chunk));
-                        ui.handle_message(ui_msg)?;
+                        log::warn!("Unsupported screen format: {:?}, only JPEG", chunk.format);
+                        let _ = popup.show(ui.display_mut(), "Only JPEG is supported");
                     }
                 }
                 crate::mqtt::MqttEvent::Presence { prefix, online } => {

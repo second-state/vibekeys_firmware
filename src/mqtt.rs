@@ -1,7 +1,10 @@
 //! MQTT 传输:对接 vibetty 的 MQTT 桥接协议。
 //!
-//! 与旧 `ws::Server` 暴露相同的 `send(ClientMessage)` / `recv() -> Option<ServerMessage>`
-//! 接口,内部封装:broker 连接、presence 服务发现、按 topic 分发、screen 分片重组。
+//! 内部用 esp-idf-svc 的**回调式**客户端 `EspMqttClient::new_cb`:MQTT 事件在 broker 的
+//! 内部 task 上以回调投递,回调里把事件数据拷成 owned 后丢进一条 tokio channel,
+//! `recv()` 在 app_fut 上从 channel 收。这样彻底绕开旧 async 客户端那套「`conn.next()`
+//! 必须与命令并发排水、否则 backpressure 冻死 broker task」的硬性要求 —— 命令
+//! (subscribe/publish/unsubscribe)现在是同步调用,不需要 pump,也不会死锁。
 //!
 //! 协议契约见 `vibetty/docs/esp32-mqtt-integration.md`。实例前缀
 //! `P = {user}/{device}/{pid}/vibetty`,其中 device(PC 机器指纹)与 pid(每次重启变)
@@ -11,9 +14,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use embedded_svc::mqtt::client::{Details, EventPayload, QoS};
-use esp_idf_svc::mqtt::client::{
-    EspAsyncMqttClient, EspAsyncMqttConnection, MqttClientConfiguration,
-};
+use esp_idf_svc::mqtt::client::{EspMqttClient, MqttClientConfiguration};
+use tokio::sync::mpsc;
 
 use crate::protocol::{ClientMessage, ImageFormat, ScreenImageChunk};
 
@@ -22,9 +24,25 @@ use crate::protocol::{ClientMessage, ImageFormat, ScreenImageChunk};
 /// 单张 screen 重组上限,超过则丢弃防 OOM。
 const REASSEMBLY_MAX: usize = 256 * 1024;
 
+/// 回调(broker 内部 task)→ app_fut 之间传递的事件。
+///
+/// `EspMqttEvent` 借用 broker 内部缓冲,只在回调内有效;所以回调里先把 topic/data 拷成
+/// owned 再 `tx.send`,跨线程 / 跨 `.await` 才安全。用无界 channel:回调里的 `send`
+/// 永不阻塞,绝不会反过来冻死 broker task(代价是消费端要记得排水,ASR 期间就在做)。
+enum RawEvent {
+    Connected,
+    Disconnected,
+    Received {
+        topic: String,
+        data: Vec<u8>,
+        details: Details,
+    },
+}
+
 pub struct MqttServer {
-    client: EspAsyncMqttClient,
-    conn: EspAsyncMqttConnection,
+    client: EspMqttClient<'static>,
+    /// 回调 → app_fut 的事件队列。
+    rx: mpsc::UnboundedReceiver<RawEvent>,
     /// 会话注册表:presence 公告得到的 prefix -> 会话元信息。
     sessions: HashMap<String, Session>,
     /// 用户选定的活跃会话(= screen 订阅目标 = input 发送目标)。
@@ -58,6 +76,17 @@ struct Presence {
     ts: u64,
 }
 
+/// 等首条 `Connected`(带超时)。单独成函数以 `&mut rx` 借用,等完归还 rx 给 `Self`。
+async fn wait_first_connected(rx: &mut mpsc::UnboundedReceiver<RawEvent>) {
+    loop {
+        match rx.recv().await {
+            Some(RawEvent::Connected) => return,
+            Some(_) => continue,
+            None => return,
+        }
+    }
+}
+
 impl MqttServer {
     /// `uri` 形如 `mqtt://user:pass@host:port` 或 `mqtts://user:pass@host:port`。
     /// `client_id` 需在 broker 内唯一(调用方用 MAC 等稳定来源生成)。
@@ -85,25 +114,40 @@ impl MqttServer {
             conf.crt_bundle_attach = Some(esp_idf_svc::sys::esp_crt_bundle_attach);
         }
 
-        let (mut client, mut conn) = EspAsyncMqttClient::new(&broker_url, &conf)
-            .map_err(|e| anyhow::anyhow!("EspAsyncMqttClient::new failed: {e:?}"))?;
-
-        // esp-mqtt 连接在内部 task 异步建立,必须等到 Connected 再 subscribe。
-        let wait = tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                match conn.next().await {
-                    Ok(ev) => {
-                        if let EventPayload::Connected(session_present) = ev.payload() {
-                            log::info!("MQTT connected (session_present={session_present})");
-                            return;
-                        }
-                    }
-                    Err(e) => log::warn!("MQTT conn event error before connect: {e:?}"),
-                }
+        // 回调式客户端:broker 内部 task 每收到事件就回调,回调里把 owned 数据丢进 tokio channel。
+        let (tx, mut rx) = mpsc::unbounded_channel::<RawEvent>();
+        let mut client = EspMqttClient::new_cb(&broker_url, &conf, move |ev| match ev.payload() {
+            EventPayload::Connected(session_present) => {
+                log::info!("MQTT connected (session_present={session_present})");
+                let _ = tx.send(RawEvent::Connected);
             }
+            EventPayload::Disconnected => {
+                log::warn!("MQTT disconnected");
+                let _ = tx.send(RawEvent::Disconnected);
+            }
+            EventPayload::Received {
+                topic,
+                data,
+                details,
+                ..
+            } => {
+                let _ = tx.send(RawEvent::Received {
+                    topic: topic.unwrap_or("").to_string(),
+                    data: data.to_vec(),
+                    details,
+                });
+            }
+            EventPayload::Error(e) => log::error!("MQTT event error: {e:?}"),
+            other => log::debug!("MQTT event: {other:?}"),
         })
-        .await;
-        wait.map_err(|_| anyhow::anyhow!("MQTT connect timeout (30s)"))?;
+        .map_err(|e| anyhow::anyhow!("EspMqttClient::new_cb failed: {e:?}"))?;
+
+        // 等首个 Connected(超时 30s,保留「broker 连不上快速失败」的反馈;连不上 app 会重启)。
+        let connected =
+            tokio::time::timeout(Duration::from_secs(30), wait_first_connected(&mut rx)).await;
+        if connected.is_err() {
+            return Err(anyhow::anyhow!("MQTT connect timeout (30s)"));
+        }
 
         // Discovery:订阅 `{user}/+/+/vibetty`(user = username,匿名时回退 `root`)。
         // retained → 一连上立即收到该 user 下所有现存实例的 presence。
@@ -114,14 +158,13 @@ impl MqttServer {
             .unwrap_or("root");
         let discovery = format!("{user}/+/+/vibetty");
         log::info!("Subscribing discovery topic: {discovery}");
-        Self::pump_cmd(&mut conn, client.subscribe(&discovery, QoS::AtLeastOnce))
-            .await
+        client
+            .subscribe(&discovery, QoS::AtLeastOnce)
             .map_err(|e| anyhow::anyhow!("subscribe discovery failed: {e:?}"))?;
-        log::info!("Subscribed discovery topic: {discovery}");
 
         Ok(Self {
             client,
-            conn,
+            rx,
             sessions: HashMap::new(),
             active: None,
             subscribed_prefix: None,
@@ -129,10 +172,8 @@ impl MqttServer {
         })
     }
 
-    /// 把 `active` 落实为 screen 订阅。
-    ///
-    /// 内部走 `pump_cmd`:命令 future 不会被中途 drop(避免污染 client 命令通道),
-    /// 同时并发排掉 conn 事件(esp-idf-svc async MQTT 的硬性要求,见 `pump_cmd`)。
+    /// 把 `active` 落实为 screen 订阅。回调式客户端下 subscribe/unsubscribe 是同步调用,
+    /// 不再需要像旧 async 客户端那样并发排水 conn 事件。
     pub async fn flush_pending(&mut self) -> anyhow::Result<()> {
         if self.active == self.subscribed_prefix {
             return Ok(());
@@ -141,98 +182,35 @@ impl MqttServer {
         // 先退订旧活跃会话的 screen
         if let Some(old) = self.subscribed_prefix.take() {
             log::info!("Unsubscribing old session screen: {old}");
-            let _ = Self::pump_cmd(
-                &mut self.conn,
-                self.client.unsubscribe(&format!("{old}/screen")),
-            )
-            .await;
+            let _ = self.client.unsubscribe(&format!("{old}/screen"));
             self.reassembly.clear();
         }
 
         // 再订阅新活跃会话的 screen
         if let Some(new) = self.active.clone() {
             log::info!("Subscribing session screen: {new}");
-            Self::pump_cmd(
-                &mut self.conn,
-                self.client
-                    .subscribe(&format!("{new}/screen"), QoS::AtMostOnce),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("subscribe screen failed: {e:?}"))?;
+            self.client
+                .subscribe(&format!("{new}/screen"), QoS::AtMostOnce)
+                .map_err(|e| anyhow::anyhow!("subscribe screen failed: {e:?}"))?;
             self.subscribed_prefix = Some(new);
         }
 
         Ok(())
     }
 
-    /// esp-idf-svc 的 async MQTT 硬性要求:client 命令(subscribe/unsubscribe/publish)
-    /// 必须在与 `conn.next()` 并发排水的状态下 await。原因 —— 事件回调是带 backpressure
-    /// 的(`channel.share` 阻塞到事件被 `next()` 取走),若不排水,broker 任务会被回调
-    /// 冻住,命令进而拿不到 client 锁而**死锁**(典型现象:打了 `MQTT connected` 后卡住)。
-    ///
-    /// 这里用 pinned-select 把命令 future 跑到完成,期间排掉(并丢弃)conn 上的事件;
-    /// 命令 future 不会被中途 drop,故不会污染 client 命令通道。命令窗口很短,偶尔丢一帧
-    /// screen / 一条 presence 心跳可接受(下一帧 / 下一次 15s 心跳即恢复)。
-    async fn pump_cmd<F: std::future::Future>(
-        conn: &mut EspAsyncMqttConnection,
-        cmd: F,
-    ) -> F::Output {
-        tokio::pin!(cmd);
-        loop {
-            tokio::select! {
-                out = &mut cmd => return out,
-                ev = conn.next() => {
-                    if let Err(e) = ev {
-                        log::warn!("MQTT conn event during command: {e:?}");
-                    }
-                }
-            }
-        }
-    }
-
-    /// 阻塞等待下一条需要 app 处理的事件(连接事件在内部消化)。
-    /// 返回 `None` 表示连接已关闭。
+    /// 阻塞等待下一条需要 app 处理的事件(连接 / 断开在内部消化)。
+    /// 返回 `None` 表示事件队列已关闭(client 已销毁)。
     pub async fn recv(&mut self) -> Option<MqttEvent> {
         loop {
-            // 先把事件数据拷贝成 owned,并把 `ev`(借用 self.conn)的作用域限制在内层
-            // block 里 —— 否则下面 `self.reassemble_screen(&mut self)` 会与 ev 的借用冲突。
-            let received: Option<(String, Vec<u8>, Details)> = {
-                let ev = match self.conn.next().await {
-                    Ok(ev) => ev,
-                    Err(e) => {
-                        log::error!("MQTT conn.next() error: {e:?}");
-                        return None;
-                    }
-                };
-                match ev.payload() {
-                    EventPayload::Received {
-                        topic,
-                        data,
-                        details,
-                        ..
-                    } => Some((topic.unwrap_or("").to_string(), data.to_vec(), details)),
-                    EventPayload::Connected(sp) => {
-                        log::info!("MQTT (re)connected, session={sp}");
-                        None
-                    }
-                    EventPayload::Disconnected => {
-                        log::warn!("MQTT disconnected");
-                        None
-                    }
-                    EventPayload::Error(e) => {
-                        log::error!("MQTT event error: {e:?}");
-                        None
-                    }
-                    other => {
-                        log::debug!("MQTT event: {other:?}");
-                        None
-                    }
-                }
-            };
-
-            let (topic, data, details) = match received {
-                Some(r) => r,
-                None => continue,
+            // 从 tokio channel 取一条已拷成 owned 的事件。
+            let (topic, data, details) = match self.rx.recv().await? {
+                RawEvent::Connected => continue,
+                RawEvent::Disconnected => continue,
+                RawEvent::Received {
+                    topic,
+                    data,
+                    details,
+                } => (topic, data, details),
             };
 
             // presence:正好 4 段且以 /vibetty 结尾。topic 本身即实例 prefix。
@@ -337,6 +315,8 @@ impl MqttServer {
     /// 发送按键 / 控制消息。`PtyInput` 走 `{P}/pty_in` raw;`VoiceInput*` 在 MQTT 上
     /// 不支持(无语音通道);其余走 `{P}/control` 的 JSON(serde tag 已匹配协议)。
     /// 目标 = 用户选定的活跃会话(与 screen 订阅是否已落实无关)。
+    /// 用 `enqueue`(只入队,broker task 异步发),避免 `publish` 在网络拥塞时同步阻塞
+    /// app_fut(单线程 runtime,不能卡)。
     pub async fn send(&mut self, msg: ClientMessage) -> anyhow::Result<()> {
         let prefix = self
             .active
@@ -345,17 +325,14 @@ impl MqttServer {
 
         match msg {
             ClientMessage::PtyInput(bytes) => {
-                Self::pump_cmd(
-                    &mut self.conn,
-                    self.client.publish(
+                self.client
+                    .enqueue(
                         &format!("{prefix}/pty_in"),
                         QoS::AtLeastOnce,
                         false,
                         &bytes[..],
-                    ),
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("publish pty_in failed: {e:?}"))?;
+                    )
+                    .map_err(|e| anyhow::anyhow!("enqueue pty_in failed: {e:?}"))?;
             }
             ClientMessage::VoiceInputStart(_)
             | ClientMessage::VoiceInputChunk(_)
@@ -364,17 +341,14 @@ impl MqttServer {
             }
             other => {
                 let json = other.to_json()?;
-                Self::pump_cmd(
-                    &mut self.conn,
-                    self.client.publish(
+                self.client
+                    .enqueue(
                         &format!("{prefix}/control"),
                         QoS::AtLeastOnce,
                         false,
                         json.as_bytes(),
-                    ),
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("publish control failed: {e:?}"))?;
+                    )
+                    .map_err(|e| anyhow::anyhow!("enqueue control failed: {e:?}"))?;
             }
         }
         Ok(())
@@ -507,7 +481,6 @@ fn parse_broker_uri(uri: &str) -> anyhow::Result<BrokerInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn parse_mqtt_plain() {

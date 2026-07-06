@@ -176,9 +176,11 @@ pub async fn run(
                         e.backspace();
                         e.render(ui.display_mut())?;
                     } else {
+                        let now = std::time::Instant::now();
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x08]))
                             .await?;
+                        log::info!("Backspace sent, took {} ms", now.elapsed().as_millis());
                     }
                 }
                 Event::SwitchMode => {

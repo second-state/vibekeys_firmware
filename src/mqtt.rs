@@ -325,10 +325,11 @@ impl MqttServer {
 
         match msg {
             ClientMessage::PtyInput(bytes) => {
+                log::info!("Sending pty_in {bytes:?} ");
                 self.client
                     .enqueue(
                         &format!("{prefix}/pty_in"),
-                        QoS::AtLeastOnce,
+                        QoS::AtMostOnce,
                         false,
                         &bytes[..],
                     )

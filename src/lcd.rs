@@ -574,12 +574,187 @@ mod new_jpg {
     }
 }
 
+mod pngel {
+    //! PNG 解码:pngle + 内置 C miniz(比 image/miniz_oxide 快)。
+    //! 结构镜像 new_jpg:RAII 解码句柄 + RGB565 输出 buffer + 一次性解码入口。
+    //! pngle 回调给的是 RGBA8888,在回调里一行位运算转 RGB565 LE 直出,和 esp_jpeg
+    //! 的 RGB565_LE 对齐,flush_display 直接吃。
+
+    use super::flush_display;
+    use core::ffi::c_void;
+    use esp_idf_svc::sys::pngel::*;
+    use std::ffi::CStr;
+
+    /// 回调里透过 pngle_get_user_data 取回的解码状态:输出 RGB565 buffer + 显示宽高。
+    struct DecodeState {
+        buf: *mut u8,
+        disp_w: u32,
+        disp_h: u32,
+    }
+
+    /// pngle 解码句柄的 RAII 包装(对应 new_jpg::JpegDecoder)。
+    struct PngleDecoder {
+        handle: *mut pngle_t,
+    }
+
+    impl PngleDecoder {
+        fn new() -> anyhow::Result<Self> {
+            // pngle_new 在 OOM 时返回 NULL。
+            let handle = unsafe { pngle_new() };
+            if handle.is_null() {
+                return Err(anyhow::anyhow!("pngle_new returned null (OOM?)"));
+            }
+            Ok(PngleDecoder { handle })
+        }
+    }
+
+    impl Drop for PngleDecoder {
+        fn drop(&mut self) {
+            if !self.handle.is_null() {
+                unsafe { pngle_destroy(self.handle) };
+            }
+        }
+    }
+
+    /// 解码后的 RGB565 LE 输出 buffer(对应 new_jpg::JpegBuffer)。
+    pub struct PngBuffer {
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+    }
+
+    impl PngBuffer {
+        /// 把整张 RGB565 直接刷到 LCD(和 esp_jpeg 的 flush_to_lcd 一致)。
+        pub fn flush_to_lcd(&self) -> i32 {
+            flush_display(&self.data, 0, 0, self.width as i32, self.height as i32)
+        }
+    }
+
+    /// pngle 逐像素回调:RGBA8888 → RGB565 LE,写进 DecodeState.buf 的 (x,y) 位置。
+    /// 越界像素(图片比显示区大)直接丢弃。w/h>1 表示「同色填充该矩形」(仅隔行 PNG
+    /// 才出现,pngle 不支持 Adam7,实际都是 1×1)。
+    unsafe extern "C" fn draw_cb(
+        pngle: *mut pngle_t,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        rgba: *const u8,
+    ) {
+        let st = pngle_get_user_data(pngle) as *mut DecodeState;
+        if st.is_null() {
+            return;
+        }
+        let r = *rgba.add(0) as u16;
+        let g = *rgba.add(1) as u16;
+        let b = *rgba.add(2) as u16;
+        // RGB565: R5 G6 B5
+        let c: u16 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+        let lo = (c & 0xFF) as u8;
+        let hi = (c >> 8) as u8;
+
+        let disp_w = (*st).disp_w;
+        let disp_h = (*st).disp_h;
+        let buf = (*st).buf;
+        for ry in 0..h {
+            let py = y + ry;
+            if py >= disp_h {
+                break;
+            }
+            for rx in 0..w {
+                let px = x + rx;
+                if px >= disp_w {
+                    break;
+                }
+                let idx = ((py * disp_w + px) * 2) as usize;
+                *buf.add(idx) = lo;
+                *buf.add(idx + 1) = hi;
+            }
+        }
+    }
+
+    /// 一次性把整段 PNG 解成一张显示尺寸的 RGB565 buffer。
+    /// 尺寸沿用 new_jpg 的 clipper 配置(max2: 320×168,否则 288×80),保证 flush
+    /// 行为与 JPEG 路径完全一致。
+    pub fn pngle_decode_one_picture(data: &[u8]) -> anyhow::Result<PngBuffer> {
+        let (disp_w, disp_h) = if cfg!(feature = "max2") {
+            (320u32, 168u32)
+        } else {
+            (288u32, 80u32)
+        };
+
+        let mut buf: Vec<u8> = vec![0u8; (disp_w as usize) * (disp_h as usize) * 2];
+        let mut state = DecodeState {
+            buf: buf.as_mut_ptr(),
+            disp_w,
+            disp_h,
+        };
+
+        let decoder = PngleDecoder::new()?;
+        unsafe {
+            pngle_set_user_data(
+                decoder.handle,
+                &mut state as *mut DecodeState as *mut c_void,
+            );
+            pngle_set_draw_callback(decoder.handle, Some(draw_cb));
+
+            // pngle_feed 返回「吃掉的字节数」;<0 出错,0 还想要更多数据。
+            let mut off: usize = 0;
+            while off < data.len() {
+                let n = pngle_feed(
+                    decoder.handle,
+                    data[off..].as_ptr() as *const c_void,
+                    data.len() - off,
+                );
+                if n < 0 {
+                    let msg = {
+                        let p = pngle_error(decoder.handle);
+                        if p.is_null() {
+                            "unknown".to_string()
+                        } else {
+                            CStr::from_ptr(p).to_string_lossy().into_owned()
+                        }
+                    };
+                    return Err(anyhow::anyhow!("pngle decode failed: {msg}"));
+                }
+                if n == 0 {
+                    return Err(anyhow::anyhow!(
+                        "pngle decode: truncated PNG (feed wanted more data)"
+                    ));
+                }
+                off += n as usize;
+            }
+        }
+        // decoder Drop 在此释放 pngle 句柄;buf 已被回调填满,移交给 PngBuffer。
+
+        Ok(PngBuffer {
+            data: buf,
+            width: disp_w,
+            height: disp_h,
+        })
+    }
+}
+
 pub fn display_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
     let jpeg_buffer = new_jpg::esp_jpeg_decode_one_picture(jpeg)?;
     let e = jpeg_buffer.flush_to_lcd();
     if e != 0 {
         return Err(anyhow::anyhow!(
             "Failed to flush JPEG to LCD: error code {}",
+            e
+        ));
+    }
+    Ok(())
+}
+
+/// PNG 解码(pngle + C miniz)→ RGB565 直出 → 刷 LCD。镜像 display_jpeg。
+/// 旧的 image+draw_rgb888 路径保留在 show_image / draw_rgb888,便于回退对比。
+pub fn display_png_pngle(png: &[u8]) -> anyhow::Result<()> {
+    let buf = pngel::pngle_decode_one_picture(png)?;
+    let e = buf.flush_to_lcd();
+    if e != 0 {
+        return Err(anyhow::anyhow!(
+            "Failed to flush PNG to LCD: error code {}",
             e
         ));
     }
@@ -807,16 +982,16 @@ impl UI {
 
         match format {
             ImageFormat::Png => {
-                let img_reader = image::ImageReader::with_format(
-                    std::io::Cursor::new(data),
-                    image::ImageFormat::Png,
-                );
-                let img = img_reader.decode()?.to_rgb8();
-                self.draw_rgb888(&img)?;
-                self.display.flush()?;
+                // pngle + C miniz 解码,RGB565 直出(比 image/miniz_oxide 快)。
+                // 旧 image + draw_rgb888 路径保留在 show_image / draw_rgb888。
+                let now = std::time::Instant::now();
+                display_png_pngle(data)?;
+                log::info!("display_png_pngle took {} ms", now.elapsed().as_millis());
             }
             ImageFormat::Jpeg => {
+                let now = std::time::Instant::now();
                 display_jpeg(data)?;
+                log::info!("display_jpeg took {} ms", now.elapsed().as_millis());
             }
             ImageFormat::Gif => {
                 // GIF 动画处理可以在这里扩展

@@ -327,13 +327,13 @@ impl MqttServer {
             ClientMessage::PtyInput(bytes) => {
                 log::info!("Sending pty_in {bytes:?} ");
                 self.client
-                    .enqueue(
+                    .publish(
                         &format!("{prefix}/pty_in"),
                         QoS::AtMostOnce,
                         false,
                         &bytes[..],
                     )
-                    .map_err(|e| anyhow::anyhow!("enqueue pty_in failed: {e:?}"))?;
+                    .map_err(|e| anyhow::anyhow!("publish pty_in failed: {e:?}"))?;
             }
             ClientMessage::VoiceInputStart(_)
             | ClientMessage::VoiceInputChunk(_)
@@ -343,13 +343,13 @@ impl MqttServer {
             other => {
                 let json = other.to_json()?;
                 self.client
-                    .enqueue(
+                    .publish(
                         &format!("{prefix}/control"),
                         QoS::AtLeastOnce,
                         false,
                         json.as_bytes(),
                     )
-                    .map_err(|e| anyhow::anyhow!("enqueue control failed: {e:?}"))?;
+                    .map_err(|e| anyhow::anyhow!("publish control failed: {e:?}"))?;
             }
         }
         Ok(())

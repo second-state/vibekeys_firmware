@@ -249,9 +249,9 @@ fn main() -> anyhow::Result<()> {
                         goto_next_firmware()?;
                     }
                     ui::SettingOutcome::ClearConfig => {
-                        lcd::display_text(&mut target, "Clear all config", 0)?;
                         bt_wifi_mode::Setting::clear_nvs(&mut nvs)?;
                         bt_keyboard_mode::KeymapConfig::clear_nvs(&mut nvs)?;
+                        lcd::display_text(&mut target, "Clear all config", 0)?;
                         std::thread::sleep(std::time::Duration::from_secs(1));
                         // 清空后重启:让(已清空的)配置重新加载,避免继续用内存里的旧值。
                         esp_idf_svc::hal::reset::restart();

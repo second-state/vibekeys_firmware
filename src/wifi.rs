@@ -56,7 +56,12 @@ pub fn scan(
     sysloop: esp_idf_svc::eventloop::EspSystemEventLoop,
 ) -> anyhow::Result<Vec<String>> {
     let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)?;
-    // scan 需要驱动已 start;若已 start 则忽略错误
+    // scan 只能在 STA 模式下进行。EspWifi 默认/上次可能是 softAP,
+    // 直接 start 会以 AP 模式起来 -> scan 返回 ESP_FAIL。先强制切到 Client。
+    wifi.set_configuration(&esp_idf_svc::wifi::Configuration::Client(
+        esp_idf_svc::wifi::ClientConfiguration::default(),
+    ))?;
+    // scan 需要驱动已 start;若已 start(同次会话二次扫描)则忽略 already-started。
     let _ = wifi.start();
     let results = wifi.scan()?;
     let mut seen = std::collections::HashSet::new();

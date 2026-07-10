@@ -317,12 +317,32 @@ pub async fn setting_page(
                                 HorizontalAlignment::Center,
                             );
                             let _ = flush(target);
-                            ssids = crate::wifi::scan(wifi, sysloop.clone()).unwrap_or_default();
-                            if ssids.is_empty() {
-                                ssids.push("(none)".to_string());
+                            match crate::wifi::scan(wifi, sysloop.clone()) {
+                                Ok(found) => {
+                                    ssids = found;
+                                    if ssids.is_empty() {
+                                        ssids.push("(none)".to_string());
+                                    }
+                                    wifi_focus = 0;
+                                    state = SettingState::WifiList;
+                                }
+                                Err(e) => {
+                                    // 扫描失败:原来 unwrap_or_default 会吞掉错误,这里把
+                                    // 错误信息画出来便于排查,等一个按键后回菜单(不进列表)。
+                                    log::error!("WiFi scan failed: {e:?}");
+                                    let _ = clear(target, ColorFormat::CSS_BLACK);
+                                    let _ = draw_text(
+                                        target,
+                                        &format!("Scan failed:\n{e}"),
+                                        target.bounding_box(),
+                                        ColorFormat::CSS_RED,
+                                        None,
+                                        HorizontalAlignment::Left,
+                                    );
+                                    let _ = flush(target);
+                                    let _ = wait_input(rot_a, accept, esc, next, backspace).await;
+                                }
                             }
-                            wifi_focus = 0;
-                            state = SettingState::WifiList;
                         }
                         1 => {
                             cur_char = 0;
@@ -877,7 +897,10 @@ impl AsrEditor {
             Point::new(2, 2),
             Size::new((w - 4).max(0) as u32, (h - 4).max(0) as u32),
         );
-        outer.draw_styled(&PrimitiveStyle::with_stroke(ColorFormat::CSS_WHITE, 1), target)?;
+        outer.draw_styled(
+            &PrimitiveStyle::with_stroke(ColorFormat::CSS_WHITE, 1),
+            target,
+        )?;
 
         // 标题
         let title_rect = Rectangle::new(
@@ -956,4 +979,3 @@ impl AsrEditor {
         s
     }
 }
-

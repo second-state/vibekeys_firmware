@@ -3,3 +3,8 @@
 /target
 
 .env
+
+# build artifacts & logs — never commit (logs may contain secrets)
+*.bin
+*.bk
+*.log

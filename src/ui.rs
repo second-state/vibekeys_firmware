@@ -222,8 +222,12 @@ const CHARSET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum SettingState {
     Menu,
-    WifiList,
-    Password,
+    /// 已配置的 wifi_list(+ 尾部 <Add>)。
+    WifiCreds,
+    /// 从扫描结果里挑一个 ssid(用于新增)。
+    ScanPicker,
+    /// 字符轮编辑某条 cred 的密码。
+    PassEditor,
 }
 
 #[derive(Copy, Clone)]
@@ -276,8 +280,7 @@ fn rot_down(rot_a: &crate::AnyBtn, rot_b: &crate::AnyBtn) -> bool {
 
 pub async fn setting_page(
     target: &mut FrameBuffer,
-    wifi: &mut esp_idf_svc::wifi::EspWifi<'static>,
-    sysloop: esp_idf_svc::eventloop::EspSystemEventLoop,
+    scan_list: &[String],
     accept: Btn<'_>,
     esc: Btn<'_>,
     next: Btn<'_>,
@@ -287,106 +290,108 @@ pub async fn setting_page(
     setting: &mut crate::bt_wifi_mode::Setting,
     nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
 ) -> SettingOutcome {
+    use crate::bt_wifi_mode::{Setting as BtSetting, WifiCred, MAX_WIFI_CREDS};
+
     let mut state = SettingState::Menu;
     let mut menu_focus: usize = 0;
-    let mut wifi_focus: usize = 0;
-    let mut ssids: Vec<String> = Vec::new();
-    let mut password: String = setting.pass.clone();
+    let mut cred_focus: usize = 0; // WifiCreds 列表焦点(含尾部 <Add>)
+    let mut scan_focus: usize = 0; // ScanPicker 焦点
+    // None=新增,Some(i)=正在编辑 wifi_list[i]。
+    let mut cur_editing: Option<usize> = None;
+    let mut pending_ssid: String = String::new();
+    let mut password: String = String::new();
     let mut cur_char: usize = 0;
 
     loop {
         match state {
             SettingState::Menu => {
-                let _ = render_setting_menu(target, menu_focus, setting, &password);
+                let _ = render_setting_menu(target, menu_focus, setting);
                 match wait_input(rot_a, accept, esc, next, backspace).await {
                     // 主菜单改用 Next 键切换选项;滚轮在这里不再切换(避免误触/跳格)。
-                    InputEvt::Next => {
-                        menu_focus = rotate_index(menu_focus, 4, true);
-                    }
+                    InputEvt::Next => menu_focus = rotate_index(menu_focus, 3, true),
                     InputEvt::Rotate => {}
                     InputEvt::Accept => match menu_focus {
                         0 => {
-                            // 扫描 WiFi
-                            let _ = clear(target, ColorFormat::CSS_BLACK);
-                            let _ = draw_text(
-                                target,
-                                "Scanning WiFi...",
-                                target.bounding_box(),
-                                ColorFormat::CSS_WHEAT,
-                                None,
-                                HorizontalAlignment::Center,
-                            );
-                            let _ = flush(target);
-                            match crate::wifi::scan(wifi, sysloop.clone()) {
-                                Ok(found) => {
-                                    ssids = found;
-                                    if ssids.is_empty() {
-                                        ssids.push("(none)".to_string());
-                                    }
-                                    wifi_focus = 0;
-                                    state = SettingState::WifiList;
-                                }
-                                Err(e) => {
-                                    // 扫描失败:原来 unwrap_or_default 会吞掉错误,这里把
-                                    // 错误信息画出来便于排查,等一个按键后回菜单(不进列表)。
-                                    log::error!("WiFi scan failed: {e:?}");
-                                    let _ = clear(target, ColorFormat::CSS_BLACK);
-                                    let _ = draw_text(
-                                        target,
-                                        &format!("Scan failed:\n{e}"),
-                                        target.bounding_box(),
-                                        ColorFormat::CSS_RED,
-                                        None,
-                                        HorizontalAlignment::Left,
-                                    );
-                                    let _ = flush(target);
-                                    let _ = wait_input(rot_a, accept, esc, next, backspace).await;
-                                }
-                            }
+                            cred_focus = cred_focus.min(cred_entry_count(setting).saturating_sub(1));
+                            state = SettingState::WifiCreds;
                         }
-                        1 => {
-                            cur_char = 0;
-                            state = SettingState::Password;
-                        }
-                        2 => return SettingOutcome::Ota,
+                        1 => return SettingOutcome::Ota,
                         // 清空配置的实际动作(操作 nvs)交给 main,这里只回报意图。
-                        3 => return SettingOutcome::ClearConfig,
+                        2 => return SettingOutcome::ClearConfig,
                         _ => {}
                     },
-                    InputEvt::Esc => {
-                        save_wifi_config(setting, &password, nvs);
-                        return SettingOutcome::Back;
-                    }
+                    // 每条 cred 的增删改都即时落盘,Esc 直接返回即可。
+                    InputEvt::Esc => return SettingOutcome::Back,
                     InputEvt::Backspace => {}
                 }
             }
-            SettingState::WifiList => {
-                let _ = render_list(target, "WiFi (ESC=back)", &ssids, wifi_focus);
+            SettingState::WifiCreds => {
+                let labels = cred_labels(setting);
+                let count = labels.len();
+                let _ = render_list(target, "WiFi (ESC=back BkSp=del)", &labels, cred_focus);
                 match wait_input(rot_a, accept, esc, next, backspace).await {
-                    InputEvt::Next => {
-                        wifi_focus = rotate_index(wifi_focus, ssids.len(), true);
-                    }
+                    InputEvt::Next => cred_focus = rotate_index(cred_focus, count, true),
                     InputEvt::Rotate => {
-                        wifi_focus = rotate_index(wifi_focus, ssids.len(), rot_down(rot_a, rot_b));
+                        cred_focus = rotate_index(cred_focus, count, rot_down(rot_a, rot_b));
                     }
                     InputEvt::Accept => {
-                        let picked = ssids[wifi_focus].clone();
-                        if picked != "(none)" {
-                            setting.ssid = picked;
-                            let _ = nvs.set_str("ssid", &setting.ssid);
+                        if cred_focus >= setting.wifi_list.len() {
+                            // <Add>:进扫描选择器挑一个 ssid。
+                            scan_focus = 0;
+                            state = SettingState::ScanPicker;
+                        } else {
+                            // 编辑已有:载入它的 ssid/pass 进 PassEditor。
+                            cur_editing = Some(cred_focus);
+                            pending_ssid = setting.wifi_list[cred_focus].ssid.clone();
+                            password = setting.wifi_list[cred_focus].pass.clone();
+                            cur_char = 0;
+                            state = SettingState::PassEditor;
                         }
-                        state = SettingState::Menu;
+                    }
+                    InputEvt::Backspace => {
+                        // 删除当前 cred(对 <Add> 项无效)。
+                        if cred_focus < setting.wifi_list.len() {
+                            setting.wifi_list.remove(cred_focus);
+                            if let Err(e) = BtSetting::save_wifi_list(nvs, &setting.wifi_list) {
+                                log::error!("Failed to save wifi_list: {:?}", e);
+                            }
+                            if cred_focus > 0 {
+                                cred_focus -= 1;
+                            }
+                        }
                     }
                     InputEvt::Esc => state = SettingState::Menu,
-                    InputEvt::Backspace => {}
                 }
             }
-            SettingState::Password => {
-                let _ = render_password(target, &password, cur_char);
+            SettingState::ScanPicker => {
+                let count = scan_list.len();
+                let _ = render_list(target, "Pick network (ESC=back)", scan_list, scan_focus);
                 match wait_input(rot_a, accept, esc, next, backspace).await {
-                    InputEvt::Next => {
-                        cur_char = rotate_index(cur_char, CHARSET.len(), true);
+                    InputEvt::Next => scan_focus = rotate_index(scan_focus, count, true),
+                    InputEvt::Rotate => {
+                        scan_focus = rotate_index(scan_focus, count, rot_down(rot_a, rot_b));
                     }
+                    InputEvt::Accept => {
+                        if count > 0 {
+                            let picked = scan_list[scan_focus].clone();
+                            // 已存在同 ssid 则改成编辑它,避免重复条目。
+                            cur_editing = setting.wifi_list.iter().position(|c| c.ssid == picked);
+                            pending_ssid = picked;
+                            password = match cur_editing {
+                                Some(i) => setting.wifi_list[i].pass.clone(),
+                                None => String::new(),
+                            };
+                            cur_char = 0;
+                            state = SettingState::PassEditor;
+                        }
+                    }
+                    InputEvt::Esc | InputEvt::Backspace => state = SettingState::WifiCreds,
+                }
+            }
+            SettingState::PassEditor => {
+                let _ = render_password(target, &pending_ssid, &password, cur_char);
+                match wait_input(rot_a, accept, esc, next, backspace).await {
+                    InputEvt::Next => cur_char = rotate_index(cur_char, CHARSET.len(), true),
                     InputEvt::Rotate => {
                         cur_char = rotate_index(cur_char, CHARSET.len(), rot_down(rot_a, rot_b));
                     }
@@ -400,9 +405,30 @@ pub async fn setting_page(
                         password.pop();
                     }
                     InputEvt::Esc => {
-                        setting.pass = password.clone();
-                        let _ = nvs.set_str("pass", &setting.pass);
-                        state = SettingState::Menu;
+                        // 提交:更新已有 / 新增一条。
+                        match cur_editing {
+                            Some(i) if i < setting.wifi_list.len() => {
+                                setting.wifi_list[i].ssid = pending_ssid.clone();
+                                setting.wifi_list[i].pass = password.clone();
+                            }
+                            _ if setting.wifi_list.len() < MAX_WIFI_CREDS => {
+                                setting.wifi_list.push(WifiCred {
+                                    ssid: pending_ssid.clone(),
+                                    pass: password.clone(),
+                                });
+                            }
+                            _ => {}
+                        }
+                        if let Err(e) = BtSetting::save_wifi_list(nvs, &setting.wifi_list) {
+                            log::error!("Failed to save wifi_list: {:?}", e);
+                        }
+                        // 回到 cred 列表,焦点回到刚编辑/新增的那条。
+                        cred_focus = cur_editing
+                            .unwrap_or(setting.wifi_list.len().saturating_sub(1));
+                        cur_editing = None;
+                        pending_ssid.clear();
+                        password.clear();
+                        state = SettingState::WifiCreds;
                     }
                 }
             }
@@ -410,21 +436,29 @@ pub async fn setting_page(
     }
 }
 
-fn save_wifi_config(
-    setting: &mut crate::bt_wifi_mode::Setting,
-    password: &str,
-    nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
-) {
-    setting.pass = password.to_string();
-    let _ = nvs.set_str("pass", &setting.pass);
-    let _ = nvs.set_str("ssid", &setting.ssid);
+/// WifiCreds 列表条目数(含尾部 <Add>,达到上限时没有 <Add>)。
+fn cred_entry_count(setting: &crate::bt_wifi_mode::Setting) -> usize {
+    let n = setting.wifi_list.len();
+    if n < crate::bt_wifi_mode::MAX_WIFI_CREDS {
+        n + 1
+    } else {
+        n
+    }
+}
+
+/// WifiCreds 列表显示文本:各 cred 的 ssid + 尾部 <Add>(达到上限时无)。
+fn cred_labels(setting: &crate::bt_wifi_mode::Setting) -> Vec<String> {
+    let mut v: Vec<String> = setting.wifi_list.iter().map(|c| c.ssid.clone()).collect();
+    if v.len() < crate::bt_wifi_mode::MAX_WIFI_CREDS {
+        v.push("<Add>".to_string());
+    }
+    v
 }
 
 fn render_setting_menu(
     target: &mut FrameBuffer,
     focus: usize,
     setting: &crate::bt_wifi_mode::Setting,
-    password: &str,
 ) -> anyhow::Result<()> {
     let width = target.bounding_box().size.width;
     clear(target, ColorFormat::CSS_BLACK)?;
@@ -436,14 +470,8 @@ fn render_setting_menu(
         None,
         HorizontalAlignment::Center,
     )?;
-    let pass_label = if password.is_empty() {
-        "(none)".to_string()
-    } else {
-        "*".repeat(password.len())
-    };
     let items = [
-        format!("WiFi: {}", setting.ssid),
-        format!("Pass: {}", pass_label),
+        format!("WiFi networks ({})", setting.wifi_list.len()),
         "OTA Update".to_string(),
         "Clear config".to_string(),
     ];
@@ -484,7 +512,9 @@ pub fn render_list(
     items: &[String],
     focus: usize,
 ) -> anyhow::Result<()> {
-    let width = target.bounding_box().size.width;
+    let bb = target.bounding_box();
+    let width = bb.size.width;
+    let height = bb.size.height;
     clear(target, ColorFormat::CSS_BLACK)?;
     draw_text(
         target,
@@ -496,9 +526,18 @@ pub fn render_list(
     )?;
     let item_h = LINE_H + 2;
     let start_y: i32 = 18;
+    // 视口行数;start 直接由 focus 推出(focus 滚过首页后整页跟随),
+    // 不另存窗口变量。上下双向滚动对称。
+    let visible = (((height as i32) - start_y) / (item_h as i32)).max(1) as usize;
+    let start = focus.saturating_sub(visible.saturating_sub(1));
+
     for (i, label) in items.iter().enumerate() {
+        if i < start {
+            continue;
+        }
+        let row = i - start;
         let rect = Rectangle::new(
-            Point::new(0, start_y + (i as i32) * (item_h as i32)),
+            Point::new(0, start_y + (row as i32) * (item_h as i32)),
             Size::new(width, item_h),
         );
         if i == focus {
@@ -525,12 +564,18 @@ pub fn render_list(
     flush(target)
 }
 
-fn render_password(target: &mut FrameBuffer, password: &str, focus: usize) -> anyhow::Result<()> {
+fn render_password(
+    target: &mut FrameBuffer,
+    header: &str,
+    password: &str,
+    focus: usize,
+) -> anyhow::Result<()> {
     let width = target.bounding_box().size.width;
+    let height = target.bounding_box().size.height;
     clear(target, ColorFormat::CSS_BLACK)?;
     draw_text(
         target,
-        "Password BkSp=del ESC=ok",
+        header,
         Rectangle::new(Point::new(4, 0), Size::new(width - 4, LINE_H + 2)),
         ColorFormat::CSS_WHEAT,
         None,
@@ -590,6 +635,16 @@ fn render_password(target: &mut FrameBuffer, password: &str, focus: usize) -> an
             )?;
         }
     }
+    // 底部操作提示(贴底,不与字符轮重叠)。
+    let hint_y = (height as i32) - LINE_H as i32 - 2;
+    draw_text(
+        target,
+        "BkSp=del ESC=ok",
+        Rectangle::new(Point::new(4, hint_y), Size::new(width - 4, LINE_H + 2)),
+        ColorFormat::CSS_WHEAT,
+        None,
+        HorizontalAlignment::Left,
+    )?;
     flush(target)
 }
 

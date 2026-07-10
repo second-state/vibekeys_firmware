@@ -206,6 +206,19 @@ fn main() -> anyhow::Result<()> {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
 
+    let scan_list = match wifi::scan(&mut wifi, sysloop.clone()) {
+        Ok(list) => list,
+        Err(e) => {
+            log::error!("Failed to scan WiFi networks: {:?}", e);
+            lcd::display_text(
+                &mut target,
+                &format!("Failed to scan WiFi networks:\n{:?}", e),
+                0,
+            )?;
+            vec![]
+        }
+    };
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build();
@@ -231,8 +244,7 @@ fn main() -> anyhow::Result<()> {
             ui::BootChoice::Setting => {
                 match runtime.block_on(ui::setting_page(
                     &mut target,
-                    &mut wifi,
-                    sysloop.clone(),
+                    &scan_list,
                     &mut btn7,
                     &mut btn3,
                     &mut btn4,
@@ -335,7 +347,17 @@ fn main() -> anyhow::Result<()> {
 
         let mut driver: Option<audio::Driver> = None;
 
-        let r = wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone());
+        // 用 boot 阶段的扫描结果与已配置 wifi_list 匹配,挑当前在范围内的网络连接。
+        let r = match bt_wifi_mode::pick_cred(&scan_list, &setting.wifi_list) {
+            Some(c) => wifi::connect(&mut wifi, &c.ssid, &c.pass, sysloop.clone()),
+            None => {
+                log::error!(
+                    "No known WiFi network in range (scan_list has {})",
+                    scan_list.len()
+                );
+                anyhow::Result::<()>::Err(anyhow::anyhow!("no known network in range"))
+            }
+        };
         if r.is_err() {
             let e = r.err();
             log::error!("Failed to connect to WiFi: {:?}", e);
@@ -451,7 +473,17 @@ fn main() -> anyhow::Result<()> {
 
     lcd::display_text(&mut target, "Connecting the WiFi...", 0)?;
 
-    let r = wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone());
+    // 用 boot 阶段的扫描结果与已配置 wifi_list 匹配,挑当前在范围内的网络连接。
+    let r = match bt_wifi_mode::pick_cred(&scan_list, &setting.wifi_list) {
+        Some(c) => wifi::connect(&mut wifi, &c.ssid, &c.pass, sysloop.clone()),
+        None => {
+            log::error!(
+                "No known WiFi network in range (scan_list has {})",
+                scan_list.len()
+            );
+            anyhow::Result::<()>::Err(anyhow::anyhow!("no known network in range"))
+        }
+    };
     if r.is_err() {
         log::error!("Failed to connect to WiFi: {:?}", r.err());
         lcd::display_text(&mut target, " WiFi connection failed\n", 0)?;
@@ -572,7 +604,7 @@ fn handle_reset_event(
 
     log::info!(
         "Received Reset from BLE, SSID:{}, SERVER_URL:{}, restarting",
-        lock.0.ssid,
+        lock.0.wifi_list.first().map(|c| c.ssid.as_str()).unwrap_or(""),
         lock.0.server_url
     );
     std::thread::sleep(std::time::Duration::from_secs(1));

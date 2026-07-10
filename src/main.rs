@@ -45,11 +45,12 @@ pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
     for i in 0..DEFAULT_SNTP_SERVERS.len() {
         log_heap();
         log::info!("SNTP sync time with server: {}", DEFAULT_SNTP_SERVERS[i]);
-        lcd::display_text(
+        let _ = ui::render_keyboard_view(
             display_target,
+            false,
+            false,
             &format!("Syncing time with {}", DEFAULT_SNTP_SERVERS[i]),
-            0,
-        )?;
+        );
 
         let conf = SntpConf {
             servers: [DEFAULT_SNTP_SERVERS[i]],
@@ -63,7 +64,7 @@ pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
             log::info!("sntp sync status {:?}", status);
             log_heap();
             if status == SyncStatus::Completed {
-                lcd::display_text(display_target, "Syncing time Completed", 0)?;
+                let _ = ui::render_keyboard_view(display_target, false, false, "Syncing time Completed");
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
@@ -119,7 +120,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::CSS_BLACK);
     target.flush()?;
-    lcd::display_text(&mut target, "VibeKeys Starting...\n Read setting", 0)?;
+    let _ = ui::render_keyboard_view(&mut target, false, false, "VibeKeys Starting...\n Read setting");
 
     // MIC(远程模式下由 app::run 直接持有,用于本地 ASR,故声明为 mut)
     let mut btn0 = new_btn(
@@ -210,11 +211,12 @@ fn main() -> anyhow::Result<()> {
         Ok(list) => list,
         Err(e) => {
             log::error!("Failed to scan WiFi networks: {:?}", e);
-            lcd::display_text(
+            let _ = ui::render_keyboard_view(
                 &mut target,
+                false,
+                false,
                 &format!("Failed to scan WiFi networks:\n{:?}", e),
-                0,
-            )?;
+            );
             vec![]
         }
     };
@@ -225,11 +227,12 @@ fn main() -> anyhow::Result<()> {
 
     if let Err(e) = runtime {
         log::error!("Failed to create Tokio runtime: {:?}", e);
-        lcd::display_text(
+        let _ = ui::render_keyboard_view(
             &mut target,
+            false,
+            false,
             &format!("Failed to create Tokio runtime:\n{:?}", e),
-            0,
-        )?;
+        );
         std::thread::sleep(std::time::Duration::from_secs(5));
         esp_idf_svc::hal::reset::restart();
     }
@@ -256,14 +259,16 @@ fn main() -> anyhow::Result<()> {
                 )) {
                     ui::SettingOutcome::Back => continue,
                     ui::SettingOutcome::Ota => {
-                        lcd::display_text(&mut target, "Entering OTA...", 0)?;
+                        let mut popup = ui::popup_centered(target.bounding_box());
+                        let _ = popup.show_transient(&mut target, "Entering OTA...");
                         std::thread::sleep(std::time::Duration::from_secs(1));
                         goto_next_firmware()?;
                     }
                     ui::SettingOutcome::ClearConfig => {
                         bt_wifi_mode::Setting::clear_nvs(&mut nvs)?;
                         bt_keyboard_mode::KeymapConfig::clear_nvs(&mut nvs)?;
-                        lcd::display_text(&mut target, "Clear all config", 0)?;
+                        let mut popup = ui::popup_centered(target.bounding_box());
+                        let _ = popup.show_transient(&mut target, "Clear all config");
                         std::thread::sleep(std::time::Duration::from_secs(1));
                         // 清空后重启:让(已清空的)配置重新加载,避免继续用内存里的旧值。
                         esp_idf_svc::hal::reset::restart();
@@ -279,16 +284,17 @@ fn main() -> anyhow::Result<()> {
     }
 
     if mode == 1 && setting.need_init() {
-        lcd::display_text(
+        let _ = ui::render_keyboard_view(
             &mut target,
+            false,
+            false,
             "Remote Control mode requires network/server config",
-            0,
-        )?;
+        );
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
     if mode == 3 || setting.need_init() {
-        lcd::display_text(&mut target, "Starting in keyboard mode...", 0)?;
+        let _ = ui::render_keyboard_view(&mut target, false, false, "Starting in keyboard mode...");
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
@@ -358,14 +364,16 @@ fn main() -> anyhow::Result<()> {
                 anyhow::Result::<()>::Err(anyhow::anyhow!("no known network in range"))
             }
         };
+        let wifi_on = r.is_ok();
         if r.is_err() {
             let e = r.err();
             log::error!("Failed to connect to WiFi: {:?}", e);
-            lcd::display_text(
+            let _ = ui::render_keyboard_view(
                 &mut target,
+                false,
+                false,
                 &format!(" WiFi connection failed: {:?}\n", e),
-                0,
-            )?;
+            );
             std::thread::sleep(std::time::Duration::from_secs(3));
         } else {
             log::info!("WiFi connected successfully");
@@ -376,7 +384,7 @@ fn main() -> anyhow::Result<()> {
                     let r = sync_time(&mut target);
                     if r.is_err() {
                         log::error!("Failed to sync time: {:?}", r.err());
-                        let _ = lcd::display_text(&mut target, " Time sync failed\n", 0);
+                        let _ = ui::render_keyboard_view(&mut target, false, false, " Time sync failed\n");
                         std::thread::sleep(std::time::Duration::from_secs(3));
                     } else {
                         let worker = audio::AudioWorker {
@@ -403,7 +411,7 @@ fn main() -> anyhow::Result<()> {
 
         log_heap();
         std::thread::sleep(std::time::Duration::from_millis(500));
-        lcd::display_text(&mut target, "Keyboard Mode", 0)?;
+        let _ = ui::render_keyboard_view(&mut target, false, false, "Keyboard Mode");
 
         runtime.block_on(keyboard_mode_main(
             &mut target,
@@ -417,6 +425,7 @@ fn main() -> anyhow::Result<()> {
             driver,
             asr_config,
             controller,
+            wifi_on,
         ));
     }
 
@@ -471,7 +480,7 @@ fn main() -> anyhow::Result<()> {
         runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
     }
 
-    lcd::display_text(&mut target, "Connecting the WiFi...", 0)?;
+    let _ = ui::render_keyboard_view(&mut target, false, false, "Connecting the WiFi...");
 
     // 用 boot 阶段的扫描结果与已配置 wifi_list 匹配,挑当前在范围内的网络连接。
     let r = match bt_wifi_mode::pick_cred(&scan_list, &setting.wifi_list) {
@@ -486,7 +495,7 @@ fn main() -> anyhow::Result<()> {
     };
     if r.is_err() {
         log::error!("Failed to connect to WiFi: {:?}", r.err());
-        lcd::display_text(&mut target, " WiFi connection failed\n", 0)?;
+        let _ = ui::render_keyboard_view(&mut target, false, false, " WiFi connection failed\n");
         std::thread::sleep(std::time::Duration::from_secs(60));
         esp_idf_svc::hal::reset::restart();
     }
@@ -494,11 +503,11 @@ fn main() -> anyhow::Result<()> {
     if setting.server_url.starts_with("mqtts")
         || asr_config.as_ref().map_or(false, |c| c.requires_tls())
     {
-        lcd::display_text(&mut target, "Syncing time...", 0)?;
+        let _ = ui::render_keyboard_view(&mut target, false, false, "Syncing time...");
         let r = sync_time(&mut target);
         if r.is_err() {
             log::error!("Failed to sync time: {:?}", r.err());
-            lcd::display_text(&mut target, " Time sync failed\n", 0)?;
+            let _ = ui::render_keyboard_view(&mut target, false, false, " Time sync failed\n");
             std::thread::sleep(std::time::Duration::from_secs(60));
             esp_idf_svc::hal::reset::restart();
         }
@@ -547,7 +556,7 @@ fn main() -> anyhow::Result<()> {
         log::error!("Failed to spawn ASR worker thread: {e:?}");
     }
 
-    lcd::display_text(&mut target, "Connecting the Server...", 0)?;
+    let _ = ui::render_keyboard_view(&mut target, false, false, "Connecting the Server...");
 
     let mut ui = lcd::UI::new_with_target(target);
 
@@ -676,6 +685,7 @@ async fn keyboard_mode_main(
     mut driver: Option<audio::Driver>,
     asr_config: Option<audio::AsrConfig>,
     controller: bt_keyboard_mode::ControllerService,
+    wifi_on: bool,
 ) -> ! {
     let _ = ui::render_keyboard_view(
         display,
@@ -702,17 +712,17 @@ async fn keyboard_mode_main(
                             &mut setting_arc.lock().unwrap().1,
                             keymap,
                         );
-                        lcd::display_text(display, "keymap updated!", 0).unwrap();
+                        let _ = ui::render_keyboard_view(display, false, false, "keymap updated!");
                         continue;
                     }
                     bt_keyboard_mode::ControllerCommand::AsrConfig(config) => {
                         match handle_keymap_asr_config(config, &mut setting_arc.lock().unwrap().1) {
                             Ok(msg) => {
-                                lcd::display_text(display, &msg, 0).unwrap();
+                                let _ = ui::render_keyboard_view(display, false, false, &msg);
                             }
                             Err(e) => {
                                 log::error!("Failed to update ASR config: {:?}", e);
-                                lcd::display_text(display, &format!("Failed to update ASR config:\n{:?}", e), 0).unwrap();
+                                let _ = ui::render_keyboard_view(display, false, false, &format!("Failed to update ASR config:\n{:?}", e));
                             }
                         }
                         continue;
@@ -767,7 +777,7 @@ async fn keyboard_mode_main(
             _ => {}
         }
 
-        let _ = handle_key_event(display, ble_device, keyboard, event, keymap);
+        let _ = handle_key_event(display, ble_device, keyboard, event, keymap, wifi_on);
 
         if is_display_event && keys_pressed && key_pins.all_is_high() {
             keys_pressed = false;
@@ -823,6 +833,7 @@ pub fn handle_key_event(
     keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
     event: bt_keyboard_mode::ControllerCommand,
     keymap: &bt_keyboard_mode::KeymapConfig,
+    wifi_on: bool,
 ) -> anyhow::Result<()> {
     log::info!("Handling controller command: {:?}", event);
     use bt_keyboard_mode::KeysPin;
@@ -837,7 +848,7 @@ pub fn handle_key_event(
             }
         }
         bt_keyboard_mode::ControllerCommand::DisplayKeyboard(text) => {
-            lcd::display_text(display, &text, 0)?;
+            let _ = ui::render_keyboard_view(display, wifi_on, true, &text);
         }
         bt_keyboard_mode::ControllerCommand::KeyboardPress(pin_index) => {
             if pin_index == KeysPin::ACCEPT {

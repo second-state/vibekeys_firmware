@@ -138,6 +138,7 @@ const BOOT_CHOICES: [BootChoice; 3] = [
     BootChoice::Setting,
 ];
 
+#[derive(Debug)]
 enum MenuEvt {
     Next,
     Accept,
@@ -159,15 +160,17 @@ pub async fn boot_menu(
         let _ = render_boot_menu(target, focus, width);
 
         let evt = tokio::select! {
-            _ = next.wait_for_low() => MenuEvt::Next,
-            _ = accept.wait_for_low() => MenuEvt::Accept,
-            _ = esc.wait_for_low() => MenuEvt::Esc,
+            _ = next.wait_for_falling_edge() => MenuEvt::Next,
+            _ = accept.wait_for_falling_edge() => MenuEvt::Accept,
+            _ = esc.wait_for_falling_edge() => MenuEvt::Esc,
         };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await; // 消抖
 
         match evt {
-            MenuEvt::Next => focus = (focus + 1) % n,
-            MenuEvt::Accept => return BOOT_CHOICES[focus],
-            MenuEvt::Esc => focus = (focus + n - 1) % n,
+            MenuEvt::Next if next.is_low() => focus = (focus + 1) % n,
+            MenuEvt::Accept if accept.is_low() => return BOOT_CHOICES[focus],
+            MenuEvt::Esc if esc.is_low() => focus = (focus + n - 1) % n,
+            _ => {}
         }
     }
 }
@@ -255,12 +258,30 @@ async fn wait_input(
     next: Btn<'_>,
     backspace: Btn<'_>,
 ) -> InputEvt {
-    tokio::select! {
-        _ = rot_a.wait_for_any_edge() => InputEvt::Rotate,
-        _ = accept.wait_for_low() => InputEvt::Accept,
-        _ = esc.wait_for_low() => InputEvt::Esc,
-        _ = next.wait_for_low() => InputEvt::Next,
-        _ = backspace.wait_for_low() => InputEvt::Backspace,
+    loop {
+        let evt = tokio::select! {
+            _ = rot_a.wait_for_any_edge() => InputEvt::Rotate,
+            _ = accept.wait_for_falling_edge() => InputEvt::Accept,
+            _ = esc.wait_for_falling_edge() => InputEvt::Esc,
+            _ = next.wait_for_falling_edge() => InputEvt::Next,
+            _ = backspace.wait_for_falling_edge() => InputEvt::Backspace,
+        };
+        // 旋钮(编码器):边沿即有效事件,方向由调用方读 rot_a/rot_b 电平判定,不消抖、不等。
+        if matches!(evt, InputEvt::Rotate) {
+            return evt;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await; // 消抖
+                                                                        // 消抖后再确认仍处于按下,否则视为抖动丢弃,重新等下一个事件(对应 boot_menu 的 `_ => {}`)。
+        let pressed = match evt {
+            InputEvt::Accept => accept.is_low(),
+            InputEvt::Esc => esc.is_low(),
+            InputEvt::Next => next.is_low(),
+            InputEvt::Backspace => backspace.is_low(),
+            InputEvt::Rotate => true,
+        };
+        if pressed {
+            return evt;
+        }
     }
 }
 
@@ -296,7 +317,7 @@ pub async fn setting_page(
     let mut menu_focus: usize = 0;
     let mut cred_focus: usize = 0; // WifiCreds 列表焦点(含尾部 <Add>)
     let mut scan_focus: usize = 0; // ScanPicker 焦点
-    // None=新增,Some(i)=正在编辑 wifi_list[i]。
+                                   // None=新增,Some(i)=正在编辑 wifi_list[i]。
     let mut cur_editing: Option<usize> = None;
     let mut pending_ssid: String = String::new();
     let mut password: String = String::new();
@@ -312,7 +333,8 @@ pub async fn setting_page(
                     InputEvt::Rotate => {}
                     InputEvt::Accept => match menu_focus {
                         0 => {
-                            cred_focus = cred_focus.min(cred_entry_count(setting).saturating_sub(1));
+                            cred_focus =
+                                cred_focus.min(cred_entry_count(setting).saturating_sub(1));
                             state = SettingState::WifiCreds;
                         }
                         1 => return SettingOutcome::Ota,
@@ -423,8 +445,8 @@ pub async fn setting_page(
                             log::error!("Failed to save wifi_list: {:?}", e);
                         }
                         // 回到 cred 列表,焦点回到刚编辑/新增的那条。
-                        cred_focus = cur_editing
-                            .unwrap_or(setting.wifi_list.len().saturating_sub(1));
+                        cred_focus =
+                            cur_editing.unwrap_or(setting.wifi_list.len().saturating_sub(1));
                         cur_editing = None;
                         pending_ssid.clear();
                         password.clear();
@@ -698,7 +720,7 @@ pub fn draw_status_bar(
     Ok(())
 }
 
-/// 键盘模式视图:状态栏 + 动画区(stop/working 占位)+ 反馈文字。
+/// 键盘模式视图:状态栏 + 动画区背景(BLE 连接=绿/未连=红)+ 反馈文字。
 pub fn render_keyboard_view(
     target: &mut FrameBuffer,
     wifi_on: bool,
@@ -712,23 +734,6 @@ pub fn render_keyboard_view(
         Point::new(0, STATUS_H as i32),
         Size::new(bb.size.width, bb.size.height.saturating_sub(STATUS_H)),
     );
-    let bg = if ble_on {
-        ColorFormat::CSS_DARK_GREEN
-    } else {
-        ColorFormat::CSS_DARK_RED
-    };
-    fill_rect(target, anim, bg)?;
-    draw_text(
-        target,
-        if ble_on { "working" } else { "stop" },
-        Rectangle::new(
-            Point::new(0, STATUS_H as i32),
-            Size::new(bb.size.width, LINE_H + 2),
-        ),
-        ColorFormat::CSS_WHITE,
-        None,
-        HorizontalAlignment::Center,
-    )?;
     if !feedback.is_empty() {
         draw_text(
             target,
@@ -766,6 +771,9 @@ pub fn render_remote_view(target: &mut FrameBuffer, working: bool) -> anyhow::Re
         None,
         HorizontalAlignment::Center,
     )?;
+    // 同 render_keyboard_view:把这帧快照成背景,否则 flush() 之后 buffers 被重置成
+    // clear() 的纯黑,后续增量绘制会画到纯黑缓冲上。
+    target.fix_background()?;
     flush(target)
 }
 
@@ -807,6 +815,14 @@ impl Popup {
             restore_rect(target, self.rect, &b)?;
             target.flush_rect(self.rect)?;
         }
+        Ok(())
+    }
+
+    /// 一次性弹窗:画描边+文字、只推弹窗区域,**不 backup**。
+    /// 给 OTA / ClearConfig 这种「弹一下马上重启」的场景用 —— 之后整屏会重新渲染,无需 restore。
+    pub fn show_transient(&mut self, target: &mut FrameBuffer, text: &str) -> anyhow::Result<()> {
+        draw_popup(target, self.rect, text)?;
+        target.flush_rect(self.rect)?;
         Ok(())
     }
 }

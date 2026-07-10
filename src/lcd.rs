@@ -394,6 +394,8 @@ impl DisplayTargetDrive for FrameBuffer {
                 }
                 continue;
             }
+            // 成功就跳出,避免每次 flush 都把整屏发 5 遍(5× SPI 带宽)。
+            break;
         }
 
         self.buffers.clone_from(&self.background_buffers);
@@ -453,6 +455,8 @@ pub fn display_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
     jpeg_buffer.flush_to_lcd()
 }
 
+// 旧的整屏文本渲染;状态/反馈画面已统一改用 ui::render_keyboard_view,暂留备用。
+#[allow(dead_code)]
 pub fn display_text(
     display_target: &mut FrameBuffer,
     text: &str,

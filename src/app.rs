@@ -92,6 +92,15 @@ pub async fn run(
     // 用 ui::AsrEditor(ui.rs 弹窗风格),不用 lcd::UI 那套(麦克风状态条,风格不一致)。
     let mut asr_editor: Option<crate::ui::AsrEditor> = None;
 
+    // 当前屏幕的完整解码帧。滚轮先在这张图上本地平移显示窗口,
+    // 平移到头了再通过 MQTT 请服务端继续翻页 —— 避免每一下滚轮都走网络往返。
+    let mut current_screen: Option<crate::new_jpg::JpegBufferu16> = None;
+    // 显示窗口在 current_screen 中的顶部像素行;0 = 最上面。
+    let mut view_window_offset: usize = 0;
+    let view_windows_height = crate::lcd::DISPLAY_HEIGHT as usize;
+    /// 滚轮每格本地平移的像素步长(可调)。
+    const SCROLL_STEP_PX: usize = 20;
+
     loop {
         // 把 desired_prefix 落实为 subscribe(必须在 select 之外,不可被取消)。
         server.flush_pending().await?;
@@ -112,8 +121,26 @@ pub async fn run(
                     if let Some(e) = asr_editor.as_mut() {
                         e.move_left();
                         e.render(ui.display_mut())?;
+                    } else if view_window_offset > 0 {
+                        // 还有上方内容:本地平移上去即可,不发 MQTT。
+                        view_window_offset = view_window_offset.saturating_sub(SCROLL_STEP_PX);
+                        if let Some(buf) = current_screen.as_ref() {
+                            if let Err(e) =
+                                buf.flush_window(view_window_offset, view_windows_height)
+                            {
+                                log::error!("Failed to flush screen window: {e:?}");
+                            }
+                        }
                     } else {
-                        server.send(protocol::ClientMessage::ScrollUp).await?;
+                        // 已经在缓冲最顶,请服务端继续往上翻(scrollback)。
+                        // 预先把窗口拉到底:新帧的最底正好接在旧帧最顶之下,连续阅读不跳。
+                        view_window_offset = current_screen
+                            .as_ref()
+                            .map(|b| b.height.saturating_sub(view_windows_height))
+                            .unwrap_or(0);
+                        server
+                            .send(protocol::ClientMessage::ScrollUp { rows: 0 })
+                            .await?;
                     }
                 }
                 Event::RotateDown => {
@@ -121,14 +148,36 @@ pub async fn run(
                         e.move_right();
                         e.render(ui.display_mut())?;
                     } else {
-                        server.send(protocol::ClientMessage::ScrollDown).await?;
+                        let max_offset = current_screen
+                            .as_ref()
+                            .map(|b| b.height.saturating_sub(view_windows_height))
+                            .unwrap_or(0);
+                        if view_window_offset < max_offset {
+                            // 还有下方内容:本地平移下去即可,不发 MQTT。
+                            view_window_offset =
+                                (view_window_offset + SCROLL_STEP_PX).min(max_offset);
+                            if let Some(buf) = current_screen.as_ref() {
+                                if let Err(e) =
+                                    buf.flush_window(view_window_offset, view_windows_height)
+                                {
+                                    log::error!("Failed to flush screen window: {e:?}");
+                                }
+                            }
+                        } else {
+                            // 已经在缓冲最底,请服务端继续往下翻。
+                            // 预先把窗口拉到顶:新帧的最顶正好接在旧帧最底之上,连续阅读不跳。
+                            view_window_offset = 0;
+                            server
+                                .send(protocol::ClientMessage::ScrollDown { rows: 0 })
+                                .await?;
+                        }
                     }
                 }
                 Event::Esc => {
                     if asr_editor.is_some() {
                         // 放弃编辑,回屏幕。
                         asr_editor = None;
-                        let _ = server.send(protocol::ClientMessage::Sync).await;
+                        let _ = server.send(protocol::ClientMessage::sync()).await;
                     } else {
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x1b]))
@@ -145,7 +194,7 @@ pub async fn run(
                                 .await?;
                         }
                         // 退出编辑后要一帧把屏幕刷回来(编辑期间 ActiveScreen 被排空了)。
-                        let _ = server.send(protocol::ClientMessage::Sync).await;
+                        let _ = server.send(protocol::ClientMessage::sync()).await;
                     } else {
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x0d]))
@@ -238,7 +287,21 @@ pub async fn run(
                         );
                     } else if matches!(chunk.format, protocol::ImageFormat::Jpeg) {
                         log::info!("Received screen image: {} bytes (jpeg)", chunk.data.len());
-                        crate::ui::display_jpeg(&chunk.data)?;
+                        match crate::new_jpg::esp_jpeg_decode_one_picture(&chunk.data) {
+                            Ok(display) => {
+                                // 新帧到达:保留当前滚动位置,只夹到新缓冲的合法区间,
+                                // 避免每次刷帧都把视图拉回原点。
+                                let max_offset = display.height.saturating_sub(view_windows_height);
+                                view_window_offset = view_window_offset.min(max_offset);
+                                if let Err(e) =
+                                    display.flush_window(view_window_offset, view_windows_height)
+                                {
+                                    log::error!("Failed to flush screen window: {e:?}");
+                                }
+                                current_screen = Some(display);
+                            }
+                            Err(e) => log::error!("Failed to decode JPEG: {e:?}"),
+                        }
                     } else {
                         log::warn!("Unsupported screen format: {:?}, only JPEG", chunk.format);
                         let _ = popup.show(ui.display_mut(), "Only JPEG is supported");
@@ -366,13 +429,13 @@ async fn open_session_picker(
                 let (prefix, label, _) = &labels[focus];
                 server.set_active(prefix);
                 // 让新活跃会话立刻推一帧,免得干等下一帧。
-                let _ = server.send(protocol::ClientMessage::Sync).await;
+                let _ = server.send(protocol::ClientMessage::sync()).await;
                 let _ = popup.show(ui.display_mut(), &format!("-> {label}"));
                 return Ok(());
             }
             Some(Event::Esc) | None => {
                 // 取消:活跃未变。发个 sync 让当前会话立即重绘一帧覆盖列表。
-                let _ = server.send(protocol::ClientMessage::Sync).await;
+                let _ = server.send(protocol::ClientMessage::sync()).await;
                 return Ok(());
             }
             _ => {} // 旋钮方向 / 其它键在选择器里忽略

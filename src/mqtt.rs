@@ -243,6 +243,9 @@ impl MqttServer {
                             if self.active.is_none() {
                                 log::info!("Auto-activate first session: {prefix}");
                                 self.active = Some(prefix.clone());
+                                // 立刻请求首帧。screen 订阅由随后的 flush_pending 落实;
+                                // 首帧往返(渲染+编码+网络)远慢于订阅落实,不会丢帧。
+                                let _ = self.send(ClientMessage::sync()).await;
                             }
                             return Some(MqttEvent::Presence {
                                 prefix,
@@ -286,7 +289,6 @@ impl MqttServer {
                 };
                 Some(ScreenImageChunk {
                     format: detect_format(&complete),
-                    is_last: true,
                     data: complete,
                 })
             }
@@ -312,11 +314,9 @@ impl MqttServer {
         }
     }
 
-    /// 发送按键 / 控制消息。`PtyInput` 走 `{P}/pty_in` raw;`VoiceInput*` 在 MQTT 上
-    /// 不支持(无语音通道);其余走 `{P}/control` 的 JSON(serde tag 已匹配协议)。
+    /// 发送按键 / 控制消息。`PtyInput` 走 `{P}/pty_in` raw;其余(Sync/Input/Scroll)
+    /// 走 `{P}/control` 的 JSON(serde 邻接标签 `{"type":..,"data":..}` 已与服务端对齐)。
     /// 目标 = 用户选定的活跃会话(与 screen 订阅是否已落实无关)。
-    /// 用 `enqueue`(只入队,broker task 异步发),避免 `publish` 在网络拥塞时同步阻塞
-    /// app_fut(单线程 runtime,不能卡)。
     pub async fn send(&mut self, msg: ClientMessage) -> anyhow::Result<()> {
         let prefix = self
             .active
@@ -334,11 +334,6 @@ impl MqttServer {
                         &bytes[..],
                     )
                     .map_err(|e| anyhow::anyhow!("publish pty_in failed: {e:?}"))?;
-            }
-            ClientMessage::VoiceInputStart(_)
-            | ClientMessage::VoiceInputChunk(_)
-            | ClientMessage::VoiceInputEnd(_) => {
-                log::warn!("Voice messages are not supported over MQTT, ignored");
             }
             other => {
                 let json = other.to_json()?;

@@ -445,14 +445,12 @@ pub fn display_png<D: DisplayTargetDrive>(
 
 pub fn display_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
     let jpeg_buffer = crate::new_jpg::esp_jpeg_decode_one_picture(jpeg)?;
-    let e = jpeg_buffer.flush_to_lcd();
-    if e != 0 {
-        return Err(anyhow::anyhow!(
-            "Failed to flush JPEG to LCD: error code {}",
-            e
-        ));
-    }
-    Ok(())
+    log::info!(
+        "JPEG decoded: width={}, height={}",
+        jpeg_buffer.width,
+        jpeg_buffer.height
+    );
+    jpeg_buffer.flush_to_lcd()
 }
 
 pub fn display_text(
@@ -494,11 +492,12 @@ pub fn display_text(
     Ok(())
 }
 
-// ========== UI 消息类型 (对应 ServerMessage) ==========
+// ========== UI 管理器 ==========
 
 /// UI 管理器
 ///
-/// 负责管理 LCD 显示和用户交互，对应 protocol.rs 中的消息设计
+/// 负责管理 LCD 显示和用户交互；入站屏幕帧由 mqtt 侧组装成
+/// [`crate::protocol::ScreenImageChunk`] 后交给这里渲染。
 pub struct UI {
     /// 显示缓冲区
     display: FrameBuffer,

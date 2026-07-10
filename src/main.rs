@@ -556,7 +556,7 @@ pub fn log_heap() {
 fn handle_reset_event(
     setting_arc: &mut Arc<Mutex<(bt_wifi_mode::Setting, esp_idf_svc::nvs::EspDefaultNvs)>>,
 ) -> ! {
-    let mut lock = setting_arc.lock().unwrap();
+    let lock = setting_arc.lock().unwrap();
     let png_to_save = if lock.0.background_png.1 {
         Some(lock.0.background_png.0.clone())
     } else {

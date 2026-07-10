@@ -232,6 +232,7 @@ enum InputEvt {
     Accept,
     Esc,
     Next,
+    Backspace,
 }
 
 pub enum SettingOutcome {
@@ -242,12 +243,20 @@ pub enum SettingOutcome {
 
 /// 等一个输入事件。旋钮方向在返回后用 rot_a/rot_b 电平判断。
 /// Next(btn4)是主菜单切换选项的主力;旋钮在子列表(WiFi/密码字符)里仍可滚动。
-async fn wait_input(rot_a: Btn<'_>, accept: Btn<'_>, esc: Btn<'_>, next: Btn<'_>) -> InputEvt {
+/// Backspace(btn5)目前只在密码输入态用于删除光标前的字符。
+async fn wait_input(
+    rot_a: Btn<'_>,
+    accept: Btn<'_>,
+    esc: Btn<'_>,
+    next: Btn<'_>,
+    backspace: Btn<'_>,
+) -> InputEvt {
     tokio::select! {
         _ = rot_a.wait_for_any_edge() => InputEvt::Rotate,
         _ = accept.wait_for_low() => InputEvt::Accept,
         _ = esc.wait_for_low() => InputEvt::Esc,
         _ = next.wait_for_low() => InputEvt::Next,
+        _ = backspace.wait_for_low() => InputEvt::Backspace,
     }
 }
 
@@ -274,6 +283,7 @@ pub async fn setting_page(
     next: Btn<'_>,
     rot_a: Btn<'_>,
     rot_b: Btn<'_>,
+    backspace: Btn<'_>,
     setting: &mut crate::bt_wifi_mode::Setting,
     nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
 ) -> SettingOutcome {
@@ -288,7 +298,7 @@ pub async fn setting_page(
         match state {
             SettingState::Menu => {
                 let _ = render_setting_menu(target, menu_focus, setting, &password);
-                match wait_input(rot_a, accept, esc, next).await {
+                match wait_input(rot_a, accept, esc, next, backspace).await {
                     // 主菜单改用 Next 键切换选项;滚轮在这里不再切换(避免误触/跳格)。
                     InputEvt::Next => {
                         menu_focus = rotate_index(menu_focus, 4, true);
@@ -327,11 +337,12 @@ pub async fn setting_page(
                         save_wifi_config(setting, &password, nvs);
                         return SettingOutcome::Back;
                     }
+                    InputEvt::Backspace => {}
                 }
             }
             SettingState::WifiList => {
                 let _ = render_list(target, "WiFi (ESC=back)", &ssids, wifi_focus);
-                match wait_input(rot_a, accept, esc, next).await {
+                match wait_input(rot_a, accept, esc, next, backspace).await {
                     InputEvt::Next => {
                         wifi_focus = rotate_index(wifi_focus, ssids.len(), true);
                     }
@@ -347,11 +358,12 @@ pub async fn setting_page(
                         state = SettingState::Menu;
                     }
                     InputEvt::Esc => state = SettingState::Menu,
+                    InputEvt::Backspace => {}
                 }
             }
             SettingState::Password => {
                 let _ = render_password(target, &password, cur_char);
-                match wait_input(rot_a, accept, esc, next).await {
+                match wait_input(rot_a, accept, esc, next, backspace).await {
                     InputEvt::Next => {
                         cur_char = rotate_index(cur_char, CHARSET.len(), true);
                     }
@@ -362,6 +374,10 @@ pub async fn setting_page(
                         if password.len() < 32 {
                             password.push(CHARSET[cur_char] as char);
                         }
+                    }
+                    InputEvt::Backspace => {
+                        // 删除光标(末尾插入点)前的一个字符。
+                        password.pop();
                     }
                     InputEvt::Esc => {
                         setting.pass = password.clone();
@@ -494,7 +510,7 @@ fn render_password(target: &mut FrameBuffer, password: &str, focus: usize) -> an
     clear(target, ColorFormat::CSS_BLACK)?;
     draw_text(
         target,
-        "Password BkSp=done",
+        "Password BkSp=del ESC=ok",
         Rectangle::new(Point::new(4, 0), Size::new(width - 4, LINE_H + 2)),
         ColorFormat::CSS_WHEAT,
         None,
@@ -507,6 +523,20 @@ fn render_password(target: &mut FrameBuffer, password: &str, focus: usize) -> an
         ColorFormat::CSS_WHITE,
         None,
         HorizontalAlignment::Left,
+    )?;
+    // 插入点光标:量出密码文本像素宽,在末尾画一个块状光标,随输入/退格左右移动。
+    let text_w = Text::new(
+        password,
+        Point::zero(),
+        MonoTextStyle::new(&FONT_7X13_BOLD, ColorFormat::CSS_WHITE),
+    )
+    .bounding_box()
+    .size
+    .width;
+    fill_rect(
+        target,
+        Rectangle::new(Point::new(4 + text_w as i32, 18), Size::new(7, 13)),
+        ColorFormat::CSS_WHITE,
     )?;
     // 字符轮盘:一排字符,中间高亮(= focus),Next 键/旋钮滑动
     let n = ((width / 16) as usize).clamp(5, 11);

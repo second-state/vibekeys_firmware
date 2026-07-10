@@ -150,7 +150,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // Backspace
-    let btn5 = new_btn(
+    let mut btn5 = new_btn(
         peripherals.pins.gpio5.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -238,6 +238,7 @@ fn main() -> anyhow::Result<()> {
                     &mut btn4,
                     &mut pin16,
                     &mut pin17,
+                    &mut btn5,
                     &mut setting,
                     &mut nvs,
                 )) {

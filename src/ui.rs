@@ -17,7 +17,7 @@ use embedded_text::{
     TextBox,
 };
 use u8g2_fonts::{
-    fonts::{u8g2_font_open_iconic_all_2x_t, u8g2_font_wqy12_t_gb2312},
+    fonts::{u8g2_font_open_iconic_all_1x_t, u8g2_font_wqy12_t_gb2312},
     U8g2TextStyle,
 };
 
@@ -102,7 +102,7 @@ fn draw_icon(
     Text::with_text_style(
         &icon.to_string(),
         point,
-        U8g2TextStyle::new(u8g2_font_open_iconic_all_2x_t, color),
+        U8g2TextStyle::new(u8g2_font_open_iconic_all_1x_t, color),
         TextStyleBuilder::new()
             .alignment(Alignment::Center)
             .baseline(Baseline::Top)
@@ -726,7 +726,7 @@ fn render_password(
 
 // ========== 模式外壳(键盘 / Remote) ==========
 
-const STATUS_H: u32 = 16;
+const STATUS_H: u32 = 12;
 
 /// 顶部状态栏:蓝牙 / WiFi 连接状态。
 pub fn draw_status_bar(
@@ -737,8 +737,10 @@ pub fn draw_status_bar(
     let bb = target.bounding_box();
     let bar = Rectangle::new(Point::new(0, 0), Size::new(bb.size.width, STATUS_H));
     fill_rect(target, bar, ColorFormat::CSS_DARK_SLATE_GRAY)?;
-    let icon_w: u32 = 18;
-    let gap: u32 = 6;
+    let icon_w: u32 = 12;
+    let icon_h: u32 = 8; // 1x open_iconic = 8px;竖直居中放在 STATUS_H 内
+    let icon_top: i32 = ((STATUS_H - icon_h) / 2) as i32;
+    let gap: u32 = 4;
     let mut x: u32 = 2;
     if let Some(ble) = ble_on {
         if ble {
@@ -752,7 +754,7 @@ pub fn draw_status_bar(
         draw_icon(
             target,
             '\u{5E}',
-            Point::new(x as i32 + icon_w as i32 / 2, 0),
+            Point::new(x as i32 + icon_w as i32 / 2, icon_top),
             if ble {
                 ColorFormat::CSS_WHITE
             } else {
@@ -764,7 +766,7 @@ pub fn draw_status_bar(
     draw_icon(
         target,
         '\u{F8}',
-        Point::new(x as i32 + icon_w as i32 / 2, 0),
+        Point::new(x as i32 + icon_w as i32 / 2, icon_top),
         if wifi_on {
             ColorFormat::CSS_WHITE
         } else {

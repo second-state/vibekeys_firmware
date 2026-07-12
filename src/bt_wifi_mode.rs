@@ -251,15 +251,28 @@ pub fn new_setting_service(
                     None => log::error!("server_url value not a string"),
                 },
                 "asr_config" => {
-                    // value = {platform, uri, api_key, model};先校验能解析成 AsrConfig 再落盘。
+                    // 合并写(默认值 < 现有 NVS < 本次传入):只覆盖传入里出现的 key,
+                    // 缺失的 key 保持原状 —— 这样不完整的 JSON 也能增量更新,而不必每次发整份。
                     // asr_config 走独立 NVS 键,重启后由 main.rs 重新加载。
-                    match serde_json::from_value::<AsrConfig>(cw.value.clone()) {
+                    let mut base = AsrConfig::load_from_nvs(&setting.1)
+                        .and_then(|c| serde_json::to_value(&c).ok())
+                        .unwrap_or_else(|| {
+                            serde_json::json!({"platform":"whisper","uri":"","api_key":"","model":""})
+                        });
+                    if let (Some(base_obj), Some(in_obj)) =
+                        (base.as_object_mut(), cw.value.as_object())
+                    {
+                        for (k, v) in in_obj {
+                            base_obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                    match serde_json::from_value::<AsrConfig>(base) {
                         Ok(cfg) => {
                             if let Err(e) = cfg.save_to_nvs(&mut setting.1) {
                                 log::error!("Failed to save asr_config: {:?}", e);
                             }
                         }
-                        Err(e) => log::error!("asr_config value invalid: {:?}", e),
+                        Err(e) => log::error!("asr_config value invalid after merge: {:?}", e),
                     }
                 }
                 "mic_model" => match cw.value.as_u64() {

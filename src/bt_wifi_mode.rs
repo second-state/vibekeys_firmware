@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use esp32_nimble::{utilities::BleUuid, uuid128, BLEService, NimbleProperties};
 use serde::{Deserialize, Serialize};
 
+use crate::audio::AsrConfig;
 use crate::lcd;
 
 pub const SERVICE_ID: BleUuid = uuid128!("623fa3e2-631b-4f8f-a6e7-a7b09c03e7e0");
@@ -25,11 +26,13 @@ struct ConfigWrite {
     value: serde_json::Value,
 }
 
-/// 统一配置特征值的读取快照:整份 wifi_list + server_url。
+/// 统一配置特征值的读取快照:整份 wifi_list + server_url(可选 + asr_config)。
 #[derive(Serialize)]
 struct ConfigSnapshot<'a> {
     wifi_list: &'a [WifiCred],
     server_url: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asr_config: Option<serde_json::Value>,
 }
 /// 单条 WiFi 凭据。顺序即连接优先级。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,9 +159,7 @@ impl Setting {
     }
 
     pub fn need_init(&self) -> bool {
-        self.state == 1
-            || self.wifi_list.is_empty()
-            || self.server_url.is_empty()
+        self.state == 1 || self.wifi_list.is_empty() || self.server_url.is_empty()
     }
 }
 
@@ -179,11 +180,18 @@ pub fn new_setting_service(
     config_characteristic
         .lock()
         .on_read(move |c, _| {
-            // 读一次返回整份快照(整份 wifi_list + server_url),免去多次读。
+            // 读一次返回整份快照(整份 wifi_list + server_url + asr_config),免去多次读。
             let setting = config_r.lock().unwrap();
+            let asr_config = AsrConfig::load_from_nvs(&setting.1);
+            log::info!(
+                "Config read: asr_config = {}",
+                asr_config.as_ref().map(|_| "present").unwrap_or("absent")
+            );
+            let asr_config = asr_config.and_then(|cfg| serde_json::to_value(&cfg).ok());
             let snap = ConfigSnapshot {
                 wifi_list: &setting.0.wifi_list,
                 server_url: setting.0.server_url.as_str(),
+                asr_config,
             };
             match serde_json::to_string(&snap) {
                 Ok(json) => {
@@ -241,6 +249,21 @@ pub fn new_setting_service(
                     }
                     None => log::error!("server_url value not a string"),
                 },
+                "asr_config" => {
+                    // value = {platform, uri, api_key, model};先校验能解析成 AsrConfig 再落盘,
+                    // 顺带规范化 JSON。asr_config 走独立 NVS 键,重启后由 main.rs 重新加载。
+                    match serde_json::from_value::<AsrConfig>(cw.value.clone()) {
+                        Ok(cfg) => match serde_json::to_string(&cfg) {
+                            Ok(json) => {
+                                if let Err(e) = setting.1.set_str("asr_config", &json) {
+                                    log::error!("Failed to save asr_config: {:?}", e);
+                                }
+                            }
+                            Err(e) => log::error!("serialize asr_config failed: {:?}", e),
+                        },
+                        Err(e) => log::error!("asr_config value invalid: {:?}", e),
+                    }
+                }
                 other => log::warn!("Unknown config type: {}", other),
             }
         });

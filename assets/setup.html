@@ -62,6 +62,36 @@
                         </div>
                     </div>
 
+                    <div class="card bg-base-100 border border-base-300">
+                        <div class="card-body">
+                            <h3 class="card-title text-lg" id="asrTitle">ASR (Speech Recognition)</h3>
+                            <p class="text-xs opacity-70">Whisper-compatible endpoint. Sent on save, applied after
+                                device reset.</p>
+                            <label class="form-control">
+                                <div class="label">
+                                    <span class="label-text">Endpoint URI</span>
+                                </div>
+                                <input type="text" id="asrUriInput"
+                                    placeholder="https://host/audio/transcriptions"
+                                    class="input input-bordered w-full">
+                            </label>
+                            <label class="form-control">
+                                <div class="label">
+                                    <span class="label-text">API Key</span>
+                                </div>
+                                <input type="password" id="asrApiKeyInput" placeholder="Bearer token (optional)"
+                                    class="input input-bordered w-full">
+                            </label>
+                            <label class="form-control">
+                                <div class="label">
+                                    <span class="label-text">Model</span>
+                                </div>
+                                <input type="text" id="asrModelInput" placeholder="whisper-1"
+                                    class="input input-bordered w-full">
+                            </label>
+                        </div>
+                    </div>
+
                     <div class="collapse collapse-arrow bg-base-100 border border-base-300">
                         <input type="checkbox" />
                         <div class="collapse-title text-lg font-medium">
@@ -175,6 +205,10 @@
         const wifiTitle = document.getElementById('wifiTitle');
         const serverUrlInput = document.getElementById('serverUrlInput');
         const urlTitle = document.getElementById('urlTitle');
+        const asrTitle = document.getElementById('asrTitle');
+        const asrUriInput = document.getElementById('asrUriInput');
+        const asrApiKeyInput = document.getElementById('asrApiKeyInput');
+        const asrModelInput = document.getElementById('asrModelInput');
         const backgroundImage = document.getElementById('backgroundImage');
         const bgPreview = document.getElementById('bgPreview');
         const fileError = document.getElementById('fileError');
@@ -190,7 +224,8 @@
         const modifiedFields = {
             wifi: false,
             url: false,
-            micMode: false
+            micMode: false,
+            asr: false
         };
 
         // Mark the whole wifi list as modified
@@ -420,6 +455,9 @@
             loadAllButton.disabled = false;
             saveAllButton.disabled = false;
             serverUrlInput.disabled = false;
+            asrUriInput.disabled = false;
+            asrApiKeyInput.disabled = false;
+            asrModelInput.disabled = false;
             backgroundImage.disabled = false;
             clearBgButton.disabled = false;
             controlPanel.classList.remove('opacity-50', 'pointer-events-none');
@@ -430,6 +468,9 @@
             loadAllButton.disabled = true;
             saveAllButton.disabled = true;
             serverUrlInput.disabled = true;
+            asrUriInput.disabled = true;
+            asrApiKeyInput.disabled = true;
+            asrModelInput.disabled = true;
             backgroundImage.disabled = true;
             writeBgButton.disabled = true;
             clearBgButton.disabled = true;
@@ -459,11 +500,17 @@
                 }
                 renderWifiRows();
                 serverUrlInput.value = snap.server_url || '';
+                // ASR config (Whisper): {platform, uri, api_key, model}
+                const asr = snap.asr_config || {};
+                asrUriInput.value = asr.uri || '';
+                asrApiKeyInput.value = asr.api_key || '';
+                asrModelInput.value = asr.model || '';
                 await readMicMode();
 
                 // Clear all modification marks
                 clearWifiModification();
                 clearFieldModification('url', urlTitle);
+                clearFieldModification('asr', asrTitle);
 
                 showNotification('Success', 'All configuration loaded');
             } catch (error) {
@@ -496,8 +543,9 @@
                 if (!hasModifications) {
                     await writeConfig('wifi_list', nonEmptyWifi);
                     await writeConfig('server_url', serverUrlInput.value);
+                    await writeConfig('asr_config', buildAsrConfig());
                     await writeMicMode();
-                    savedCount = 3;
+                    savedCount = 4;
                 } else {
                     // If there are modifications, only send modified fields
                     if (modifiedFields.wifi) {
@@ -509,6 +557,12 @@
                     if (modifiedFields.url) {
                         await writeConfig('server_url', serverUrlInput.value);
                         clearFieldModification('url', urlTitle);
+                        savedCount++;
+                    }
+
+                    if (modifiedFields.asr) {
+                        await writeConfig('asr_config', buildAsrConfig());
+                        clearFieldModification('asr', asrTitle);
                         savedCount++;
                     }
 
@@ -585,6 +639,16 @@
                 console.error('Write error:', error);
                 throw error;
             }
+        }
+
+        // Build the Whisper AsrConfig object from the three ASR inputs.
+        function buildAsrConfig() {
+            return {
+                platform: 'whisper',
+                uri: asrUriInput.value || '',
+                api_key: asrApiKeyInput.value || '',
+                model: asrModelInput.value || ''
+            };
         }
 
         // Read mic mode
@@ -714,6 +778,11 @@
         serverUrlInput.addEventListener('input', () => {
             markFieldAsModified('url', urlTitle);
         });
+
+        // ASR fields: any edit marks the whole ASR card modified
+        asrUriInput.addEventListener('input', () => markFieldAsModified('asr', asrTitle));
+        asrApiKeyInput.addEventListener('input', () => markFieldAsModified('asr', asrTitle));
+        asrModelInput.addEventListener('input', () => markFieldAsModified('asr', asrTitle));
 
         // Listen for mic mode changes
         micModePTT.addEventListener('change', () => {

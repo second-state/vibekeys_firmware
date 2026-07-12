@@ -384,7 +384,9 @@ fn main() -> anyhow::Result<()> {
             log::info!("ASR config loaded from NVS: {:?}", asr_config);
 
             if let Some(ref asr_config) = asr_config {
-                if asr_config.requires_tls() {
+                // 关闭「优先内置 ASR」时键盘模式不会用 Whisper(MIC 透传给主机),
+                // 也就不需要为 HTTPS 证书校验同步时间 —— 跳过省一段启动耗时。
+                if setting.prefer_builtin_asr && asr_config.requires_tls() {
                     let r = sync_time(&mut target);
                     if r.is_err() {
                         log::error!("Failed to sync time: {:?}", r.err());

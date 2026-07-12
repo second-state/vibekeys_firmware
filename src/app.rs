@@ -74,6 +74,7 @@ pub async fn run(
     keymaps: &KeymapConfig,
     asr_tx: std::sync::mpsc::Sender<crate::audio::AsrRequest>,
     asr_config: Option<&crate::audio::AsrConfig>,
+    mic_mode: key_task::MicMode,
     mic_btn: &mut crate::AnyBtn,
 ) -> anyhow::Result<()> {
     log::info!("Connecting to MQTT broker at {uri} with client_id {client_id}");
@@ -354,7 +355,8 @@ pub async fn run(
                 // 耗时数十秒,绝不能阻塞本 async 任务(否则 single-thread runtime 冻死 →
                 // MQTT conn.next() 不被 poll → backpressure 冻死 broker task →
                 // "No PING_RESP, disconnected")。这里只发请求、收结果,select! 里继续排水
-                // server.recv() 保活 MQTT,松手时置 cancel 打断录音。
+                // server.recv() 保活 MQTT,停止时机随 mic_mode(见下方 select!):PTT 松手、
+                // Toggle 再按一下,届时置 cancel 打断录音。
                 let cfg = match asr_config {
                     Some(c) => c.clone(),
                     None => {
@@ -387,7 +389,17 @@ pub async fn run(
                         r = &mut orx => break r.unwrap_or_else(|_| {
                             Err(anyhow::anyhow!("ASR worker dropped request"))
                         }),
-                        _ = mic_btn.wait_for_high(), if !released => {
+                        // 停止录音的边沿按麦克风模式分:
+                        //   PTT  → 松手停止(wait_for_high:此时按下为低,等 rising level 即松手);
+                        //   Toggle → 再按一下停止。此时按键仍处于按下(低电平),level 触发的
+                        //            wait_for_low 会立刻返回误取消,故用 edge 触发的
+                        //            wait_for_falling_edge —— 它要等下一次高→低跳变(松手后再按)。
+                        _ = async {
+                            match mic_mode {
+                                key_task::MicMode::PushToTalk => mic_btn.wait_for_high().await,
+                                key_task::MicMode::Toggle => mic_btn.wait_for_falling_edge().await,
+                            }
+                        }, if !released => {
                             released = true;
                             cancel.store(true, Ordering::Relaxed);
                         }
@@ -775,6 +787,7 @@ pub mod key_task {
     }
 
     #[repr(u8)]
+    #[derive(Clone, Copy)]
     pub enum MicMode {
         PushToTalk,
         Toggle,

@@ -423,7 +423,7 @@ impl Driver {
         api_key: &str,
         model: &str,
         mut on_start_listen: impl FnMut(),
-        is_stop: impl Fn() -> bool,
+        mut is_stop: impl FnMut() -> bool,
     ) -> anyhow::Result<String> {
         let config = esp_idf_svc::http::client::Configuration {
             crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
@@ -512,7 +512,7 @@ impl Driver {
         Ok(asr_result.parse_text())
     }
 
-    pub fn start_asr<F: Fn() -> bool, F2: FnMut()>(
+    pub fn start_asr<F: FnMut() -> bool, F2: FnMut()>(
         &mut self,
         asr_config: &AsrConfig,
         on_start_listen: F2,

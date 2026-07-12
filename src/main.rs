@@ -577,6 +577,7 @@ fn main() -> anyhow::Result<()> {
         &keymap,
         asr_tx,
         asr_config.as_ref(),
+        app::key_task::MicMode::from(setting.mic_model),
         &mut btn0,
     );
     let r = runtime.block_on(app_fut);
@@ -712,20 +713,61 @@ async fn keyboard_mode_main(
                 event,
                 bt_keyboard_mode::ControllerCommand::KeyboardPress(bt_keyboard_mode::KeysPin::MIC)
             ) {
-                match driver.start_asr(
-                    asr_config,
-                    || {
-                        let _ = popup.show(display, "recording...");
-                    },
-                    || key_pins.mic.is_high(),
-                ) {
-                    Ok(asr) => {
-                        let _ = popup.show(display, &asr);
-                        controller.notify_asr(&asr);
+                // 麦克风模式取自 setting_arc(每次触发都读最新值,setup 改了即时生效)。
+                let mic_mode =
+                    app::key_task::MicMode::from(setting_arc.lock().unwrap().0.mic_model);
+                match mic_mode {
+                    app::key_task::MicMode::PushToTalk => {
+                        // 按住说话:松手(is_high)停止 —— 现状不变。
+                        match driver.start_asr(
+                            asr_config,
+                            || {
+                                let _ = popup.show(display, "recording...");
+                            },
+                            || key_pins.mic.is_high(),
+                        ) {
+                            Ok(asr) => {
+                                let _ = popup.show(display, &asr);
+                                controller.notify_asr(&asr);
+                            }
+                            Err(e) => {
+                                log::error!("ASR error: {:?}", e);
+                                let _ = popup.show(display, "ASR error");
+                            }
+                        }
                     }
-                    Err(e) => {
-                        log::error!("ASR error: {:?}", e);
-                        let _ = popup.show(display, "ASR error");
+                    app::key_task::MicMode::Toggle => {
+                        // 按一下开始、再按一下停止。start_asr 同步阻塞本事件循环,第二次
+                        // 按下无法作为 KeyboardPress 事件到达,只能在 is_stop 里轮询引脚电平
+                        // 做状态机:state 0 = 等首按松开;state 1 = 等第二次按下 → 返回 true 停止。
+                        // is_stop 是 FnMut,可直接捕获可变 state,不必用原子。
+                        let mut state: u8 = 0;
+                        match driver.start_asr(
+                            asr_config,
+                            || {
+                                let _ = popup.show(display, "recording...");
+                            },
+                            || {
+                                if key_pins.mic.is_low() {
+                                    // 已松开过(state 1)之后的按下即第二次 → 停止
+                                    state == 1
+                                } else {
+                                    if state == 0 {
+                                        state = 1;
+                                    }
+                                    false
+                                }
+                            },
+                        ) {
+                            Ok(asr) => {
+                                let _ = popup.show(display, &asr);
+                                controller.notify_asr(&asr);
+                            }
+                            Err(e) => {
+                                log::error!("ASR error: {:?}", e);
+                                let _ = popup.show(display, "ASR error");
+                            }
+                        }
                     }
                 }
                 continue;

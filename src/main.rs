@@ -36,7 +36,7 @@ const DEFAULT_SNTP_SERVERS: [&str; 4] = [
     "time.windows.com",
     "time.google.com",
     "ntp.aliyun.com",
-     "time.cloudflare.com"
+    "time.cloudflare.com",
 ];
 
 pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
@@ -58,12 +58,14 @@ pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
 
     for i in 0..15 {
         let p = ".".repeat(i % 4);
-        let _ = ui::render_keyboard_view(display_target, false, false, &format!("Syncing time{}", p));
+        let _ =
+            ui::render_keyboard_view(display_target, false, false, &format!("Syncing time{}", p));
         let status = ntp_client.get_sync_status();
         log::info!("sntp sync status {:?}", status);
         log_heap();
         if status == SyncStatus::Completed {
-            let _ = ui::render_keyboard_view(display_target, false, false, "Syncing time Completed");
+            let _ =
+                ui::render_keyboard_view(display_target, false, false, "Syncing time Completed");
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -117,7 +119,12 @@ fn main() -> anyhow::Result<()> {
 
     let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::CSS_BLACK);
     target.flush()?;
-    let _ = ui::render_keyboard_view(&mut target, false, false, "VibeKeys Starting...\n Read setting");
+    let _ = ui::render_keyboard_view(
+        &mut target,
+        false,
+        false,
+        "VibeKeys Starting...\n Read setting",
+    );
 
     // MIC(远程模式下由 app::run 直接持有,用于本地 ASR,故声明为 mut)
     let mut btn0 = new_btn(
@@ -381,7 +388,12 @@ fn main() -> anyhow::Result<()> {
                     let r = sync_time(&mut target);
                     if r.is_err() {
                         log::error!("Failed to sync time: {:?}", r.err());
-                        let _ = ui::render_keyboard_view(&mut target, false, false, " Time sync failed\n");
+                        let _ = ui::render_keyboard_view(
+                            &mut target,
+                            false,
+                            false,
+                            " Time sync failed\n",
+                        );
                         std::thread::sleep(std::time::Duration::from_secs(3));
                     } else {
                         let worker = audio::AudioWorker {
@@ -610,7 +622,11 @@ fn handle_reset_event(
 
     log::info!(
         "Received Reset from BLE, SSID:{}, SERVER_URL:{}, restarting",
-        lock.0.wifi_list.first().map(|c| c.ssid.as_str()).unwrap_or(""),
+        lock.0
+            .wifi_list
+            .first()
+            .map(|c| c.ssid.as_str())
+            .unwrap_or(""),
         lock.0.server_url
     );
     std::thread::sleep(std::time::Duration::from_secs(1));

@@ -74,7 +74,9 @@ pub struct Setting {
 
 /// 在已配置凭据里找出第一个出现在扫描结果中的(顺序即优先级)。
 fn pick_cred<'a>(scan_list: &[String], creds: &'a [WifiCred]) -> Option<&'a WifiCred> {
-    creds.iter().find(|c| scan_list.iter().any(|s| s == &c.ssid))
+    creds
+        .iter()
+        .find(|c| scan_list.iter().any(|s| s == &c.ssid))
 }
 
 impl Setting {

@@ -452,12 +452,8 @@ async fn open_session_picker(
     // 给最多 ENTRY_WAIT 让它们落地(已有 >=2 个会话则立即跳过);期间 ESC 可退出。
     const ENTRY_WAIT_MS: u64 = 1500;
     if server.session_labels().is_empty() {
-        let _ = crate::ui::render_keyboard_view(
-            ui.display_mut(),
-            false,
-            false,
-            "Loading sessions...",
-        );
+        let _ =
+            crate::ui::render_keyboard_view(ui.display_mut(), false, false, "Loading sessions...");
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_millis(ENTRY_WAIT_MS);
         loop {

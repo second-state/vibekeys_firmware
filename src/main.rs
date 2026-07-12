@@ -657,35 +657,6 @@ fn handle_keymap_config(
     }
 }
 
-fn handle_keymap_asr_config(
-    config: String,
-    nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
-) -> anyhow::Result<String> {
-    log::info!("Received keymap config: {}", config);
-    if config.is_empty() {
-        nvs.remove("asr_config").ok();
-        return Ok("ASR config cleared".to_string());
-    }
-    match audio::AsrConfig::from_json(&config) {
-        Ok(config) => match config.save_to_nvs(nvs) {
-            Ok(()) => {
-                log::info!("asr config merged and saved to NVS successfully");
-                Ok(format!(
-                    "ASR config updated: {}",
-                    serde_json::to_string_pretty(&config)
-                        .unwrap_or_else(|_| "Failed to serialize ASR config".to_string())
-                ))
-            }
-            Err(e) => {
-                anyhow::bail!("Failed to save asr_config to NVS: {:?}", e);
-            }
-        },
-        Err(e) => {
-            anyhow::bail!("Failed to parse asr_config JSON: {:?}", e);
-        }
-    }
-}
-
 async fn keyboard_mode_main(
     display: &mut lcd::FrameBuffer,
     ble_device: &mut esp32_nimble::BLEDevice,
@@ -726,18 +697,6 @@ async fn keyboard_mode_main(
                             keymap,
                         );
                         let _ = ui::render_keyboard_view(display, false, false, "keymap updated!");
-                        continue;
-                    }
-                    bt_keyboard_mode::ControllerCommand::AsrConfig(config) => {
-                        match handle_keymap_asr_config(config, &mut setting_arc.lock().unwrap().1) {
-                            Ok(msg) => {
-                                let _ = ui::render_keyboard_view(display, false, false, &msg);
-                            }
-                            Err(e) => {
-                                log::error!("Failed to update ASR config: {:?}", e);
-                                let _ = ui::render_keyboard_view(display, false, false, &format!("Failed to update ASR config:\n{:?}", e));
-                            }
-                        }
                         continue;
                     }
                     controller_evt => controller_evt,
@@ -910,9 +869,6 @@ pub fn handle_key_event(
         }
         bt_keyboard_mode::ControllerCommand::KeymapConfig(_) => {
             // KeymapConfig is handled separately in keyboard_mode_main
-        }
-        bt_keyboard_mode::ControllerCommand::AsrConfig(_) => {
-            // AsrConfig is handled separately in keyboard_mode_main
         }
     }
 

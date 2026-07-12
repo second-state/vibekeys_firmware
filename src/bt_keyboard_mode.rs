@@ -982,7 +982,6 @@ const KEYBOARD_DISPLAY_ID: BleUuid = uuid128!("cdaa6472-67a8-4241-93cf-145051608
 const KEYBOARD_NOTIFY_ID: BleUuid = uuid128!("d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f");
 const KEYMAP_CONFIG_ID: BleUuid = uuid128!("6f2a291c-0e4d-4f0f-9446-50bcd0b73bb0");
 const KEYMAP_ASR_RESULT_ID: BleUuid = uuid128!("f67f3c25-c9f0-456e-955e-cd9d9dd91051");
-const KEYMAP_ASR_CONFIG_ID: BleUuid = uuid128!("faf9e22c-e8fc-421b-afef-8b5236813fb1");
 
 pub struct ControllerService {
     pub notify_characteristic: Arc<Mutex<BLECharacteristic>>,
@@ -1014,7 +1013,6 @@ pub enum ControllerCommand {
     RotateUp,
     KeymapConfig(String),
     Paste(u8),
-    AsrConfig(String),
 }
 
 pub fn new_controller_service(
@@ -1063,20 +1061,6 @@ pub fn new_controller_service(
 
         let _ = tx_.blocking_send(ControllerCommand::KeymapConfig(s));
     });
-
-    let keymap_asr_config_characteristic =
-        service.create_characteristic(KEYMAP_ASR_CONFIG_ID, NimbleProperties::WRITE);
-
-    keymap_asr_config_characteristic
-        .lock()
-        .on_write(move |args| {
-            log::info!("Wrote to ASR config characteristic");
-            let data = args.recv_data();
-            log::info!("Received ASR config data: {:?}", data);
-            let s = String::from_utf8_lossy(&data).to_string();
-
-            let _ = tx.blocking_send(ControllerCommand::AsrConfig(s));
-        });
 
     Ok(ControllerService {
         notify_characteristic,

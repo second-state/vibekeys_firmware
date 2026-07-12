@@ -10,7 +10,6 @@ pub const SERVICE_ID: BleUuid = uuid128!("623fa3e2-631b-4f8f-a6e7-a7b09c03e7e0")
 /// 统一配置特征值:承载 ssid / pass / server_url(JSON {type,value} 复用)。
 /// 沿用原 SERVER_URL 的 UUID,手机端只对接这一个特征值。
 const CONFIG_ID: BleUuid = uuid128!("cef520a9-bcb5-4fc6-87f7-82804eee2b20");
-const MIC_MODEL_ID: BleUuid = uuid128!("72ae1823-ab95-4d78-af01-4ce8bb88e034");
 const BACKGROUND_PNG_ID: BleUuid = uuid128!("d1f3b2c4-5e6f-4a7b-8c9d-0e1f2a3b4c5d");
 const RESET_ID: BleUuid = uuid128!("f0e1d2c3-b4a5-6789-0abc-def123456789");
 
@@ -26,13 +25,14 @@ struct ConfigWrite {
     value: serde_json::Value,
 }
 
-/// 统一配置特征值的读取快照:整份 wifi_list + server_url(可选 + asr_config)。
+/// 统一配置特征值的读取快照:整份 wifi_list + server_url + asr_config + mic_model。
 #[derive(Serialize)]
 struct ConfigSnapshot<'a> {
     wifi_list: &'a [WifiCred],
     server_url: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     asr_config: Option<serde_json::Value>,
+    mic_model: u8,
 }
 /// 单条 WiFi 凭据。顺序即连接优先级。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,7 +180,7 @@ pub fn new_setting_service(
     config_characteristic
         .lock()
         .on_read(move |c, _| {
-            // 读一次返回整份快照(整份 wifi_list + server_url + asr_config),免去多次读。
+            // 读一次返回整份快照(wifi_list + server_url + asr_config + mic_model),免去多次读。
             let setting = config_r.lock().unwrap();
             let asr_config = AsrConfig::load_from_nvs(&setting.1);
             log::info!(
@@ -192,6 +192,7 @@ pub fn new_setting_service(
                 wifi_list: &setting.0.wifi_list,
                 server_url: setting.0.server_url.as_str(),
                 asr_config,
+                mic_model: setting.0.mic_model,
             };
             match serde_json::to_string(&snap) {
                 Ok(json) => {
@@ -250,20 +251,27 @@ pub fn new_setting_service(
                     None => log::error!("server_url value not a string"),
                 },
                 "asr_config" => {
-                    // value = {platform, uri, api_key, model};先校验能解析成 AsrConfig 再落盘,
-                    // 顺带规范化 JSON。asr_config 走独立 NVS 键,重启后由 main.rs 重新加载。
+                    // value = {platform, uri, api_key, model};先校验能解析成 AsrConfig 再落盘。
+                    // asr_config 走独立 NVS 键,重启后由 main.rs 重新加载。
                     match serde_json::from_value::<AsrConfig>(cw.value.clone()) {
-                        Ok(cfg) => match serde_json::to_string(&cfg) {
-                            Ok(json) => {
-                                if let Err(e) = setting.1.set_str("asr_config", &json) {
-                                    log::error!("Failed to save asr_config: {:?}", e);
-                                }
+                        Ok(cfg) => {
+                            if let Err(e) = cfg.save_to_nvs(&mut setting.1) {
+                                log::error!("Failed to save asr_config: {:?}", e);
                             }
-                            Err(e) => log::error!("serialize asr_config failed: {:?}", e),
-                        },
+                        }
                         Err(e) => log::error!("asr_config value invalid: {:?}", e),
                     }
                 }
+                "mic_model" => match cw.value.as_u64() {
+                    Some(v) => {
+                        let m = v as u8;
+                        setting.0.mic_model = m;
+                        if let Err(e) = setting.1.set_u8("mic_model", m) {
+                            log::error!("Failed to save mic_model: {:?}", e);
+                        }
+                    }
+                    None => log::error!("mic_model value not a number"),
+                },
                 other => log::warn!("Unknown config type: {}", other),
             }
         });
@@ -290,37 +298,6 @@ pub fn new_setting_service(
             }
         } else {
             log::error!("Failed to parse new background GIF from bytes.");
-        }
-    });
-
-    let setting = setting.clone();
-    let setting_ = setting.clone();
-
-    let mic_model_characteristic = service.create_characteristic(
-        MIC_MODEL_ID,
-        NimbleProperties::READ | NimbleProperties::WRITE,
-    );
-    mic_model_characteristic.lock().on_read(move |c, _| {
-        log::info!("Read from mic model characteristic");
-        let setting = setting.lock().unwrap();
-        c.set_value(&[setting.0.mic_model]);
-    });
-    mic_model_characteristic.lock().on_write(move |args| {
-        log::info!(
-            "Wrote to mic model characteristic: {:?} -> {:?}",
-            args.current_data(),
-            args.recv_data()
-        );
-        if let Some(&new_mic_model) = args.recv_data().get(0) {
-            log::info!("New mic model: {}", new_mic_model);
-            let mut setting = setting_.lock().unwrap();
-            if let Err(e) = setting.1.set_u8("mic_model", new_mic_model) {
-                log::error!("Failed to save mic model to NVS: {:?}", e);
-            } else {
-                setting.0.mic_model = new_mic_model;
-            }
-        } else {
-            log::error!("Failed to parse new mic model from bytes.");
         }
     });
 

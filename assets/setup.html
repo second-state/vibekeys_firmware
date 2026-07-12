@@ -173,12 +173,11 @@
     <script>
         // UUIDs
         const SERVICE_ID = "623fa3e2-631b-4f8f-a6e7-a7b09c03e7e0";
-        // wifi_list / server_url 复用同一个 CONFIG 特征值,
-        // 写入为 JSON {"type":"wifi_list|server_url","value":<array|string>},读取返回整份快照。
+        // 所有配置项复用同一个 CONFIG 特征值:
+        // 写入为 JSON {"type":"wifi_list|server_url|asr_config|mic_model","value":...},读取返回整份快照。
         const CONFIG_ID = "cef520a9-bcb5-4fc6-87f7-82804eee2b20";
         const BACKGROUND_IMAGE_ID = "d1f3b2c4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
         const RESET_ID = "f0e1d2c3-b4a5-6789-0abc-def123456789";
-        const MIC_MODEL_ID = "72ae1823-ab95-4d78-af01-4ce8bb88e034";
 
         // global variables
         let device = null;
@@ -505,7 +504,10 @@
                 asrUriInput.value = asr.uri || '';
                 asrApiKeyInput.value = asr.api_key || '';
                 asrModelInput.value = asr.model || '';
-                await readMicMode();
+                // mic mode(PTT=0 / Toggle=1),走 CONFIG 快照;旧固件无该字段时默认 Toggle。
+                const micMode = (typeof snap.mic_model === 'number') ? snap.mic_model : 1;
+                micModePTT.checked = (micMode === 0);
+                micModeToggle.checked = (micMode === 1);
 
                 // Clear all modification marks
                 clearWifiModification();
@@ -622,13 +624,15 @@
         }
 
         // Writes a typed config value to the single CONFIG characteristic
-        // as JSON {"type":"ssid|pass|server_url","value":"..."}.
+        // as JSON {"type":"wifi_list|server_url|asr_config|mic_model","value":...}.
+        // Note: value is passed through verbatim (no `|| ''`) so numeric 0 (mic PTT)
+        // and empty strings are preserved.
         async function writeConfig(typeName, inputValue) {
             if (!isConnected || !service) {
                 throw new Error('VibeKeys is not connected');
             }
 
-            const json = JSON.stringify({ type: typeName, value: inputValue || '' });
+            const json = JSON.stringify({ type: typeName, value: inputValue });
 
             try {
                 const characteristic = await service.getCharacteristic(CONFIG_ID);
@@ -651,47 +655,14 @@
             };
         }
 
-        // Read mic mode
-        async function readMicMode() {
-            if (!isConnected || !service) {
-                return false;
-            }
-
-            try {
-                const characteristic = await service.getCharacteristic(MIC_MODEL_ID);
-                const value = await characteristic.readValue();
-                const modeValue = value.getUint8(0);
-                console.log('Read mic mode value:', modeValue);
-                if (modeValue === 0) {
-                    micModePTT.checked = true;
-                    micModeToggle.checked = false;
-                } else if (modeValue === 1) {
-                    micModeToggle.checked = true;
-                    micModePTT.checked = false;
-                }
-                return true;
-            } catch (error) {
-                console.error('Read mic mode error:', error);
-                return false;
-            }
-        }
-
-        // Write mic mode
+        // Write mic mode (PTT=0 / Toggle=1) via the CONFIG characteristic.
         async function writeMicMode() {
             if (!isConnected || !service) {
                 throw new Error('VibeKeys is not connected');
             }
 
             const modeValue = micModePTT.checked ? 0 : 1;
-
-            try {
-                const characteristic = await service.getCharacteristic(MIC_MODEL_ID);
-                const data = new Uint8Array([modeValue]);
-                await characteristic.writeValue(data);
-            } catch (error) {
-                console.error('Write mic mode error:', error);
-                throw error;
-            }
+            await writeConfig('mic_model', modeValue);
         }
 
         async function writeBackgroundImage() {

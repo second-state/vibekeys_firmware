@@ -102,6 +102,9 @@ pub async fn run(
     let mut current_screen: Option<crate::new_jpg::JpegBufferu16> = None;
     // 显示窗口在 current_screen 中的顶部像素行;0 = 最上面。
     let mut view_window_offset: usize = 0;
+    // 当前帧是否还有下文。vibetty 在每帧 JPEG 末尾附一个大端 u32 作为滚动 offset 标记,
+    // 0 = 本页是最底页(没有下文)。本地缓冲滚到底后据此决定:有下文才请求下一页,否则忽略。
+    let mut current_has_more_below: bool = true;
     let view_windows_height = crate::lcd::DISPLAY_HEIGHT as usize;
     /// 滚轮每格本地平移的像素步长(可调)。
     const SCROLL_STEP_PX: usize = 20;
@@ -168,14 +171,15 @@ pub async fn run(
                                     log::error!("Failed to flush screen window: {e:?}");
                                 }
                             }
-                        } else {
-                            // 已经在缓冲最底,请服务端继续往下翻。
+                        } else if current_has_more_below {
+                            // 已经在缓冲最底、且本页还有下文:请服务端继续往下翻。
                             // 预先把窗口拉到顶:新帧的最顶正好接在旧帧最底之上,连续阅读不跳。
                             view_window_offset = 0;
                             server
                                 .send(protocol::ClientMessage::ScrollDown { rows: 0 })
                                 .await?;
                         }
+                        // else:本页已是最底(尾部 u32 == 0),没有下文 —— 忽略向下滚动。
                     }
                 }
                 Event::Esc => {
@@ -291,8 +295,28 @@ pub async fn run(
                             chunk.data.len()
                         );
                     } else if matches!(chunk.format, protocol::ImageFormat::Jpeg) {
-                        log::info!("Received screen image: {} bytes (jpeg)", chunk.data.len());
-                        match crate::new_jpg::esp_jpeg_decode_one_picture(&chunk.data) {
+                        // vibetty 在 JPEG 末尾附了一个大端 u32 作为滚动 offset 标记:
+                        // 0 = 本页是最底页(没有下文)。解码前先剥出尾部 4 字节,只把 JPEG 部分喂给解码器。
+                        let data = &chunk.data;
+                        let (jpeg, has_more_below) = if data.len() >= 4 {
+                            let off = data.len() - 4;
+                            let marker = u32::from_be_bytes([
+                                data[off],
+                                data[off + 1],
+                                data[off + 2],
+                                data[off + 3],
+                            ]);
+                            (&data[..off], marker != 0)
+                        } else {
+                            (data.as_slice(), true) // 旧端没附标记:当作还有下文,不阻断向下翻页
+                        };
+                        log::info!(
+                            "Received screen image: {}B jpeg + {}B tail, more_below={}",
+                            jpeg.len(),
+                            data.len().saturating_sub(jpeg.len()),
+                            has_more_below
+                        );
+                        match crate::new_jpg::esp_jpeg_decode_one_picture(jpeg) {
                             Ok(display) => {
                                 // 新帧到达:保留当前滚动位置,只夹到新缓冲的合法区间,
                                 // 避免每次刷帧都把视图拉回原点。
@@ -303,6 +327,7 @@ pub async fn run(
                                 {
                                     log::error!("Failed to flush screen window: {e:?}");
                                 }
+                                current_has_more_below = has_more_below;
                                 current_screen = Some(display);
                             }
                             Err(e) => log::error!("Failed to decode JPEG: {e:?}"),

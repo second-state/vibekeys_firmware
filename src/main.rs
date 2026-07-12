@@ -708,11 +708,18 @@ async fn keyboard_mode_main(
         // 每轮事件先关闭上一轮的弹窗(增量 restore),再处理新事件
         let _ = popup.hide(display);
 
+        // 内置 ASR(Whisper)只在本设置开启、且驱动与配置都在时才接管 MIC;
+        // 否则 MIC 按键透传给主机(默认映射成 Ctrl+Option,触发主机自带听写)。
+        let prefer_builtin_asr = setting_arc.lock().unwrap().0.prefer_builtin_asr;
         if let (Some(driver), Some(asr_config)) = (driver.as_mut(), asr_config.as_ref()) {
-            if matches!(
-                event,
-                bt_keyboard_mode::ControllerCommand::KeyboardPress(bt_keyboard_mode::KeysPin::MIC)
-            ) {
+            if prefer_builtin_asr
+                && matches!(
+                    event,
+                    bt_keyboard_mode::ControllerCommand::KeyboardPress(
+                        bt_keyboard_mode::KeysPin::MIC
+                    )
+                )
+            {
                 // 麦克风模式取自 setting_arc(每次触发都读最新值,setup 改了即时生效)。
                 let mic_mode =
                     app::key_task::MicMode::from(setting_arc.lock().unwrap().0.mic_model);

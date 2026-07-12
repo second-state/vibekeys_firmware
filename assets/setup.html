@@ -118,6 +118,20 @@
                                     </div>
                                 </label>
 
+                                <label class="form-control">
+                                    <div class="label">
+                                        <span class="label-text">Built-in ASR (Keyboard Mode)</span>
+                                    </div>
+                                    <label class="label cursor-pointer gap-2 justify-start">
+                                        <input type="checkbox" id="preferBuiltinAsr"
+                                            class="checkbox checkbox-primary checkbox-xs" checked="checked" />
+                                        <span class="label-text tooltip"
+                                            data-tip="On: MIC uses on-device Whisper. Off: MIC forwards to the host (Ctrl+Option) to trigger its native dictation.">
+                                            Prefer built-in ASR
+                                        </span>
+                                    </label>
+                                </label>
+
                                 <div class="border-t border-base-300 pt-6">
                                     <h3 class="card-title text-lg mb-4">Background Image</h3>
                                     <div class="form-control mb-4">
@@ -218,12 +232,14 @@
         const resetNotSupportedModal = document.getElementById('resetNotSupportedModal');
         const micModePTT = document.getElementById('micModePTT');
         const micModeToggle = document.getElementById('micModeToggle');
+        const preferBuiltinAsr = document.getElementById('preferBuiltinAsr');
 
         // Track modified fields
         const modifiedFields = {
             wifi: false,
             url: false,
             micMode: false,
+            preferBuiltin: false,
             asr: false
         };
 
@@ -508,6 +524,8 @@
                 const micMode = (typeof snap.mic_model === 'number') ? snap.mic_model : 1;
                 micModePTT.checked = (micMode === 0);
                 micModeToggle.checked = (micMode === 1);
+                // 是否优先用内置 ASR(键盘模式);旧固件无该字段时默认开启。
+                preferBuiltinAsr.checked = (snap.prefer_builtin_asr !== false);
 
                 // Clear all modification marks
                 clearWifiModification();
@@ -547,7 +565,8 @@
                     await writeConfig('server_url', serverUrlInput.value);
                     await writeConfig('asr_config', buildAsrConfig());
                     await writeMicMode();
-                    savedCount = 4;
+                    await writePreferBuiltin();
+                    savedCount = 5;
                 } else {
                     // If there are modifications, only send modified fields
                     if (modifiedFields.wifi) {
@@ -571,6 +590,12 @@
                     if (modifiedFields.micMode) {
                         await writeMicMode();
                         modifiedFields.micMode = false;
+                        savedCount++;
+                    }
+
+                    if (modifiedFields.preferBuiltin) {
+                        await writePreferBuiltin();
+                        modifiedFields.preferBuiltin = false;
                         savedCount++;
                     }
                 }
@@ -663,6 +688,15 @@
 
             const modeValue = micModePTT.checked ? 0 : 1;
             await writeConfig('mic_model', modeValue);
+        }
+
+        // Write the prefer-built-in-ASR toggle (keyboard mode) via the CONFIG characteristic.
+        async function writePreferBuiltin() {
+            if (!isConnected || !service) {
+                throw new Error('VibeKeys is not connected');
+            }
+
+            await writeConfig('prefer_builtin_asr', !!preferBuiltinAsr.checked);
         }
 
         async function writeBackgroundImage() {
@@ -763,6 +797,11 @@
 
         micModeToggle.addEventListener('change', () => {
             modifiedFields.micMode = true;
+            updateSaveButtonState();
+        });
+
+        preferBuiltinAsr.addEventListener('change', () => {
+            modifiedFields.preferBuiltin = true;
             updateSaveButtonState();
         });
 

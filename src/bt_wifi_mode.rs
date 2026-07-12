@@ -25,7 +25,7 @@ struct ConfigWrite {
     value: serde_json::Value,
 }
 
-/// 统一配置特征值的读取快照:整份 wifi_list + server_url + asr_config + mic_model。
+/// 统一配置特征值的读取快照:整份 wifi_list + server_url + asr_config + mic_model + prefer_builtin_asr。
 #[derive(Serialize)]
 struct ConfigSnapshot<'a> {
     wifi_list: &'a [WifiCred],
@@ -33,6 +33,7 @@ struct ConfigSnapshot<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     asr_config: Option<serde_json::Value>,
     mic_model: u8,
+    prefer_builtin_asr: bool,
 }
 /// 单条 WiFi 凭据。顺序即连接优先级。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +60,8 @@ pub struct Setting {
     pub server_url: String,
     pub background_png: (Vec<u8>, bool), // (data, ended)
     pub mic_model: u8,
+    /// 键盘模式下是否优先用内置 ASR(Whisper);false 时 MIC 透传给主机(触发主机自带听写)。
+    pub prefer_builtin_asr: bool,
     state: u8,
 }
 
@@ -78,6 +81,7 @@ impl Setting {
         nvs.remove("server_url")?;
         nvs.remove("background_png")?;
         nvs.remove("mic_model")?;
+        nvs.remove("prefer_builtin_asr")?;
         nvs.remove("state")?;
         Ok(())
     }
@@ -148,12 +152,14 @@ impl Setting {
         nvs.set_u8("state", 0)?;
 
         let mic_model = nvs.get_u8("mic_model")?.unwrap_or(1);
+        let prefer_builtin_asr = nvs.get_u8("prefer_builtin_asr")?.unwrap_or(1) != 0;
 
         Ok(Setting {
             wifi_list,
             server_url,
             background_png: (background_png, false),
             mic_model,
+            prefer_builtin_asr,
             state,
         })
     }
@@ -193,6 +199,7 @@ pub fn new_setting_service(
                 server_url: setting.0.server_url.as_str(),
                 asr_config,
                 mic_model: setting.0.mic_model,
+                prefer_builtin_asr: setting.0.prefer_builtin_asr,
             };
             match serde_json::to_string(&snap) {
                 Ok(json) => {
@@ -284,6 +291,15 @@ pub fn new_setting_service(
                         }
                     }
                     None => log::error!("mic_model value not a number"),
+                },
+                "prefer_builtin_asr" => match cw.value.as_bool() {
+                    Some(b) => {
+                        setting.0.prefer_builtin_asr = b;
+                        if let Err(e) = setting.1.set_u8("prefer_builtin_asr", b as u8) {
+                            log::error!("Failed to save prefer_builtin_asr: {:?}", e);
+                        }
+                    }
+                    None => log::error!("prefer_builtin_asr value not a boolean"),
                 },
                 other => log::warn!("Unknown config type: {}", other),
             }

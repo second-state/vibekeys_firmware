@@ -88,6 +88,11 @@ pub async fn run(
     // Remote 外壳:连接/首屏前的 stop 占位(收到 vibetty 屏幕后由 ui.handle_message 覆盖)。
     let _ = crate::ui::render_remote_view(ui.display_mut(), false);
     let mut popup = crate::ui::popup_centered(ui.display_mut().bounding_box());
+
+    // 进入 remote 模式直接弹会话列表让用户挑,而不是先自动看活跃会话的屏。
+    // 冷启动时 retained presence 还没经 recv() 落进 sessions 表,picker 入口会先等它们到达。
+    let _ = open_session_picker(&mut server, ui, &mut rx, &mut popup).await;
+
     // ASR 文本编辑器:Some = 正在编辑(屏幕显示编辑器,不刷会话屏);None = 空闲。
     // 用 ui::AsrEditor(ui.rs 弹窗风格),不用 lcd::UI 那套(麦克风状态条,风格不一致)。
     let mut asr_editor: Option<crate::ui::AsrEditor> = None;
@@ -398,50 +403,146 @@ pub async fn run(
     Ok(())
 }
 
-/// 会话选择器:旋钮按下时弹出。NEXT 移动焦点、ACCEPT 切换活跃会话、ESC 取消。
-/// 只在 `rx` 上等按键;期间 MQTT 消息缓冲在 esp-mqtt 内部队列,短交互无碍。
+/// 选择器内 select! 产出的事件:只负责取事件,真正借用 server 的处理放在下面
+/// 的 `match evt`,避开 select! 内 `server.recv()` 与 `server.send/session_labels` 的借用冲突。
+enum PickerEvt {
+    Key(Event),
+    Mqtt(crate::mqtt::MqttEvent),
+    /// 事件源已关闭(rx / server 已销毁)。
+    Closed,
+}
+
+/// 会话选择器:进入 remote 模式或旋钮按下时打开。NEXT 移动焦点、ACCEPT 切换活跃会话、ESC 取消。
+///
+/// 打开期间也持续 `server.recv()`:任一会话 presence 变化(状态跳变 / 上下线 / 标题变)
+/// 都改变列表内容 → 重新渲染。焦点按 prefix 记,waiting 优先重排时 index 会跳,
+/// 按 prefix 记才能跨重排仍指向同一会话。内容没变就不重绘,避免冗余 presence 闪烁。
 async fn open_session_picker(
     server: &mut crate::mqtt::MqttServer,
     ui: &mut crate::lcd::UI,
     rx: &mut tokio::sync::mpsc::Receiver<Event>,
     popup: &mut crate::ui::Popup,
 ) -> anyhow::Result<()> {
-    let labels = server.session_labels();
-    if labels.len() <= 1 {
-        let _ = popup.show(ui.display_mut(), "no other session");
+    // 入口:retained presence 在 subscribe 后很快到达,但需 poll recv 才会进 sessions 表。
+    // 给最多 ENTRY_WAIT 让它们落地(已有 >=2 个会话则立即跳过);期间 ESC 可退出。
+    const ENTRY_WAIT_MS: u64 = 1500;
+    if server.session_labels().is_empty() {
+        let _ = crate::ui::render_keyboard_view(
+            ui.display_mut(),
+            false,
+            false,
+            "Loading sessions...",
+        );
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(ENTRY_WAIT_MS);
+        loop {
+            if !server.session_labels().is_empty() {
+                break;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                ev = rx.recv() => match ev {
+                    Some(Event::Esc) | None => return Ok(()),
+                    _ => {}
+                },
+                m = server.recv() => { if m.is_none() { return Ok(()); } }
+            }
+        }
+    }
+
+    let mut labels = server.session_labels();
+    if labels.is_empty() {
+        let _ = popup.show(ui.display_mut(), "no session");
         return Ok(());
     }
-    let items: Vec<(String, bool)> = labels
+
+    // 焦点按 prefix 记:状态跳变触发 waiting 优先重排,index 会乱跳,故不存 index。
+    let mut focus_prefix: String = labels
         .iter()
-        .map(|(_, label, _, working)| (label.clone(), *working))
-        .collect();
-    let mut focus = labels
-        .iter()
-        .position(|(_, _, is_active, _)| *is_active)
-        .unwrap_or(0);
+        .find(|(_, _, is_active, _)| *is_active)
+        .or_else(|| labels.first())
+        .map(|(p, _, _, _)| p.clone())
+        .unwrap();
+    // 上次渲染的指纹(items + 焦点行);只在其变化时重绘。
+    let mut last_sig: Option<(Vec<(String, bool)>, usize)> = None;
 
     loop {
-        let _ = crate::ui::render_session_list(ui.display_mut(), "Session (ESC=cancel)", &items, focus);
-        match rx.recv().await {
-            Some(Event::NEXT) => {
-                if !items.is_empty() {
-                    focus = (focus + 1) % items.len();
+        let items: Vec<(String, bool)> = labels
+            .iter()
+            .map(|(_, label, _, is_working)| (label.clone(), *is_working))
+            .collect();
+        let focus_idx = labels
+            .iter()
+            .position(|(p, _, _, _)| p == &focus_prefix)
+            .unwrap_or(0);
+
+        let sig = (items.clone(), focus_idx);
+        if last_sig.as_ref() != Some(&sig) {
+            let _ = crate::ui::render_session_list(
+                ui.display_mut(),
+                "Session (ESC=cancel)",
+                &items,
+                focus_idx,
+            );
+            last_sig = Some(sig);
+        }
+
+        let evt: PickerEvt = tokio::select! {
+            ev = rx.recv() => match ev { Some(e) => PickerEvt::Key(e), None => PickerEvt::Closed },
+            m = server.recv() => match m { Some(e) => PickerEvt::Mqtt(e), None => PickerEvt::Closed },
+        };
+
+        match evt {
+            PickerEvt::Closed => {
+                let _ = server.send(protocol::ClientMessage::sync()).await;
+                return Ok(());
+            }
+            PickerEvt::Key(Event::NEXT) => {
+                if let Some(i) = labels.iter().position(|(p, _, _, _)| p == &focus_prefix) {
+                    let ni = (i + 1) % labels.len();
+                    focus_prefix = labels[ni].0.clone();
                 }
             }
-            Some(Event::Accept) => {
-                let (prefix, label, _, _) = &labels[focus];
-                server.set_active(prefix);
+            PickerEvt::Key(Event::Accept) => {
+                server.set_active(&focus_prefix);
                 // 让新活跃会话立刻推一帧,免得干等下一帧。
                 let _ = server.send(protocol::ClientMessage::sync()).await;
+                let label = labels
+                    .iter()
+                    .find(|(p, _, _, _)| p == &focus_prefix)
+                    .map(|(_, l, _, _)| l.clone())
+                    .unwrap_or_default();
                 let _ = popup.show(ui.display_mut(), &format!("-> {label}"));
                 return Ok(());
             }
-            Some(Event::Esc) | None => {
+            PickerEvt::Key(Event::Esc) => {
                 // 取消:活跃未变。发个 sync 让当前会话立即重绘一帧覆盖列表。
                 let _ = server.send(protocol::ClientMessage::sync()).await;
                 return Ok(());
             }
-            _ => {} // 旋钮方向 / 其它键在选择器里忽略
+            PickerEvt::Key(_) => {} // 旋钮方向 / 其它键在选择器里忽略
+            PickerEvt::Mqtt(crate::mqtt::MqttEvent::Presence { .. }) => {
+                let new_labels = server.session_labels();
+                if new_labels.is_empty() {
+                    let _ = server.send(protocol::ClientMessage::sync()).await;
+                    let _ = popup.show(ui.display_mut(), "no session");
+                    return Ok(());
+                }
+                labels = new_labels;
+                // 焦点会话若已下线,回退到活跃会话或首项。
+                if !labels.iter().any(|(p, _, _, _)| p == &focus_prefix) {
+                    focus_prefix = labels
+                        .iter()
+                        .find(|(_, _, a, _)| *a)
+                        .or_else(|| labels.first())
+                        .map(|(p, _, _, _)| p.clone())
+                        .unwrap();
+                }
+                // 内容变化由下一轮 loop 顶的指纹比较触发重绘。
+            }
+            PickerEvt::Mqtt(crate::mqtt::MqttEvent::ActiveScreen(_)) => {
+                // 选择器开着时不刷屏;退出时 sync() 会要新帧。
+            }
         }
     }
 }

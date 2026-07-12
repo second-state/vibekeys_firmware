@@ -91,9 +91,9 @@ fn default_state_working() -> String {
     "working".to_string()
 }
 
-/// session 列表单行可容纳的字符数(默认屏 ~284px / 7px ≈ 40,留余量取 30)。
-/// title 可能含 cwd 等很长的内容,截断避免在 render_list 里换行叠到下一行。
-const LIST_LABEL_MAX_CHARS: usize = 30;
+/// session 列表单行字符上限。取 15:最坏全角中文 15×12px=180px,默认屏(284)/max2(320)都单行不溢出。
+/// title 可能含 cwd 等很长的内容,截断避免换行叠到下一行。
+const LIST_LABEL_MAX_CHARS: usize = 15;
 fn truncate_for_list(s: &str) -> String {
     if s.chars().count() <= LIST_LABEL_MAX_CHARS {
         return s.to_string();
@@ -383,15 +383,17 @@ impl MqttServer {
     }
 
     /// 当前已知会话列表,供选择器渲染。排序:waiting(!is_working) 优先排前(需要关注),
-    /// 再按 ts 升序、prefix,保证 NEXT 稳定。
+    /// 再按 prefix(topic,唯一不变)定序 —— 不用 ts(每次 presence 刷新都变,会让同状态会话乱跳)。
     /// 返回 (prefix, 显示标签, 是否活跃, 是否 working)。标签优先 title,空则回退 client_id,
     /// 再空回退 prefix,并截断到 LIST_LABEL_MAX_CHARS 字符避免 render_list 换行叠行。
     pub fn session_labels(&self) -> Vec<(String, String, bool, bool)> {
         let mut entries: Vec<(&String, &Session)> = self.sessions.iter().collect();
+        // 一步排序:先比 is_working(false=waiting/!is_working 在前,true=working 在后);
+        // is_working 相同时再比 prefix(topic,唯一不变)定组内顺序。不用 ts —— presence 每次
+        // 刷新都更新 ts,会让同状态会话顺序随机跳变。
         entries.sort_by(|a, b| {
             a.1.is_working
-                .cmp(&b.1.is_working) // waiting(false) 排前
-                .then_with(|| a.1.ts.cmp(&b.1.ts))
+                .cmp(&b.1.is_working)
                 .then_with(|| a.0.cmp(b.0))
         });
         entries

@@ -588,7 +588,7 @@ pub fn render_list(
 
 /// session 列表:蓝底 = 选中(焦点);文字色 = working 白 / waiting(非 working)橙。
 /// 与通用 render_list 不同 —— 这里底色表示焦点、文字色表示 working 状态,二者正交
-/// (故不复用 render_list 的青色焦点底色)。
+/// (故不复用 render_list 的青色焦点底色)。条目用文泉驿字体(支持中文标题)。
 pub fn render_session_list(
     target: &mut FrameBuffer,
     title: &str,
@@ -634,7 +634,8 @@ pub fn render_session_list(
         } else {
             ColorFormat::CSS_DARK_ORANGE
         };
-        draw_text(target, label, rect, color, bg, HorizontalAlignment::Left)?;
+        // 文泉驿字体:标题可能含中文。标签由 mqtt::session_labels 截到 15 字符,单行不溢出。
+        draw_text_cjk(target, label, rect, color, bg, HorizontalAlignment::Left)?;
     }
     flush(target)
 }

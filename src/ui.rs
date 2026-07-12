@@ -586,6 +586,59 @@ pub fn render_list(
     flush(target)
 }
 
+/// session 列表:蓝底 = 选中(焦点);文字色 = working 白 / waiting(非 working)橙。
+/// 与通用 render_list 不同 —— 这里底色表示焦点、文字色表示 working 状态,二者正交
+/// (故不复用 render_list 的青色焦点底色)。
+pub fn render_session_list(
+    target: &mut FrameBuffer,
+    title: &str,
+    // items: (label, is_working)
+    items: &[(String, bool)],
+    focus: usize,
+) -> anyhow::Result<()> {
+    let bb = target.bounding_box();
+    let width = bb.size.width;
+    let height = bb.size.height;
+    clear(target, ColorFormat::CSS_BLACK)?;
+    draw_text(
+        target,
+        title,
+        Rectangle::new(Point::new(4, 0), Size::new(width - 4, LINE_H + 2)),
+        ColorFormat::CSS_WHEAT,
+        None,
+        HorizontalAlignment::Left,
+    )?;
+    let item_h = LINE_H + 2;
+    let start_y: i32 = 18;
+    let visible = (((height as i32) - start_y) / (item_h as i32)).max(1) as usize;
+    let start = focus.saturating_sub(visible.saturating_sub(1));
+
+    for (i, (label, is_working)) in items.iter().enumerate() {
+        if i < start {
+            continue;
+        }
+        let row = i - start;
+        let rect = Rectangle::new(
+            Point::new(0, start_y + (row as i32) * (item_h as i32)),
+            Size::new(width, item_h),
+        );
+        let is_focus = i == focus;
+        // 蓝底 = 选中(焦点);文字色 = working 白 / waiting(非 working)橙。二者正交。
+        let bg = if is_focus {
+            Some(ColorFormat::CSS_DARK_BLUE)
+        } else {
+            None
+        };
+        let color = if *is_working {
+            ColorFormat::CSS_WHITE
+        } else {
+            ColorFormat::CSS_DARK_ORANGE
+        };
+        draw_text(target, label, rect, color, bg, HorizontalAlignment::Left)?;
+    }
+    flush(target)
+}
+
 fn render_password(
     target: &mut FrameBuffer,
     header: &str,

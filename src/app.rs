@@ -411,14 +411,17 @@ async fn open_session_picker(
         let _ = popup.show(ui.display_mut(), "no other session");
         return Ok(());
     }
-    let items: Vec<String> = labels.iter().map(|(_, label, _)| label.clone()).collect();
+    let items: Vec<(String, bool)> = labels
+        .iter()
+        .map(|(_, label, _, working)| (label.clone(), *working))
+        .collect();
     let mut focus = labels
         .iter()
-        .position(|(_, _, is_active)| *is_active)
+        .position(|(_, _, is_active, _)| *is_active)
         .unwrap_or(0);
 
     loop {
-        let _ = crate::ui::render_list(ui.display_mut(), "Session (ESC=cancel)", &items, focus);
+        let _ = crate::ui::render_session_list(ui.display_mut(), "Session (ESC=cancel)", &items, focus);
         match rx.recv().await {
             Some(Event::NEXT) => {
                 if !items.is_empty() {
@@ -426,7 +429,7 @@ async fn open_session_picker(
                 }
             }
             Some(Event::Accept) => {
-                let (prefix, label, _) = &labels[focus];
+                let (prefix, label, _, _) = &labels[focus];
                 server.set_active(prefix);
                 // 让新活跃会话立刻推一帧,免得干等下一帧。
                 let _ = server.send(protocol::ClientMessage::sync()).await;

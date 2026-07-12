@@ -58,6 +58,10 @@ pub struct MqttServer {
 struct Session {
     client_id: String,
     ts: u64,
+    /// vibetty 窗口 title(presence 带来);session list 优先用它当标签。
+    title: String,
+    /// agent 是否在工作中(state=="working");waiting 时为 false。
+    is_working: bool,
 }
 
 /// `recv()` 上报给 app 的事件。
@@ -74,6 +78,29 @@ struct Presence {
     prefix: String,
     client_id: String,
     ts: u64,
+    /// vibetty 窗口 title(新协议带来;旧端不发时 default 成空串,不影响解析)。
+    #[serde(default)]
+    title: String,
+    /// agent 工作状态:"working" | "waiting"(vibetty 端 AgentState 小写序列化)。
+    /// 旧端不发时 default "working"(与 vibetty 初始状态一致)。
+    #[serde(default = "default_state_working")]
+    state: String,
+}
+
+fn default_state_working() -> String {
+    "working".to_string()
+}
+
+/// session 列表单行可容纳的字符数(默认屏 ~284px / 7px ≈ 40,留余量取 30)。
+/// title 可能含 cwd 等很长的内容,截断避免在 render_list 里换行叠到下一行。
+const LIST_LABEL_MAX_CHARS: usize = 30;
+fn truncate_for_list(s: &str) -> String {
+    if s.chars().count() <= LIST_LABEL_MAX_CHARS {
+        return s.to_string();
+    }
+    let mut t: String = s.chars().take(LIST_LABEL_MAX_CHARS - 3).collect();
+    t.push_str("...");
+    t
 }
 
 /// 等首条 `Connected`(带超时)。单独成函数以 `&mut rx` 借用,等完归还 rx 给 `Self`。
@@ -230,12 +257,17 @@ impl MqttServer {
                     match serde_json::from_slice::<Presence>(&data) {
                         Ok(p) => {
                             // 注册/刷新:保留已存在的 entry(不干扰进行中的重组),只更新元信息。
+                            let is_working = p.state == "working";
                             let s = self.sessions.entry(p.prefix.clone()).or_insert(Session {
                                 client_id: p.client_id.clone(),
                                 ts: p.ts,
+                                title: p.title.clone(),
+                                is_working,
                             });
                             s.client_id = p.client_id;
                             s.ts = p.ts;
+                            s.title = p.title;
+                            s.is_working = is_working;
                             self.cap_sessions();
 
                             // 首会话自动活跃;此后不再自动切(由用户通过旋钮弹窗手动切换)。
@@ -350,23 +382,33 @@ impl MqttServer {
         Ok(())
     }
 
-    /// 当前已知会话列表,供选择器渲染。按 ts 升序(再按 prefix)排序,保证 NEXT 稳定。
-    /// 返回 (prefix, 显示标签, 是否活跃)。标签优先 client_id,空则回退 prefix。
-    pub fn session_labels(&self) -> Vec<(String, String, bool)> {
+    /// 当前已知会话列表,供选择器渲染。排序:waiting(!is_working) 优先排前(需要关注),
+    /// 再按 ts 升序、prefix,保证 NEXT 稳定。
+    /// 返回 (prefix, 显示标签, 是否活跃, 是否 working)。标签优先 title,空则回退 client_id,
+    /// 再空回退 prefix,并截断到 LIST_LABEL_MAX_CHARS 字符避免 render_list 换行叠行。
+    pub fn session_labels(&self) -> Vec<(String, String, bool, bool)> {
         let mut entries: Vec<(&String, &Session)> = self.sessions.iter().collect();
-        entries.sort_by(|a, b| a.1.ts.cmp(&b.1.ts).then_with(|| a.0.cmp(b.0)));
+        entries.sort_by(|a, b| {
+            a.1.is_working
+                .cmp(&b.1.is_working) // waiting(false) 排前
+                .then_with(|| a.1.ts.cmp(&b.1.ts))
+                .then_with(|| a.0.cmp(b.0))
+        });
         entries
             .into_iter()
             .map(|(prefix, s)| {
-                let label = if s.client_id.is_empty() {
-                    prefix.clone()
-                } else {
+                let raw = if !s.title.is_empty() {
+                    s.title.clone()
+                } else if !s.client_id.is_empty() {
                     s.client_id.clone()
+                } else {
+                    prefix.clone()
                 };
                 (
                     prefix.clone(),
-                    label,
+                    truncate_for_list(&raw),
                     self.active.as_deref() == Some(prefix.as_str()),
+                    s.is_working,
                 )
             })
             .collect()

@@ -554,54 +554,34 @@
             saveAllButton.textContent = 'Saving...';
 
             try {
-                let savedCount = 0;
                 const hasModifications = Object.values(modifiedFields).some(modified => modified);
 
                 // 过滤掉 ssid 为空的网络,避免把空条目写进设备。
                 const nonEmptyWifi = wifiList.filter(c => c.ssid && c.ssid.trim() !== '');
 
-                // If no modifications, send everything
-                if (!hasModifications) {
-                    await writeConfig('wifi_list', nonEmptyWifi);
-                    await writeConfig('server_url', serverUrlInput.value);
-                    await writeConfig('asr_config', buildAsrConfig());
-                    await writeMicMode();
-                    await writePreferBuiltin();
-                    savedCount = 5;
-                } else {
-                    // If there are modifications, only send modified fields
-                    if (modifiedFields.wifi) {
-                        await writeConfig('wifi_list', nonEmptyWifi);
-                        clearWifiModification();
-                        savedCount++;
-                    }
+                // 攒一个部分配置对象:无改动时发整份,有改动时只发改动的字段。
+                // 一次 writeConfigPatch 发出去,设备只更新出现的 key —— 不再逐字段发多次。
+                const include = (modified) => !hasModifications || modified;
+                const patch = {};
+                if (include(modifiedFields.wifi)) patch.wifi_list = nonEmptyWifi;
+                if (include(modifiedFields.url)) patch.server_url = serverUrlInput.value;
+                if (include(modifiedFields.asr)) patch.asr_config = buildAsrConfig();
+                if (include(modifiedFields.micMode)) patch.mic_model = micModePTT.checked ? 0 : 1;
+                if (include(modifiedFields.preferBuiltin)) patch.prefer_builtin_asr = !!preferBuiltinAsr.checked;
 
-                    if (modifiedFields.url) {
-                        await writeConfig('server_url', serverUrlInput.value);
-                        clearFieldModification('url', urlTitle);
-                        savedCount++;
-                    }
-
-                    if (modifiedFields.asr) {
-                        await writeConfig('asr_config', buildAsrConfig());
-                        clearFieldModification('asr', asrTitle);
-                        savedCount++;
-                    }
-
-                    if (modifiedFields.micMode) {
-                        await writeMicMode();
-                        modifiedFields.micMode = false;
-                        savedCount++;
-                    }
-
-                    if (modifiedFields.preferBuiltin) {
-                        await writePreferBuiltin();
-                        modifiedFields.preferBuiltin = false;
-                        savedCount++;
-                    }
+                const fieldCount = Object.keys(patch).length;
+                if (fieldCount > 0) {
+                    await writeConfigPatch(patch);
                 }
 
-                showNotification('Success', `Saved ${savedCount} changes`);
+                // 清掉所有改动标记
+                clearWifiModification();
+                clearFieldModification('url', urlTitle);
+                clearFieldModification('asr', asrTitle);
+                modifiedFields.micMode = false;
+                modifiedFields.preferBuiltin = false;
+
+                showNotification('Success', `Saved ${fieldCount} field(s) in 1 write`);
 
                 // Try to reset device after saving
                 try {
@@ -649,17 +629,14 @@
             }
         }
 
-        // Writes a typed config value to the single CONFIG characteristic
-        // as JSON {"type":"wifi_list|server_url|asr_config|mic_model","value":...}.
-        // Note: value is passed through verbatim (no `|| ''`) so numeric 0 (mic PTT)
-        // and empty strings are preserved.
-        async function writeConfig(typeName, inputValue) {
+        // 写一个部分配置对象到 CONFIG 特征值:一次写可携带多项,设备只更新出现(非 null)的 key。
+        async function writeConfigPatch(patch) {
             if (!isConnected || !service) {
                 throw new Error('VibeKeys is not connected');
             }
 
-            console.log('[CONFIG] write:', typeName, '=', inputValue);
-            const json = JSON.stringify({ type: typeName, value: inputValue });
+            console.log('[CONFIG] write patch:', patch);
+            const json = JSON.stringify(patch);
 
             try {
                 const characteristic = await service.getCharacteristic(CONFIG_ID);
@@ -680,25 +657,6 @@
                 api_key: asrApiKeyInput.value || '',
                 model: asrModelInput.value || ''
             };
-        }
-
-        // Write mic mode (PTT=0 / Toggle=1) via the CONFIG characteristic.
-        async function writeMicMode() {
-            if (!isConnected || !service) {
-                throw new Error('VibeKeys is not connected');
-            }
-
-            const modeValue = micModePTT.checked ? 0 : 1;
-            await writeConfig('mic_model', modeValue);
-        }
-
-        // Write the prefer-built-in-ASR toggle (keyboard mode) via the CONFIG characteristic.
-        async function writePreferBuiltin() {
-            if (!isConnected || !service) {
-                throw new Error('VibeKeys is not connected');
-            }
-
-            await writeConfig('prefer_builtin_asr', !!preferBuiltinAsr.checked);
         }
 
         async function writeBackgroundImage() {

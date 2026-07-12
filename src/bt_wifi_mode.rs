@@ -20,13 +20,17 @@ pub const WIFI_LIST_KEY: &str = "wifi_list";
 /// 会触发 ESP_ERR_NVS_KEY_TOO_LONG,故缩写;JSON 的 type 字段和 Rust 字段名保持长名不变。
 const PREFER_BUILTIN_ASR_KEY: &str = "prefer_asr";
 
-/// 统一配置特征值的写入载荷:`{"type":"wifi_list|server_url","value":<array|string>}`。
-/// 读取时则返回 `ConfigSnapshot` 整体快照。
-#[derive(Deserialize)]
-struct ConfigWrite {
-    #[serde(rename = "type")]
-    kind: String,
-    value: serde_json::Value,
+/// 统一配置特征值的写入载荷:部分配置对象,如
+/// `{"server_url":"...","prefer_builtin_asr":false}`。只出现(非 None)的字段才更新,
+/// 缺失字段保持原状 —— 一次写可携带任意多项,免得改多项发多次。
+/// 读取时返回 `ConfigSnapshot` 整份快照。
+#[derive(Debug, Deserialize)]
+struct ConfigSaveSnapshot {
+    wifi_list: Option<Vec<WifiCred>>,
+    server_url: Option<String>,
+    asr_config: Option<serde_json::Value>,
+    mic_model: Option<u8>,
+    prefer_builtin_asr: Option<bool>,
 }
 
 /// 统一配置特征值的读取快照:整份 wifi_list + server_url + asr_config + mic_model + prefer_builtin_asr。
@@ -213,7 +217,8 @@ pub fn new_setting_service(
             }
         })
         .on_write(move |args| {
-            // 写入载荷:JSON {"type":"wifi_list|server_url","value":<array|string>}。
+            // 写入载荷:部分配置对象,如 {"server_url":"...","prefer_builtin_asr":false}。
+            // 只出现(非 None)的字段才更新,缺失字段保持原状 —— 一次写可携带任意多项。
             log::info!("Config write: {:?}", args.recv_data());
             let payload = match std::str::from_utf8(args.recv_data()) {
                 Ok(s) => s,
@@ -223,90 +228,76 @@ pub fn new_setting_service(
                 }
             };
             log::info!("Config write payload: {}", payload);
-            let cw = match serde_json::from_str::<ConfigWrite>(payload) {
-                Ok(cw) => cw,
+            let save = match serde_json::from_str::<ConfigSaveSnapshot>(payload) {
+                Ok(s) => s,
                 Err(e) => {
                     log::error!("Config write: invalid JSON ({}): {}", e, payload);
                     return;
                 }
             };
-            log::info!("Config write type={}", cw.kind);
+            log::info!("Config write: {:?}", save);
             let mut setting = config_w.lock().unwrap();
-            match cw.kind.as_str() {
-                "wifi_list" => match serde_json::from_value::<Vec<WifiCred>>(cw.value) {
-                    Ok(mut list) => {
-                        if list.len() > MAX_WIFI_CREDS {
-                            log::warn!(
-                                "wifi_list has {} entries, truncating to {}",
-                                list.len(),
-                                MAX_WIFI_CREDS
-                            );
-                            list.truncate(MAX_WIFI_CREDS);
-                        }
-                        setting.0.wifi_list = list;
-                        // 经 MutexGuard 的 Deref,先 clone 再写 NVS,避免同时借 guard。
-                        let l = setting.0.wifi_list.clone();
-                        if let Err(e) = Setting::save_wifi_list(&mut setting.1, &l) {
-                            log::error!("Failed to save wifi_list: {:?}", e);
-                        }
-                    }
-                    Err(e) => log::error!("wifi_list value invalid: {:?}", e),
-                },
-                "server_url" => match cw.value.as_str() {
-                    Some(url) => {
-                        setting.0.server_url = url.to_string();
-                        let u = setting.0.server_url.clone();
-                        if let Err(e) = setting.1.set_str("server_url", &u) {
-                            log::error!("Failed to save server_url: {:?}", e);
-                        }
-                    }
-                    None => log::error!("server_url value not a string"),
-                },
-                "asr_config" => {
-                    // 合并写(默认值 < 现有 NVS < 本次传入):只覆盖传入里出现的 key,
-                    // 缺失的 key 保持原状 —— 这样不完整的 JSON 也能增量更新,而不必每次发整份。
-                    // asr_config 走独立 NVS 键,重启后由 main.rs 重新加载。
-                    let mut base = AsrConfig::load_from_nvs(&setting.1)
-                        .and_then(|c| serde_json::to_value(&c).ok())
-                        .unwrap_or_else(|| {
-                            serde_json::json!({"platform":"whisper","uri":"","api_key":"","model":""})
-                        });
-                    if let (Some(base_obj), Some(in_obj)) =
-                        (base.as_object_mut(), cw.value.as_object())
-                    {
-                        for (k, v) in in_obj {
-                            base_obj.insert(k.clone(), v.clone());
-                        }
-                    }
-                    match serde_json::from_value::<AsrConfig>(base) {
-                        Ok(cfg) => {
-                            if let Err(e) = cfg.save_to_nvs(&mut setting.1) {
-                                log::error!("Failed to save asr_config: {:?}", e);
-                            }
-                        }
-                        Err(e) => log::error!("asr_config value invalid after merge: {:?}", e),
+
+            if let Some(mut list) = save.wifi_list {
+                if list.len() > MAX_WIFI_CREDS {
+                    log::warn!(
+                        "wifi_list has {} entries, truncating to {}",
+                        list.len(),
+                        MAX_WIFI_CREDS
+                    );
+                    list.truncate(MAX_WIFI_CREDS);
+                }
+                setting.0.wifi_list = list;
+                // 经 MutexGuard 的 Deref,先 clone 再写 NVS,避免同时借 guard。
+                let l = setting.0.wifi_list.clone();
+                if let Err(e) = Setting::save_wifi_list(&mut setting.1, &l) {
+                    log::error!("Failed to save wifi_list: {:?}", e);
+                }
+            }
+
+            if let Some(url) = save.server_url {
+                setting.0.server_url = url.clone();
+                if let Err(e) = setting.1.set_str("server_url", &url) {
+                    log::error!("Failed to save server_url: {:?}", e);
+                }
+            }
+
+            if let Some(asr) = save.asr_config {
+                // 合并写(默认值 < 现有 NVS < 本次传入):只覆盖传入里出现的 key,
+                // 缺失的 key 保持原状 —— 不完整的 JSON 也能增量更新。
+                // asr_config 走独立 NVS 键,重启后由 main.rs 重新加载。
+                let mut base = AsrConfig::load_from_nvs(&setting.1)
+                    .and_then(|c| serde_json::to_value(&c).ok())
+                    .unwrap_or_else(|| {
+                        serde_json::json!({"platform":"whisper","uri":"","api_key":"","model":""})
+                    });
+                if let (Some(base_obj), Some(in_obj)) = (base.as_object_mut(), asr.as_object()) {
+                    for (k, v) in in_obj {
+                        base_obj.insert(k.clone(), v.clone());
                     }
                 }
-                "mic_model" => match cw.value.as_u64() {
-                    Some(v) => {
-                        let m = v as u8;
-                        setting.0.mic_model = m;
-                        if let Err(e) = setting.1.set_u8("mic_model", m) {
-                            log::error!("Failed to save mic_model: {:?}", e);
+                match serde_json::from_value::<AsrConfig>(base) {
+                    Ok(cfg) => {
+                        if let Err(e) = cfg.save_to_nvs(&mut setting.1) {
+                            log::error!("Failed to save asr_config: {:?}", e);
                         }
                     }
-                    None => log::error!("mic_model value not a number"),
-                },
-                "prefer_builtin_asr" => match cw.value.as_bool() {
-                    Some(b) => {
-                        setting.0.prefer_builtin_asr = b;
-                        if let Err(e) = setting.1.set_u8(PREFER_BUILTIN_ASR_KEY, b as u8) {
-                            log::error!("Failed to save prefer_builtin_asr: {:?}", e);
-                        }
-                    }
-                    None => log::error!("prefer_builtin_asr value not a boolean"),
-                },
-                other => log::warn!("Unknown config type: {}", other),
+                    Err(e) => log::error!("asr_config value invalid after merge: {:?}", e),
+                }
+            }
+
+            if let Some(m) = save.mic_model {
+                setting.0.mic_model = m;
+                if let Err(e) = setting.1.set_u8("mic_model", m) {
+                    log::error!("Failed to save mic_model: {:?}", e);
+                }
+            }
+
+            if let Some(b) = save.prefer_builtin_asr {
+                setting.0.prefer_builtin_asr = b;
+                if let Err(e) = setting.1.set_u8(PREFER_BUILTIN_ASR_KEY, b as u8) {
+                    log::error!("Failed to save prefer_builtin_asr: {:?}", e);
+                }
             }
         });
 

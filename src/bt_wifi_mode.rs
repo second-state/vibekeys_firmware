@@ -16,6 +16,10 @@ const RESET_ID: BleUuid = uuid128!("f0e1d2c3-b4a5-6789-0abc-def123456789");
 /// NVS key holding the whole `wifi_list` as one JSON value.
 pub const WIFI_LIST_KEY: &str = "wifi_list";
 
+/// NVS key for `prefer_builtin_asr`。NVS key 上限 15 字符,"prefer_builtin_asr"(18)
+/// 会触发 ESP_ERR_NVS_KEY_TOO_LONG,故缩写;JSON 的 type 字段和 Rust 字段名保持长名不变。
+const PREFER_BUILTIN_ASR_KEY: &str = "prefer_asr";
+
 /// 统一配置特征值的写入载荷:`{"type":"wifi_list|server_url","value":<array|string>}`。
 /// 读取时则返回 `ConfigSnapshot` 整体快照。
 #[derive(Deserialize)]
@@ -81,7 +85,7 @@ impl Setting {
         nvs.remove("server_url")?;
         nvs.remove("background_png")?;
         nvs.remove("mic_model")?;
-        nvs.remove("prefer_builtin_asr")?;
+        nvs.remove(PREFER_BUILTIN_ASR_KEY)?;
         nvs.remove("state")?;
         Ok(())
     }
@@ -152,7 +156,7 @@ impl Setting {
         nvs.set_u8("state", 0)?;
 
         let mic_model = nvs.get_u8("mic_model")?.unwrap_or(1);
-        let prefer_builtin_asr = nvs.get_u8("prefer_builtin_asr")?.unwrap_or(1) != 0;
+        let prefer_builtin_asr = nvs.get_u8(PREFER_BUILTIN_ASR_KEY)?.unwrap_or(1) != 0;
 
         Ok(Setting {
             wifi_list,
@@ -218,6 +222,7 @@ pub fn new_setting_service(
                     return;
                 }
             };
+            log::info!("Config write payload: {}", payload);
             let cw = match serde_json::from_str::<ConfigWrite>(payload) {
                 Ok(cw) => cw,
                 Err(e) => {
@@ -295,7 +300,7 @@ pub fn new_setting_service(
                 "prefer_builtin_asr" => match cw.value.as_bool() {
                     Some(b) => {
                         setting.0.prefer_builtin_asr = b;
-                        if let Err(e) = setting.1.set_u8("prefer_builtin_asr", b as u8) {
+                        if let Err(e) = setting.1.set_u8(PREFER_BUILTIN_ASR_KEY, b as u8) {
                             log::error!("Failed to save prefer_builtin_asr: {:?}", e);
                         }
                     }

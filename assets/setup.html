@@ -506,6 +506,7 @@
                 const characteristic = await service.getCharacteristic(CONFIG_ID);
                 const value = await characteristic.readValue();
                 const snap = JSON.parse(new TextDecoder().decode(value));
+                console.log('[CONFIG] snapshot:', snap);
                 wifiList = (snap.wifi_list || []).map(c => ({
                     ssid: c.ssid || '',
                     pass: c.pass || ''
@@ -657,6 +658,7 @@
                 throw new Error('VibeKeys is not connected');
             }
 
+            console.log('[CONFIG] write:', typeName, '=', inputValue);
             const json = JSON.stringify({ type: typeName, value: inputValue });
 
             try {

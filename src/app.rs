@@ -383,6 +383,7 @@ pub async fn run(
                 let mut released = false;
                 let mut conn_dead = false;
                 tokio::pin!(orx);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await; // 防抖
                 let asr_result = loop {
                     tokio::select! {
                         biased;

@@ -33,46 +33,43 @@ fn new_btn(
 }
 
 const DEFAULT_SNTP_SERVERS: [&str; 4] = [
-    "time.apple.com",
     "time.windows.com",
     "time.google.com",
-    "pool.ntp.org",
+    "ntp.aliyun.com",
+     "time.cloudflare.com"
 ];
 
 pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
     use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode, SyncStatus};
 
-    for i in 0..DEFAULT_SNTP_SERVERS.len() {
+    log_heap();
+    log::info!(
+        "SNTP sync time (parallel, {} servers)",
+        DEFAULT_SNTP_SERVERS.len()
+    );
+
+    // 一次配齐所有 server:ESP-IDF SNTP 模块并发查询,谁先回就用谁(不再串行每个等 15s)。
+    let conf = SntpConf {
+        servers: DEFAULT_SNTP_SERVERS,
+        operating_mode: OperatingMode::Poll,
+        sync_mode: SyncMode::Immediate,
+    };
+    let ntp_client = EspSntp::new(&conf)?;
+
+    for i in 0..15 {
+        let p = ".".repeat(i % 4);
+        let _ = ui::render_keyboard_view(display_target, false, false, &format!("Syncing time{}", p));
+        let status = ntp_client.get_sync_status();
+        log::info!("sntp sync status {:?}", status);
         log_heap();
-        log::info!("SNTP sync time with server: {}", DEFAULT_SNTP_SERVERS[i]);
-        let _ = ui::render_keyboard_view(
-            display_target,
-            false,
-            false,
-            &format!("Syncing time with {}", DEFAULT_SNTP_SERVERS[i]),
-        );
-
-        let conf = SntpConf {
-            servers: [DEFAULT_SNTP_SERVERS[i]],
-            operating_mode: OperatingMode::Poll,
-            sync_mode: SyncMode::Immediate,
-        };
-        let ntp_client = EspSntp::new(&conf)?;
-
-        for _ in 0..15 {
-            let status = ntp_client.get_sync_status();
-            log::info!("sntp sync status {:?}", status);
-            log_heap();
-            if status == SyncStatus::Completed {
-                let _ = ui::render_keyboard_view(display_target, false, false, "Syncing time Completed");
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_secs(1));
+        if status == SyncStatus::Completed {
+            let _ = ui::render_keyboard_view(display_target, false, false, "Syncing time Completed");
+            return Ok(());
         }
-        log::info!("SNTP synchronized!");
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    Err(anyhow::anyhow!("Failed to sync time with all SNTP servers"))
+    Err(anyhow::anyhow!("Failed to sync time via SNTP"))
 }
 
 pub fn goto_next_firmware() -> anyhow::Result<()> {

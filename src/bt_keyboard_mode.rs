@@ -498,6 +498,22 @@ impl KeysPin {
             && self.rotate_b.is_high()
             && self.rotate_button.is_high()
     }
+
+    pub async fn wait_for_high(&mut self, pin_index: u8) -> Result<(), esp_idf_svc::sys::EspError> {
+        match pin_index {
+            KeysPin::MIC => self.mic.wait_for_high().await,
+            KeysPin::CUSTOM => self.custom.wait_for_high().await,
+            KeysPin::ESC => self.esc.wait_for_high().await,
+            KeysPin::NEXT => self.next.wait_for_high().await,
+            KeysPin::BACKSPACE => self.backspace.wait_for_high().await,
+            KeysPin::SWITCH => self.switch.wait_for_high().await,
+            KeysPin::ACCEPT => self.accept.wait_for_high().await,
+            KeysPin::ROTATE_BUTTON => self.rotate_button.wait_for_high().await,
+            _ => {
+                unreachable!("Invalid pin code: {}", pin_index);
+            }
+        }
+    }
 }
 
 impl KeysPin {

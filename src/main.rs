@@ -680,7 +680,6 @@ async fn keyboard_mode_main(
         ble_device.get_server().connected_count() > 0,
         "Keyboard",
     );
-    let mut keys_pressed = false;
     let mut popup = ui::popup_centered(display.bounding_box());
     loop {
         let event = tokio::select! {
@@ -783,29 +782,20 @@ async fn keyboard_mode_main(
             }
         }
 
-        let mut is_display_event = false;
-
         match &event {
             bt_keyboard_mode::ControllerCommand::KeyboardPress(pin) => {
                 log::info!("Physical key pressed: {:?}", pin);
-                keys_pressed = true;
             }
             bt_keyboard_mode::ControllerCommand::KeyboardRelease(pin) => {
                 log::info!("Physical key released: {:?}", pin);
-                keys_pressed = false;
-            }
-            bt_keyboard_mode::ControllerCommand::DisplayKeyboard(_) => {
-                is_display_event = true;
             }
             _ => {}
         }
 
-        let _ = handle_key_event(display, ble_device, keyboard, event, keymap, wifi_on);
-
-        if is_display_event && keys_pressed && key_pins.all_is_high() {
-            keys_pressed = false;
-            keyboard.release();
-        }
+        let _ = handle_key_event(
+            display, ble_device, keyboard, event, keymap, key_pins, wifi_on,
+        )
+        .await;
     }
 }
 
@@ -850,12 +840,13 @@ fn execute_key_action(
     Ok(())
 }
 
-pub fn handle_key_event(
+pub async fn handle_key_event(
     display: &mut lcd::FrameBuffer,
     ble_device: &mut esp32_nimble::BLEDevice,
     keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
     event: bt_keyboard_mode::ControllerCommand,
     keymap: &bt_keyboard_mode::KeymapConfig,
+    key_pins: &mut bt_keyboard_mode::KeysPin,
     wifi_on: bool,
 ) -> anyhow::Result<()> {
     log::info!("Handling controller command: {:?}", event);
@@ -902,6 +893,9 @@ pub fn handle_key_event(
                     _ => {}
                 }
             }
+
+            key_pins.wait_for_high(pin_index).await?;
+            keyboard.release();
         }
         bt_keyboard_mode::ControllerCommand::KeyboardRelease(pin_index) => {
             let key_name = bt_keyboard_mode::KeymapConfig::get_key_name(pin_index);

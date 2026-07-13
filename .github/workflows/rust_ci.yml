@@ -5,8 +5,12 @@ on:
     branches:
       - main
     paths-ignore:
-      - "**/README.md"
+      - "**/*.md"
+      - "docs/**"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   workflow_dispatch:
 
 env:

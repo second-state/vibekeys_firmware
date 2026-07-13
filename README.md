@@ -1,0 +1,41 @@
+# VibeKeys
+
+English | [中文](docs/README_zh.md)
+
+> An ESP32-S3 Rust firmware that turns a custom keypad into a Bluetooth keyboard with speech-to-text (streaming audio to a Whisper service), an LCD UI, MQTT remote control, and OTA updates.
+
+VibeKeys is a Rust firmware for the **ESP32-S3** that turns a piece of custom hardware — screen, keys, and microphone — into a versatile input device:
+
+- **Bluetooth keyboard (BLE HID)** — custom keys act directly as keyboard input to your phone or computer.
+- **Voice input** — press the MIC key and speak; the mic audio is first processed by the [esp-sr](https://github.com/espressif/esp-sr) audio front-end (webrtc noise suppression / auto gain), then streamed as a WAV over HTTP to a Whisper service you configure for recognition; the returned text is "typed" into the host through the Bluetooth keyboard. You can also turn off the built-in ASR and pass the mic through to the host to use the host's own dictation.
+- **Remote terminal** — connects to the companion **vibetty** over MQTT, sharing / remotely driving the screen and interaction in real time.
+
+## ⚠️ Upgrade note (0.3.x → 0.4.0)
+
+0.4.0 makes incompatible changes to the WiFi-related parts, so **upgrading from 0.3.x to 0.4.0 cannot be done via OTA** — you must perform a **full USB flash** (use one of the `*_bin` images built below, e.g. `vibekeys.bin`). A full flash erases flash, which **invalidates previous settings (WiFi / MQTT server / ASR, stored in NVS); you'll need to reconfigure after upgrading**.
+
+## Key features
+
+- **Two modes**: `Keyboard` (Bluetooth keyboard + ASR) and `Remote` (MQTT remote).
+- **ASR (voice input)**: two trigger styles — PTT (push-to-talk) and Toggle (tap to toggle); recognition is done by an HTTP Whisper service (set `asr_config` in `setup.html`: `uri` / `api_key` / `model`); "prefer built-in ASR" can be toggled in settings.
+- **LCD UI**: the SPI display renders the keyboard view / remote view / status; optional I2C OLED (`i2c_oled`).
+- **Web provisioning**: in AP/OTA mode, open `setup.html` to configure WiFi, MQTT broker, ASR, MIC mode, etc.; stored in NVS.
+- **Dual-partition OTA**: a standalone `ota` firmware serves as the bootloader for online upgrades of the main firmware.
+- **SNTP**: queries multiple NTP servers in parallel (for HTTPS certificate validation).
+
+## Hardware
+
+ESP32-S3 + PSRAM (octal), SPI LCD, I2S microphone, custom keys, optional I2C OLED.
+
+## Building
+
+Built on [Rust + ESP-IDF](https://github.com/esp-rs), target `xtensa-esp32s3-espidf`. Common commands:
+
+```bash
+./build.sh keys_bin      # main firmware single image: vibekeys.bin
+./build.sh max2_bin      # max2 hardware variant (--features max2)
+./build.sh keys_ota_bin  # image with OTA header, upgradable by the ota firmware
+./build.sh ota           # OTA bootloader firmware
+```
+
+See `./build.sh` for the full list of targets. Feature flags: `max2` (max2 hardware variant), `i2c_oled` (I2C OLED).

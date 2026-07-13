@@ -1,12 +1,16 @@
-use embedded_graphics::prelude::WebColors;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use embedded_graphics::prelude::{Dimensions, WebColors};
 
 use crate::{
     bt_keyboard_mode::{self, KeymapConfig},
-    lcd::{self, ColorFormat},
+    lcd::ColorFormat,
     protocol::{self},
 };
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub enum Event {
     MicAudioChunk(Vec<i16>),
     MicAudioChunkEnd,
@@ -41,87 +45,149 @@ impl std::fmt::Debug for Event {
 
 enum SelectResult {
     Event(Event),
-    ServerMessage(protocol::ServerMessage),
+    Mqtt(crate::mqtt::MqttEvent),
+    /// MIC 按键按下(falling edge)。
+    MicPressed,
 }
 
+/// 同时等待三类事件:`select!` 只负责 select,真正会借用 `server` 的处理放在外层
+/// `match` 里 —— 这样各 future 返回后即被释放,避免 `server.recv()` future 与
+/// `server.send()` 在同一 `select!` 内的借用冲突。
 async fn select_event(
-    server: &mut crate::ws::Server,
+    server: &mut crate::mqtt::MqttServer,
     rx: &mut tokio::sync::mpsc::Receiver<Event>,
+    mic_btn: &mut crate::AnyBtn,
 ) -> Option<SelectResult> {
     tokio::select! {
-        Some(evt) = rx.recv() => {
-            Some(SelectResult::Event(evt))
-        },
-        Some(msg) = server.recv() => {
-            Some(SelectResult::ServerMessage(msg))
-        },
+        Some(evt) = rx.recv() => Some(SelectResult::Event(evt)),
+        Some(msg) = server.recv() => Some(SelectResult::Mqtt(msg)),
+        _ = mic_btn.wait_for_low() => Some(SelectResult::MicPressed),
         else => None,
     }
 }
 
 pub async fn run(
     uri: String,
+    client_id: &str,
     ui: &mut crate::lcd::UI,
     mut rx: crate::audio::EventRx,
     keymaps: &KeymapConfig,
+    asr_tx: std::sync::mpsc::Sender<crate::audio::AsrRequest>,
+    asr_config: Option<&crate::audio::AsrConfig>,
+    mic_mode: key_task::MicMode,
+    mic_btn: &mut crate::AnyBtn,
 ) -> anyhow::Result<()> {
-    let server = crate::ws::Server::new(uri).await;
-    if server.is_err() {
-        log::error!("Server connection failed:\n{:?}", server.err());
-        ui.show_notification(ColorFormat::CSS_DARK_RED, "Failed to connect to server")?;
+    log::info!("Connecting to MQTT broker at {uri} with client_id {client_id}");
+    let server = crate::mqtt::MqttServer::new(&uri, client_id).await;
+    if let Err(e) = &server {
+        log::error!("MQTT broker connection failed:\n{e:?}");
+        ui.show_notification(ColorFormat::CSS_DARK_RED, "Failed to connect to MQTT")?;
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        return Err(anyhow::anyhow!("Failed to connect to server"));
+        return Err(anyhow::anyhow!("Failed to connect to MQTT broker"));
     }
-
     let mut server = server.unwrap();
-    let mut start_submit_audio = false;
+    // Remote 外壳:连接/首屏前的 stop 占位(收到 vibetty 屏幕后由 ui.handle_message 覆盖)。
+    let _ = crate::ui::render_remote_view(ui.display_mut(), false);
+    let mut popup = crate::ui::popup_centered(ui.display_mut().bounding_box());
 
-    while let Some(evt) = select_event(&mut server, &mut rx).await {
+    // 进入 remote 模式直接弹会话列表让用户挑,而不是先自动看活跃会话的屏。
+    // 冷启动时 retained presence 还没经 recv() 落进 sessions 表,picker 入口会先等它们到达。
+    let _ = open_session_picker(&mut server, ui, &mut rx, &mut popup).await;
+
+    // ASR 文本编辑器:Some = 正在编辑(屏幕显示编辑器,不刷会话屏);None = 空闲。
+    // 用 ui::AsrEditor(ui.rs 弹窗风格),不用 lcd::UI 那套(麦克风状态条,风格不一致)。
+    let mut asr_editor: Option<crate::ui::AsrEditor> = None;
+
+    // 当前屏幕的完整解码帧。滚轮先在这张图上本地平移显示窗口,
+    // 平移到头了再通过 MQTT 请服务端继续翻页 —— 避免每一下滚轮都走网络往返。
+    let mut current_screen: Option<crate::new_jpg::JpegBufferu16> = None;
+    // 显示窗口在 current_screen 中的顶部像素行;0 = 最上面。
+    let mut view_window_offset: usize = 0;
+    // 当前帧是否还有下文。vibetty 在每帧 JPEG 末尾附一个大端 u32 作为滚动 offset 标记,
+    // 0 = 本页是最底页(没有下文)。本地缓冲滚到底后据此决定:有下文才请求下一页,否则忽略。
+    let mut current_has_more_below: bool = true;
+    let view_windows_height = crate::lcd::DISPLAY_HEIGHT as usize;
+    /// 滚轮每格本地平移的像素步长(可调)。
+    const SCROLL_STEP_PX: usize = 20;
+
+    loop {
+        // 把 desired_prefix 落实为 subscribe(必须在 select 之外,不可被取消)。
+        server.flush_pending().await?;
+
+        let Some(evt) = select_event(&mut server, &mut rx, mic_btn).await else {
+            log::warn!("All event sources closed, exiting run loop");
+            break;
+        };
+
+        // 每轮事件先关闭上一轮弹窗(增量 restore),再处理新事件
+        let _ = popup.hide(ui.display_mut());
+
         match evt {
             SelectResult::Event(e) => match e {
-                Event::MicAudioChunk(chunk) => {
-                    if !start_submit_audio {
-                        start_submit_audio = true;
-                        log::info!("Starting to submit audio chunks to server");
-                        server
-                            .send(protocol::ClientMessage::voice_input_start(Some(16000)))
-                            .await?;
-                        // ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Voice input started")?;
-                        ui.start_input("")?;
-                    }
-                    let audio_buffer_u8 = unsafe {
-                        std::slice::from_raw_parts(chunk.as_ptr() as *const u8, chunk.len() * 2)
-                    };
-                    server
-                        .send(protocol::ClientMessage::voice_input_chunk(
-                            audio_buffer_u8.to_vec(),
-                        ))
-                        .await?;
-                }
-                Event::MicAudioChunkEnd => {
-                    start_submit_audio = false;
-                    server
-                        .send(protocol::ClientMessage::voice_input_end())
-                        .await?;
-                    ui.refresh_input_display()?;
-                }
+                // 远程模式已改为本地 ASR,音频 chunk 事件不再产生。
+                Event::MicAudioChunk(_) | Event::MicAudioChunkEnd => {}
                 Event::RotateUp => {
-                    if ui.is_input_mode() {
-                        ui.move_cursor_left()?;
+                    if let Some(e) = asr_editor.as_mut() {
+                        e.move_left();
+                        e.render(ui.display_mut())?;
+                    } else if view_window_offset > 0 {
+                        // 还有上方内容:本地平移上去即可,不发 MQTT。
+                        view_window_offset = view_window_offset.saturating_sub(SCROLL_STEP_PX);
+                        if let Some(buf) = current_screen.as_ref() {
+                            if let Err(e) =
+                                buf.flush_window(view_window_offset, view_windows_height)
+                            {
+                                log::error!("Failed to flush screen window: {e:?}");
+                            }
+                        }
                     } else {
-                        server.send(protocol::ClientMessage::ScrollUp).await?;
+                        // 已经在缓冲最顶,请服务端继续往上翻(scrollback)。
+                        // 预先把窗口拉到底:新帧的最底正好接在旧帧最顶之下,连续阅读不跳。
+                        view_window_offset = current_screen
+                            .as_ref()
+                            .map(|b| b.height.saturating_sub(view_windows_height))
+                            .unwrap_or(0);
+                        server
+                            .send(protocol::ClientMessage::ScrollUp { rows: 0 })
+                            .await?;
                     }
                 }
                 Event::RotateDown => {
-                    if ui.is_input_mode() {
-                        ui.move_cursor_right()?;
+                    if let Some(e) = asr_editor.as_mut() {
+                        e.move_right();
+                        e.render(ui.display_mut())?;
                     } else {
-                        server.send(protocol::ClientMessage::ScrollDown).await?;
+                        let max_offset = current_screen
+                            .as_ref()
+                            .map(|b| b.height.saturating_sub(view_windows_height))
+                            .unwrap_or(0);
+                        if view_window_offset < max_offset {
+                            // 还有下方内容:本地平移下去即可,不发 MQTT。
+                            view_window_offset =
+                                (view_window_offset + SCROLL_STEP_PX).min(max_offset);
+                            if let Some(buf) = current_screen.as_ref() {
+                                if let Err(e) =
+                                    buf.flush_window(view_window_offset, view_windows_height)
+                                {
+                                    log::error!("Failed to flush screen window: {e:?}");
+                                }
+                            }
+                        } else if current_has_more_below {
+                            // 已经在缓冲最底、且本页还有下文:请服务端继续往下翻。
+                            // 预先把窗口拉到顶:新帧的最顶正好接在旧帧最底之上,连续阅读不跳。
+                            view_window_offset = 0;
+                            server
+                                .send(protocol::ClientMessage::ScrollDown { rows: 0 })
+                                .await?;
+                        }
+                        // else:本页已是最底(尾部 u32 == 0),没有下文 —— 忽略向下滚动。
                     }
                 }
                 Event::Esc => {
-                    if ui.is_input_mode() {
-                        ui.clear_input()?;
+                    if asr_editor.is_some() {
+                        // 放弃编辑,回屏幕。
+                        asr_editor = None;
+                        let _ = server.send(protocol::ClientMessage::sync()).await;
                     } else {
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x1b]))
@@ -129,9 +195,16 @@ pub async fn run(
                     }
                 }
                 Event::Accept => {
-                    if ui.is_input_mode() {
-                        let input = ui.take_waiting_input_prompt();
-                        server.send(protocol::ClientMessage::Input(input)).await?;
+                    if let Some(mut e) = asr_editor.take() {
+                        let input = e.take();
+                        let trimmed = input.trim_end();
+                        if !trimmed.is_empty() {
+                            server
+                                .send(protocol::ClientMessage::Input(trimmed.to_string()))
+                                .await?;
+                        }
+                        // 退出编辑后要一帧把屏幕刷回来(编辑期间 ActiveScreen 被排空了)。
+                        let _ = server.send(protocol::ClientMessage::sync()).await;
                     } else {
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x0d]))
@@ -139,6 +212,9 @@ pub async fn run(
                     }
                 }
                 Event::NEXT => {
+                    if asr_editor.is_some() {
+                        continue; // 编辑 ASR 文本时忽略这些键
+                    }
                     if let Some(bytes) = keymaps
                         .keys
                         .get(KeymapConfig::KEY_NEXT)
@@ -155,15 +231,21 @@ pub async fn run(
                     }
                 }
                 Event::Backspace => {
-                    if ui.is_input_mode() {
-                        ui.delete_char_before_cursor()?;
+                    if let Some(e) = asr_editor.as_mut() {
+                        e.backspace();
+                        e.render(ui.display_mut())?;
                     } else {
+                        let now = std::time::Instant::now();
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x08]))
                             .await?;
+                        log::info!("Backspace sent, took {} ms", now.elapsed().as_millis());
                     }
                 }
                 Event::SwitchMode => {
+                    if asr_editor.is_some() {
+                        continue; // 编辑 ASR 文本时忽略这些键
+                    }
                     if let Some(bytes) = keymaps
                         .keys
                         .get(KeymapConfig::KEY_SWITCH)
@@ -180,21 +262,16 @@ pub async fn run(
                     }
                 }
                 Event::RotatePush => {
-                    if let Some(bytes) = keymaps
-                        .keys
-                        .get(KeymapConfig::KEY_ROTATE)
-                        .and_then(|action| key_action_to_ansi(action))
-                    {
-                        server
-                            .send(protocol::ClientMessage::PtyInput(bytes))
-                            .await?;
-                    } else {
-                        server
-                            .send(protocol::ClientMessage::PtyInput(b"/".to_vec()))
-                            .await?;
+                    if asr_editor.is_some() {
+                        continue; // 编辑 ASR 文本时忽略这些键
                     }
+                    // 旋钮按下:不再发按键,改为弹出会话选择器(NEXT 切换 / ACCEPT 确认 / ESC 取消)。
+                    open_session_picker(&mut server, ui, &mut rx, &mut popup).await?;
                 }
                 Event::Custom => {
+                    if asr_editor.is_some() {
+                        continue; // 编辑 ASR 文本时忽略这些键
+                    }
                     if let Some(bytes) = keymaps
                         .keys
                         .get(KeymapConfig::KEY_CUSTOM)
@@ -210,20 +287,298 @@ pub async fn run(
                     }
                 }
             },
-            SelectResult::ServerMessage(msg) => match msg {
-                protocol::ServerMessage::PtyOutput(..) => {
-                    log::trace!("Received PTY output, ignoring for now");
-                    continue;
+            SelectResult::Mqtt(ev) => match ev {
+                crate::mqtt::MqttEvent::ActiveScreen(chunk) => {
+                    if asr_editor.is_some() {
+                        // 编辑 ASR 文本期间不刷屏,避免覆盖编辑器;只排空保活。
+                        log::debug!(
+                            "Draining screen chunk ({}B) while in ASR editor",
+                            chunk.data.len()
+                        );
+                    } else if matches!(chunk.format, protocol::ImageFormat::Jpeg) {
+                        // vibetty 在 JPEG 末尾附了一个大端 u32 作为滚动 offset 标记:
+                        // 0 = 本页是最底页(没有下文)。解码前先剥出尾部 4 字节,只把 JPEG 部分喂给解码器。
+                        let data = &chunk.data;
+                        let (jpeg, has_more_below) = if data.len() >= 4 {
+                            let off = data.len() - 4;
+                            let marker = u32::from_be_bytes([
+                                data[off],
+                                data[off + 1],
+                                data[off + 2],
+                                data[off + 3],
+                            ]);
+                            (&data[..off], marker != 0)
+                        } else {
+                            (data.as_slice(), true) // 旧端没附标记:当作还有下文,不阻断向下翻页
+                        };
+                        log::info!(
+                            "Received screen image: {}B jpeg + {}B tail, more_below={}",
+                            jpeg.len(),
+                            data.len().saturating_sub(jpeg.len()),
+                            has_more_below
+                        );
+                        match crate::new_jpg::esp_jpeg_decode_one_picture(jpeg) {
+                            Ok(display) => {
+                                // 新帧到达:保留当前滚动位置,只夹到新缓冲的合法区间,
+                                // 避免每次刷帧都把视图拉回原点。
+                                let max_offset = display.height.saturating_sub(view_windows_height);
+                                view_window_offset = view_window_offset.min(max_offset);
+                                if let Err(e) =
+                                    display.flush_window(view_window_offset, view_windows_height)
+                                {
+                                    log::error!("Failed to flush screen window: {e:?}");
+                                }
+                                current_has_more_below = has_more_below;
+                                current_screen = Some(display);
+                            }
+                            Err(e) => log::error!("Failed to decode JPEG: {e:?}"),
+                        }
+                    } else {
+                        log::warn!("Unsupported screen format: {:?}, only JPEG", chunk.format);
+                        let _ = popup.show(ui.display_mut(), "Only JPEG is supported");
+                    }
                 }
-                msg => {
-                    let ui_msg = lcd::UiMessage::from(msg);
-                    ui.handle_message(ui_msg)?;
+                crate::mqtt::MqttEvent::Presence { prefix, online } => {
+                    if online {
+                        log::info!("Session registered: {prefix}");
+                    } else {
+                        log::info!("Session went offline: {prefix}");
+                        let _ = popup.show(ui.display_mut(), "session offline");
+                    }
                 }
             },
+            SelectResult::MicPressed => {
+                if !mic_btn.is_low() {
+                    continue; // 误触发/错误,跳过
+                }
+                // ASR 跑在独立 OS 线程(见 main.rs 的 asr-worker):Whisper 流式录音 + 网络往返
+                // 耗时数十秒,绝不能阻塞本 async 任务(否则 single-thread runtime 冻死 →
+                // MQTT conn.next() 不被 poll → backpressure 冻死 broker task →
+                // "No PING_RESP, disconnected")。这里只发请求、收结果,select! 里继续排水
+                // server.recv() 保活 MQTT,停止时机随 mic_mode(见下方 select!):PTT 松手、
+                // Toggle 再按一下,届时置 cancel 打断录音。
+                let cfg = match asr_config {
+                    Some(c) => c.clone(),
+                    None => {
+                        log::warn!("MIC pressed but ASR not configured, ignoring");
+                        let _ = mic_btn.wait_for_high().await; // 等松开,避免重复触发
+                        continue;
+                    }
+                };
+                let (otx, orx) = tokio::sync::oneshot::channel();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let _ = popup.show(ui.display_mut(), "listening...");
+                let req = crate::audio::AsrRequest {
+                    config: cfg,
+                    cancel: cancel.clone(),
+                    respond: otx,
+                };
+                if asr_tx.send(req).is_err() {
+                    // worker 线程没起来 / 已退出。
+                    let _ = popup.show(ui.display_mut(), "ASR unavailable");
+                    let _ = mic_btn.wait_for_high().await;
+                    continue;
+                }
+
+                let mut released = false;
+                let mut conn_dead = false;
+                tokio::pin!(orx);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await; // 防抖
+                let asr_result = loop {
+                    tokio::select! {
+                        biased;
+                        r = &mut orx => break r.unwrap_or_else(|_| {
+                            Err(anyhow::anyhow!("ASR worker dropped request"))
+                        }),
+                        // 停止录音的边沿按麦克风模式分:
+                        //   PTT  → 松手停止(wait_for_high:此时按下为低,等 rising level 即松手);
+                        //   Toggle → 再按一下停止。此时按键仍处于按下(低电平),level 触发的
+                        //            wait_for_low 会立刻返回误取消,故用 edge 触发的
+                        //            wait_for_falling_edge —— 它要等下一次高→低跳变(松手后再按)。
+                        _ = async {
+                            match mic_mode {
+                                key_task::MicMode::PushToTalk => mic_btn.wait_for_high().await,
+                                key_task::MicMode::Toggle => mic_btn.wait_for_falling_edge().await,
+                            }
+                        }, if !released => {
+                            released = true;
+                            cancel.store(true, Ordering::Relaxed);
+                        }
+                        // 仅排水保活:不更新 UI,避免覆盖 listening 弹窗。
+                        // 连接已断时禁用本分支,免得 recv() 持续返回 None 空转。
+                        ev = server.recv(), if !conn_dead => {
+                            if ev.is_none() {
+                                conn_dead = true;
+                            }
+                        }
+                    }
+                };
+
+                match asr_result {
+                    Ok(text) if !text.trim().is_empty() => {
+                        log::info!("Local ASR result: {text}");
+                        // 进 ASR 编辑模式:关掉 listening 弹窗,把文本插入光标处,末尾默认补一个空格,
+                        // 然后用 ui::AsrEditor(ui.rs 弹窗风格)重绘。
+                        let _ = popup.hide(ui.display_mut());
+                        let t = text.trim();
+                        let e = asr_editor.get_or_insert_with(crate::ui::AsrEditor::new);
+                        e.insert_str(&format!("{t} "));
+                        e.render(ui.display_mut())?;
+                    }
+                    Ok(_) => {
+                        log::info!("Local ASR returned empty");
+                        let _ = popup.show(ui.display_mut(), "(empty)");
+                    }
+                    Err(e) => {
+                        log::error!("Local ASR error: {e:?}");
+                        let _ = popup.show(ui.display_mut(), "ASR error");
+                    }
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+/// 选择器内 select! 产出的事件:只负责取事件,真正借用 server 的处理放在下面
+/// 的 `match evt`,避开 select! 内 `server.recv()` 与 `server.send/session_labels` 的借用冲突。
+enum PickerEvt {
+    Key(Event),
+    Mqtt(crate::mqtt::MqttEvent),
+    /// 事件源已关闭(rx / server 已销毁)。
+    Closed,
+}
+
+/// 会话选择器:进入 remote 模式或旋钮按下时打开。NEXT 移动焦点、ACCEPT 切换活跃会话、ESC 取消。
+///
+/// 打开期间也持续 `server.recv()`:任一会话 presence 变化(状态跳变 / 上下线 / 标题变)
+/// 都改变列表内容 → 重新渲染。焦点按 prefix 记,waiting 优先重排时 index 会跳,
+/// 按 prefix 记才能跨重排仍指向同一会话。内容没变就不重绘,避免冗余 presence 闪烁。
+async fn open_session_picker(
+    server: &mut crate::mqtt::MqttServer,
+    ui: &mut crate::lcd::UI,
+    rx: &mut tokio::sync::mpsc::Receiver<Event>,
+    popup: &mut crate::ui::Popup,
+) -> anyhow::Result<()> {
+    // 入口:retained presence 在 subscribe 后很快到达,但需 poll recv 才会进 sessions 表。
+    // 给最多 ENTRY_WAIT 让它们落地(已有 >=2 个会话则立即跳过);期间 ESC 可退出。
+    const ENTRY_WAIT_MS: u64 = 1500;
+    if server.session_labels().is_empty() {
+        let _ =
+            crate::ui::render_keyboard_view(ui.display_mut(), false, false, "Loading sessions...");
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(ENTRY_WAIT_MS);
+        loop {
+            if !server.session_labels().is_empty() {
+                break;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                ev = rx.recv() => match ev {
+                    Some(Event::Esc) | None => return Ok(()),
+                    _ => {}
+                },
+                m = server.recv() => { if m.is_none() { return Ok(()); } }
+            }
+        }
+    }
+
+    let mut labels = server.session_labels();
+    if labels.is_empty() {
+        let _ = popup.show(ui.display_mut(), "no session");
+        return Ok(());
+    }
+
+    // 焦点按 prefix 记:状态跳变触发 waiting 优先重排,index 会乱跳,故不存 index。
+    let mut focus_prefix: String = labels
+        .iter()
+        .find(|(_, _, is_active, _)| *is_active)
+        .or_else(|| labels.first())
+        .map(|(p, _, _, _)| p.clone())
+        .unwrap();
+    // 上次渲染的指纹(items + 焦点行);只在其变化时重绘。
+    let mut last_sig: Option<(Vec<(String, bool)>, usize)> = None;
+
+    loop {
+        let items: Vec<(String, bool)> = labels
+            .iter()
+            .map(|(_, label, _, is_working)| (label.clone(), *is_working))
+            .collect();
+        let focus_idx = labels
+            .iter()
+            .position(|(p, _, _, _)| p == &focus_prefix)
+            .unwrap_or(0);
+
+        let sig = (items.clone(), focus_idx);
+        if last_sig.as_ref() != Some(&sig) {
+            let _ = crate::ui::render_session_list(
+                ui.display_mut(),
+                "Session (ESC=cancel)",
+                &items,
+                focus_idx,
+            );
+            last_sig = Some(sig);
+        }
+
+        let evt: PickerEvt = tokio::select! {
+            ev = rx.recv() => match ev { Some(e) => PickerEvt::Key(e), None => PickerEvt::Closed },
+            m = server.recv() => match m { Some(e) => PickerEvt::Mqtt(e), None => PickerEvt::Closed },
+        };
+
+        match evt {
+            PickerEvt::Closed => {
+                let _ = server.send(protocol::ClientMessage::sync()).await;
+                return Ok(());
+            }
+            PickerEvt::Key(Event::NEXT) => {
+                if let Some(i) = labels.iter().position(|(p, _, _, _)| p == &focus_prefix) {
+                    let ni = (i + 1) % labels.len();
+                    focus_prefix = labels[ni].0.clone();
+                }
+            }
+            PickerEvt::Key(Event::Accept) => {
+                server.set_active(&focus_prefix);
+                // 让新活跃会话立刻推一帧,免得干等下一帧。
+                let _ = server.send(protocol::ClientMessage::sync()).await;
+                let label = labels
+                    .iter()
+                    .find(|(p, _, _, _)| p == &focus_prefix)
+                    .map(|(_, l, _, _)| l.clone())
+                    .unwrap_or_default();
+                let _ = popup.show(ui.display_mut(), &format!("-> {label}"));
+                return Ok(());
+            }
+            PickerEvt::Key(Event::Esc) => {
+                // 取消:活跃未变。发个 sync 让当前会话立即重绘一帧覆盖列表。
+                let _ = server.send(protocol::ClientMessage::sync()).await;
+                return Ok(());
+            }
+            PickerEvt::Key(_) => {} // 旋钮方向 / 其它键在选择器里忽略
+            PickerEvt::Mqtt(crate::mqtt::MqttEvent::Presence { .. }) => {
+                let new_labels = server.session_labels();
+                if new_labels.is_empty() {
+                    let _ = server.send(protocol::ClientMessage::sync()).await;
+                    let _ = popup.show(ui.display_mut(), "no session");
+                    return Ok(());
+                }
+                labels = new_labels;
+                // 焦点会话若已下线,回退到活跃会话或首项。
+                if !labels.iter().any(|(p, _, _, _)| p == &focus_prefix) {
+                    focus_prefix = labels
+                        .iter()
+                        .find(|(_, _, a, _)| *a)
+                        .or_else(|| labels.first())
+                        .map(|(p, _, _, _)| p.clone())
+                        .unwrap();
+                }
+                // 内容变化由下一轮 loop 顶的指纹比较触发重绘。
+            }
+            PickerEvt::Mqtt(crate::mqtt::MqttEvent::ActiveScreen(_)) => {
+                // 选择器开着时不刷屏;退出时 sync() 会要新帧。
+            }
+        }
+    }
 }
 
 /// Convert KeyAction to ANSI escape sequences for terminal input
@@ -384,6 +739,7 @@ pub fn key_action_to_ansi(action: &bt_keyboard_mode::KeyAction) -> Option<Vec<u8
     }
 }
 
+#[allow(dead_code)]
 pub mod key_task {
 
     pub async fn esc_key(btn: crate::AnyBtn, tx: crate::audio::EventTx) -> anyhow::Result<()> {
@@ -432,6 +788,7 @@ pub mod key_task {
     }
 
     #[repr(u8)]
+    #[derive(Clone, Copy)]
     pub enum MicMode {
         PushToTalk,
         Toggle,

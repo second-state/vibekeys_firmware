@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+// 远程模式 ASR 重构后,AFE 音频管线(AudioWorker::run / afe_worker 等)不再使用
+// (改由 audio::Driver 本地录音直发 Whisper),但保留以备将来复用。
+
 use std::sync::Arc;
 
 use esp_idf_svc::hal::gpio::AnyIOPin;
@@ -337,6 +341,17 @@ impl AsrConfig {
     }
 }
 
+/// `app_fut` → ASR worker 线程的一次识别请求。
+///
+/// ASR(Whisper 流式录音 + 网络往返)是长阻塞调用,不能跑在 single-thread async
+/// runtime 上(会冻死 MQTT keepalive)。worker 是独立 std::thread,持有 Driver,
+/// 通过这个结构收命令、用 oneshot 回结果。`cancel` 让 app_fut 在松手时打断录音。
+pub struct AsrRequest {
+    pub config: AsrConfig,
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    pub respond: tokio::sync::oneshot::Sender<anyhow::Result<String>>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct AsrResult {
     #[serde(default)]
@@ -408,7 +423,7 @@ impl Driver {
         api_key: &str,
         model: &str,
         mut on_start_listen: impl FnMut(),
-        is_stop: impl Fn() -> bool,
+        mut is_stop: impl FnMut() -> bool,
     ) -> anyhow::Result<String> {
         let config = esp_idf_svc::http::client::Configuration {
             crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
@@ -497,7 +512,7 @@ impl Driver {
         Ok(asr_result.parse_text())
     }
 
-    pub fn start_asr<F: Fn() -> bool, F2: FnMut()>(
+    pub fn start_asr<F: FnMut() -> bool, F2: FnMut()>(
         &mut self,
         asr_config: &AsrConfig,
         on_start_listen: F2,

@@ -29,33 +29,75 @@ pub fn goto_next_firmware() -> anyhow::Result<()> {
     esp_idf_svc::hal::reset::restart();
 }
 
+#[derive(Clone, Copy)]
+enum OtaMenuChoice {
+    Exit,
+    Start,
+}
+
+/// OTA 启动确认屏:Accept 开始 OTA,ESC 退出回主固件。同步轮询,按下后等松开 + 消抖。
+fn ota_prompt(
+    target: &mut lcd::FrameBuffer,
+    accept: &mut AnyBtn,
+    esc: &mut AnyBtn,
+) -> anyhow::Result<OtaMenuChoice> {
+    lcd::display_text(target, "OTA Mode\n Accept: Start OTA\n ESC: Exit", 0)?;
+    loop {
+        if accept.is_low() {
+            while accept.is_low() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            return Ok(OtaMenuChoice::Start);
+        }
+        if esc.is_low() {
+            while esc.is_low() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            return Ok(OtaMenuChoice::Exit);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// 单条 WiFi 凭据。与主固件 bt_wifi_mode::WifiCred 同结构(共用同一 NVS JSON 键)。
+#[derive(Debug, Clone, serde::Deserialize)]
+struct WifiCred {
+    ssid: String,
+    pass: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Setting {
-    pub ssid: String,
-    pub pass: String,
+    /// 多组已配置 WiFi;连接时与扫描结果匹配,顺序即优先级(与主固件一致)。
+    pub wifi_list: Vec<WifiCred>,
+}
+
+/// 在已配置凭据里找出第一个出现在扫描结果中的(顺序即优先级)。
+fn pick_cred<'a>(scan_list: &[String], creds: &'a [WifiCred]) -> Option<&'a WifiCred> {
+    creds
+        .iter()
+        .find(|c| scan_list.iter().any(|s| s == &c.ssid))
 }
 
 impl Setting {
     pub fn load_from_nvs(nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<Self> {
-        let mut str_buf = [0; 128];
-
-        let ssid = nvs
-            .get_str("ssid", &mut str_buf)
-            .map_err(|e| log::error!("Failed to get ssid: {:?}", e))
+        // wifi_list 以单个 JSON 值存放在 NVS(键/格式与主固件 bt_wifi_mode 共用)。
+        let mut json_buf = [0u8; 4096];
+        let wifi_list = nvs
+            .get_str("wifi_list", &mut json_buf)
+            .map_err(|e| log::error!("Failed to get wifi_list: {:?}", e))
             .ok()
             .flatten()
-            .unwrap_or_default()
-            .to_string();
-
-        let pass = nvs
-            .get_str("pass", &mut str_buf)
-            .map_err(|e| log::error!("Failed to get pass: {:?}", e))
-            .ok()
-            .flatten()
-            .unwrap_or_default()
-            .to_string();
-
-        Ok(Setting { ssid, pass })
+            .and_then(|s| match serde_json::from_str::<Vec<WifiCred>>(s) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    log::error!("Failed to parse wifi_list JSON: {:?}", e);
+                    None
+                }
+            })
+            .unwrap_or_default();
+        log::info!("Loaded {} wifi creds from NVS", wifi_list.len());
+        Ok(Setting { wifi_list })
     }
 }
 
@@ -98,38 +140,42 @@ fn main() -> anyhow::Result<()> {
     let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::BLACK);
     target.flush()?;
 
-    let btn3 = new_btn(
+    let mut accept_btn = new_btn(
+        peripherals.pins.gpio7.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+    let mut esc_btn = new_btn(
         peripherals.pins.gpio3.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
-    for i in 0..5 {
-        lcd::display_text(
-            &mut target,
-            format!(
-                "OTA Mode\n Press ESC within {} seconds to exit OTA mode.",
-                5 - i
-            )
-            .as_str(),
-            0,
-        )?;
-
-        for _ in 0..10 {
-            if btn3.is_low() {
-                log::info!("ESC button pressed, exiting OTA mode");
-                goto_next_firmware()?;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+    // Accept 开始 OTA,ESC 退出回主固件。
+    match ota_prompt(&mut target, &mut accept_btn, &mut esc_btn)? {
+        OtaMenuChoice::Exit => goto_next_firmware()?,
+        OtaMenuChoice::Start => {}
     }
 
-    lcd::display_text(&mut target, "OTA Mode\n Connect wifi", 0)?;
+    lcd::display_text(&mut target, "OTA Mode\n Connecting wifi", 0)?;
 
     let setting = Setting::load_from_nvs(&nvs)?;
     let mut esp_wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
 
-    let r = wifi::connect(&mut esp_wifi, &setting.ssid, &setting.pass, sysloop);
+    // 扫描 + 在配置的 wifi_list 里匹配当前在范围内的(顺序即优先级),与主固件 boot 流程一致。
+    let r: anyhow::Result<()> = match wifi::scan(&mut esp_wifi, sysloop.clone()) {
+        Ok(scan_list) => match pick_cred(&scan_list, &setting.wifi_list) {
+            Some(c) => wifi::connect(&mut esp_wifi, &c.ssid, &c.pass, sysloop),
+            None => Err(anyhow::anyhow!(
+                "no known network in range (scan {})",
+                scan_list.len()
+            )),
+        },
+        Err(e) => {
+            log::error!("WiFi scan failed: {:?}", e);
+            Err(e)
+        }
+    };
 
     if r.is_err() || !esp_wifi.is_connected().unwrap_or(false) {
         lcd::display_text(

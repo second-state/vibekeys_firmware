@@ -1,13 +1,16 @@
-name: Release
+name: Pre-Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*-rc*'
+      - 'v*-beta*'
+      - 'v*-alpha*'
+      - 'v*-pre*'
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag (e.g. v0.1.0)'
+        description: 'Pre-release tag (e.g. v0.1.0-rc1)'
         required: true
         type: string
 
@@ -19,11 +22,7 @@ env:
 
 jobs:
   build:
-    name: Build Release
-    # 跳过预发布 tag(按 semver 含 '-',如 v0.1.0-rc1)—— 那些归 prerelease.yml 处理,
-    # 否则 push 一个 rc tag 时两个 workflow 会同时构建并抢发同一个 release。
-    # workflow_dispatch(手动触发)不受影响,总是运行。
-    if: github.event_name == 'workflow_dispatch' || !contains(github.ref_name, '-')
+    name: Build Pre-Release
     runs-on: ubuntu-latest
 
     steps:
@@ -74,9 +73,11 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create release
+      - name: Create pre-release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          prerelease: true
+          make_latest: "false"
           generate_release_notes: true
           files: artifacts/**/*

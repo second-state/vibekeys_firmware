@@ -308,6 +308,45 @@ impl GetPixel for FrameBuffer {
     }
 }
 
+impl FrameBuffer {
+    /// 只把指定矩形区域推送到 LCD(增量重绘用),不刷新整屏。
+    /// `rect` 会被裁剪到屏幕范围内。
+    pub fn flush_rect(&mut self, rect: Rectangle) -> anyhow::Result<()> {
+        let bb = self.bounding_box();
+        let r = rect.intersection(&bb);
+        if r.size.width == 0 || r.size.height == 0 {
+            return Ok(());
+        }
+        let data = self.buffers.data();
+        let x0 = r.top_left.x as usize;
+        let y0 = r.top_left.y as usize;
+        let x1 = x0 + r.size.width as usize;
+        let y1 = y0 + r.size.height as usize;
+        let w = DISPLAY_WIDTH;
+        let mut sub: Vec<u8> = Vec::with_capacity((x1 - x0) * (y1 - y0) * 2);
+        for y in y0..y1 {
+            let s = (y * w + x0) * 2;
+            let e = (y * w + x1) * 2;
+            sub.extend_from_slice(&data[s..e]);
+        }
+        let xe = r.top_left.x + r.size.width as i32;
+        let ye = r.top_left.y + r.size.height as i32;
+        for i in 0..5 {
+            let code = flush_display(&sub, r.top_left.x, r.top_left.y, xe, ye);
+            if code == 0 {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if i < 4 {
+                log::warn!("flush_rect retry {}", i + 1);
+            } else {
+                log::error!("flush_rect failed after retries, code={}", code);
+            }
+        }
+        anyhow::bail!("flush_rect failed after retries")
+    }
+}
+
 impl DisplayTargetDrive for FrameBuffer {
     fn new(color: ColorFormat) -> Self {
         let mut s = Self {
@@ -355,6 +394,8 @@ impl DisplayTargetDrive for FrameBuffer {
                 }
                 continue;
             }
+            // 成功就跳出,避免每次 flush 都把整屏发 5 遍(5× SPI 带宽)。
+            break;
         }
 
         self.buffers.clone_from(&self.background_buffers);
@@ -404,149 +445,18 @@ pub fn display_png<D: DisplayTargetDrive>(
     Ok(())
 }
 
-mod new_jpg {
-    use esp_idf_svc::sys::*;
-
-    struct JpegDecoder {
-        handle: jpeg_dec_handle_t,
-    }
-
-    impl JpegDecoder {
-        fn open(config: &jpeg_dec_config_t) -> Result<Self, i32> {
-            unsafe {
-                let mut handle: jpeg_dec_handle_t = std::ptr::null_mut();
-                let ret = jpeg_dec_open(
-                    config as *const jpeg_dec_config_t as *mut jpeg_dec_config_t,
-                    &mut handle,
-                );
-                if ret != jpeg_error_t_JPEG_ERR_OK {
-                    return Err(ret);
-                }
-                Ok(JpegDecoder { handle })
-            }
-        }
-    }
-
-    impl Drop for JpegDecoder {
-        fn drop(&mut self) {
-            if !self.handle.is_null() {
-                unsafe {
-                    jpeg_dec_close(self.handle);
-                }
-            }
-        }
-    }
-
-    pub struct JpegBuffer {
-        ptr: *mut u8,
-        size: usize,
-    }
-
-    impl JpegBuffer {
-        fn new(size: usize, aligned: std::ffi::c_int) -> anyhow::Result<Self> {
-            unsafe {
-                let ptr = jpeg_calloc_align(size, aligned);
-                if ptr.is_null() {
-                    return Err(anyhow::anyhow!("Failed to allocate JPEG buffer"));
-                }
-                Ok(JpegBuffer {
-                    ptr: ptr as *mut u8,
-                    size,
-                })
-            }
-        }
-
-        pub fn flush_to_lcd(&self) -> i32 {
-            let ptr = unsafe { std::slice::from_raw_parts(self.ptr.cast_const(), self.size) };
-            if cfg!(feature = "max2") {
-                super::flush_display(ptr, 0, 0, 320, 168)
-            } else {
-                super::flush_display(ptr, 0, 0, 288, 80)
-            }
-        }
-    }
-
-    impl Drop for JpegBuffer {
-        fn drop(&mut self) {
-            if !self.ptr.is_null() {
-                unsafe {
-                    jpeg_free_align(self.ptr as *mut _);
-                }
-            }
-        }
-    }
-
-    pub fn esp_jpeg_decode_one_picture(data: &[u8]) -> anyhow::Result<JpegBuffer> {
-        unsafe {
-            use esp_idf_svc::sys::*;
-
-            // Generate default configuration
-            let mut config = jpeg_dec_config_t::default();
-            config.output_type = jpeg_pixel_format_t_JPEG_PIXEL_FORMAT_RGB565_LE;
-
-            if cfg!(feature = "max2") {
-                config.clipper.height = 168;
-                config.clipper.width = 320;
-            } else {
-                config.clipper.height = 80;
-                config.clipper.width = 288;
-            }
-
-            // Create jpeg_dec handle
-            let decoder = JpegDecoder::open(&config)
-                .map_err(|e| anyhow::anyhow!("Failed to open JPEG decoder: error code {}", e))?;
-
-            // Create io_callback handle
-            let mut jpeg_io = Box::new(jpeg_dec_io_t::default());
-
-            // Create out_info handle
-            let mut out_info = Box::new(jpeg_dec_header_info_t::default());
-
-            // Set input buffer and buffer len to io_callback
-            jpeg_io.inbuf = data.as_ptr() as *mut u8;
-            jpeg_io.inbuf_len = data.len() as i32;
-
-            // Parse jpeg picture header and get picture for user and decoder
-            let ret = jpeg_dec_parse_header(decoder.handle, jpeg_io.as_mut(), out_info.as_mut());
-            if ret != jpeg_error_t_JPEG_ERR_OK {
-                return Err(anyhow::anyhow!(
-                    "Failed to parse JPEG header: error code {}",
-                    ret
-                ));
-            }
-
-            // Calculate output length based on pixel format
-            // Default to RGB565 (2 bytes per pixel)
-            let out_len = (*out_info).width as usize * (*out_info).height as usize * 2;
-
-            // Allocate aligned output buffer
-            let out_buf = JpegBuffer::new(out_len, 16)?;
-
-            jpeg_io.outbuf = out_buf.ptr;
-
-            // Start decode jpeg
-            let ret = jpeg_dec_process(decoder.handle, jpeg_io.as_mut());
-            if ret != jpeg_error_t_JPEG_ERR_OK {
-                return Err(anyhow::anyhow!("Failed to decode JPEG: error code {}", ret));
-            }
-
-            Ok(out_buf)
-        }
-    }
-}
-
 pub fn display_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
-    let jpeg_buffer = new_jpg::esp_jpeg_decode_one_picture(jpeg)?;
-    let e = jpeg_buffer.flush_to_lcd();
-    if e != 0 {
-        return Err(anyhow::anyhow!(
-            "Failed to flush JPEG to LCD: error code {}",
-            e
-        ));
-    }
-    Ok(())
+    let jpeg_buffer = crate::new_jpg::esp_jpeg_decode_one_picture(jpeg)?;
+    log::info!(
+        "JPEG decoded: width={}, height={}",
+        jpeg_buffer.width,
+        jpeg_buffer.height
+    );
+    jpeg_buffer.flush_to_lcd()
 }
 
+// 旧的整屏文本渲染;状态/反馈画面已统一改用 ui::render_keyboard_view,暂留备用。
+#[allow(dead_code)]
 pub fn display_text(
     display_target: &mut FrameBuffer,
     text: &str,
@@ -586,324 +496,33 @@ pub fn display_text(
     Ok(())
 }
 
-// ========== UI 消息类型 (对应 ServerMessage) ==========
-
-/// UI 渲染消息类型 (对应 protocol.rs 中的 ServerMessage)
-#[derive(Clone)]
-pub enum UiMessage {
-    /// 屏幕显示图片
-    ScreenImage {
-        data: Vec<u8>,
-        format: ImageFormat,
-        is_last: bool,
-    },
-
-    /// 通知消息
-    Notification {
-        color: ColorFormat,
-        message: String,
-        title: Option<String>,
-    },
-
-    /// ASR 结果
-    AsrResult(String),
-}
-
-impl Debug for UiMessage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            UiMessage::ScreenImage {
-                data,
-                format,
-                is_last,
-            } => f
-                .debug_struct("ScreenImage")
-                .field("format", format)
-                .field("data_len", &data.len())
-                .field("is_last", is_last)
-                .finish(),
-            UiMessage::Notification {
-                message,
-                title,
-                color,
-            } => f
-                .debug_struct("Notification")
-                .field("color", color)
-                .field("message", &message.chars().take(20).collect::<String>())
-                .field("title", title)
-                .finish(),
-            UiMessage::AsrResult(text) => f
-                .debug_tuple("AsrResult")
-                .field(&text.chars().take(20).collect::<String>())
-                .finish(),
-        }
-    }
-}
-
-/// 图片格式 (对应 protocol.rs)
-#[derive(Clone, Copy, Debug)]
-pub enum ImageFormat {
-    Png,
-    Jpeg,
-    Gif,
-}
-
-/// 通知级别 (对应 protocol.rs)
-#[derive(Clone, Copy, Debug)]
-pub enum NotificationLevel {
-    Info,
-    Success,
-    Warning,
-    Error,
-}
-
-impl NotificationLevel {
-    /// 获取对应的颜色
-    pub fn to_color(self) -> ColorFormat {
-        match self {
-            NotificationLevel::Info => ColorFormat::new(0, 100, 255), // 蓝色
-            NotificationLevel::Success => ColorFormat::new(0, 200, 255), // 青色
-            NotificationLevel::Warning => ColorFormat::new(255, 150, 0), // 橙色
-            NotificationLevel::Error => ColorFormat::new(255, 0, 0),  // 红色
-        }
-    }
-}
-
-// ========== UI 状态 ==========
-
-// ========== UI 组件 ==========
-
-/// UI 渲染配置
-#[derive(Clone, Debug)]
-pub struct UiConfig {
-    /// 字体颜色
-    pub text_color: ColorFormat,
-}
-
-impl Default for UiConfig {
-    fn default() -> Self {
-        Self {
-            text_color: ColorFormat::CSS_WHEAT,
-        }
-    }
-}
-
-// ========== UI 主结构 ==========
+// ========== UI 管理器 ==========
 
 /// UI 管理器
 ///
-/// 负责管理 LCD 显示和用户交互，对应 protocol.rs 中的消息设计
+/// 负责管理 LCD 显示和用户交互；入站屏幕帧由 mqtt 侧组装成
+/// [`crate::protocol::ScreenImageChunk`] 后交给这里渲染。
 pub struct UI {
     /// 显示缓冲区
     display: FrameBuffer,
-
-    /// UI 配置
-    config: UiConfig,
-
-    asr_input: String,
-    asr_cursor_pos: usize,
-    input_mode: bool,
-
-    image_buffer: Vec<u8>,
 }
 
 impl UI {
+    /// 借出底层 FrameBuffer,供外部直接绘制(如模式外壳)。
+    pub fn display_mut(&mut self) -> &mut FrameBuffer {
+        &mut self.display
+    }
+
     /// 创建新的 UI 实例
     pub fn new() -> Self {
         Self {
             display: FrameBuffer::new(ColorFormat::new(30, 30, 30)),
-            input_mode: false,
-            image_buffer: Vec::with_capacity(1024),
-            config: UiConfig::default(),
-            asr_input: String::new(),
-            asr_cursor_pos: 0,
         }
     }
 
     /// 使用指定显示目标创建 UI
     pub fn new_with_target(display: FrameBuffer) -> Self {
-        Self {
-            display,
-            input_mode: false,
-            image_buffer: Vec::with_capacity(1024),
-            config: UiConfig::default(),
-            asr_input: String::new(),
-            asr_cursor_pos: 0,
-        }
-    }
-
-    /// 处理 UI 消息 (对应 protocol.rs 的 ServerMessage)
-    pub fn handle_message(&mut self, msg: UiMessage) -> anyhow::Result<()> {
-        match msg {
-            UiMessage::ScreenImage {
-                data,
-                format,
-                is_last,
-            } => {
-                self.image_buffer.extend_from_slice(&data);
-                if is_last {
-                    if let Err(e) = self.show_self_image_buffer(format) {
-                        log::error!("Failed to display image: {:?}", e);
-                    }
-                    self.image_buffer.clear();
-                }
-                Ok(())
-            }
-            UiMessage::Notification { message, color, .. } => {
-                // self.show_notification(color, &message)
-                log::info!("[TODO] Showing notification: {}", message);
-                Ok(())
-            }
-            UiMessage::AsrResult(text) => self.input_asr_result(&text),
-        }
-    }
-
-    pub fn show_self_image_buffer(&mut self, format: ImageFormat) -> anyhow::Result<()> {
-        let data = &self.image_buffer;
-
-        match format {
-            ImageFormat::Png => {
-                let img_reader = image::ImageReader::with_format(
-                    std::io::Cursor::new(data),
-                    image::ImageFormat::Png,
-                );
-                let img = img_reader.decode()?.to_rgb8();
-                self.draw_rgb888(&img)?;
-                self.display.flush()?;
-            }
-            ImageFormat::Jpeg => {
-                display_jpeg(data)?;
-            }
-            ImageFormat::Gif => {
-                // GIF 动画处理可以在这里扩展
-                log::warn!("GIF format not fully supported yet");
-            }
-        }
-
-        Ok(())
-    }
-
-    /// 显示图片
-    pub fn show_image(&mut self, data: &[u8], format: ImageFormat) -> anyhow::Result<()> {
-        match format {
-            ImageFormat::Png => {
-                let img_reader = image::ImageReader::with_format(
-                    std::io::Cursor::new(data),
-                    image::ImageFormat::Png,
-                );
-                let img = img_reader.decode()?.to_rgb8();
-                self.draw_rgb888(&img)?;
-                self.display.flush()?;
-            }
-            ImageFormat::Jpeg => {
-                display_jpeg(data)?;
-            }
-            ImageFormat::Gif => {
-                // GIF 动画处理可以在这里扩展
-                log::warn!("GIF format not fully supported yet");
-            }
-        }
-
-        Ok(())
-    }
-
-    /// 绘制 RGB888 图像数据
-    fn draw_rgb888(&mut self, img: &image::RgbImage) -> anyhow::Result<()> {
-        self.display.fill_color(ColorFormat::CSS_WHITE)?;
-
-        let pixels = img.enumerate_pixels().map(|(x, y, p)| {
-            Pixel(
-                Point::new(x as i32, y as i32),
-                ColorFormat::new(
-                    p[0] / (u8::MAX / ColorFormat::MAX_R),
-                    p[1] / (u8::MAX / ColorFormat::MAX_G),
-                    p[2] / (u8::MAX / ColorFormat::MAX_B),
-                ),
-            )
-        });
-
-        self.display.draw_iter(pixels)?;
-        self.display.fix_background()?;
-        Ok(())
-    }
-
-    /// 开始输入模式
-    pub fn start_input(&mut self, prompt: &str) -> anyhow::Result<()> {
-        self.input_mode = true;
-
-        self.input_asr_result(prompt)?;
-        Ok(())
-    }
-
-    /// 刷新输入显示
-    pub fn refresh_input_display(&mut self) -> anyhow::Result<()> {
-        // 提取需要的数据，避免借用冲突
-        let cursor_pos = self.asr_cursor_pos;
-
-        // 检查麦克风状态
-        let is_mic_on = crate::audio::MIC_ON.load(std::sync::atomic::Ordering::Relaxed);
-
-        // 先绘制麦克风状态条
-        let y_offset = if is_mic_on {
-            let mic_color = ColorFormat::CSS_DARK_GREEN;
-            let bounding_box = self.display.bounding_box();
-            let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 14));
-            top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
-            self.draw_text(
-                "● Listening",
-                Point::new(0, 2),
-                ColorFormat::CSS_WHITE,
-                None,
-                true,
-            )?;
-            14
-        } else {
-            let mic_color = ColorFormat::CSS_DARK_SEA_GREEN;
-            let bounding_box = self.display.bounding_box();
-            let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 14));
-            top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
-            self.draw_text(
-                &"Waiting",
-                Point::new(4, 2),
-                ColorFormat::CSS_WHITE,
-                None,
-                true,
-            )?;
-            14
-        };
-
-        let display_text = if self.asr_input.is_empty() {
-            "\x1b[44m_\x1b[49m".to_string()
-        } else {
-            let chars: Vec<char> = self.asr_input.chars().collect();
-            let mut input_with_cursor = String::new();
-            for (i, c) in chars.iter().enumerate() {
-                if i == cursor_pos {
-                    input_with_cursor.push_str(&format!("\x1b[44m{}\x1b[49m", c));
-                } else {
-                    input_with_cursor.push(*c);
-                }
-            }
-
-            if cursor_pos == chars.len() {
-                input_with_cursor.push_str("\x1b[44m_\x1b[49m");
-            }
-            format!("{}", input_with_cursor)
-        };
-
-        // 绘制整个输入区域（y_offset 根据麦克风状态调整）
-        self.draw_text_wrapped(
-            &display_text,
-            Point::new(2, y_offset),
-            self.config.text_color,
-        )?;
-
-        self.display.flush()?;
-        Ok(())
-    }
-
-    pub fn is_input_mode(&self) -> bool {
-        self.input_mode
+        Self { display }
     }
 
     pub fn show_notification(&mut self, color: ColorFormat, message: &str) -> anyhow::Result<()> {
@@ -912,123 +531,7 @@ impl UI {
         Ok(())
     }
 
-    pub fn input_asr_result(&mut self, text: &str) -> anyhow::Result<()> {
-        log::info!("Inserting ASR result: {}", text);
-
-        self.input_mode = true;
-
-        // 将字符索引转换为字节索引（支持中文等多字节字符）
-        let byte_pos = self
-            .asr_input
-            .char_indices()
-            .nth(self.asr_cursor_pos)
-            .map(|(i, _)| i)
-            .unwrap_or(self.asr_input.len());
-
-        self.asr_input.insert_str(byte_pos, text);
-        self.asr_cursor_pos += text.chars().count();
-        self.refresh_input_display()?;
-        Ok(())
-    }
-
-    /// 向左移动光标
-    pub fn move_cursor_left(&mut self) -> anyhow::Result<()> {
-        if self.asr_cursor_pos > 0 {
-            self.asr_cursor_pos -= 1;
-            self.refresh_input_display()?;
-        }
-        Ok(())
-    }
-
-    /// 向右移动光标
-    pub fn move_cursor_right(&mut self) -> anyhow::Result<()> {
-        let max_pos = self.asr_input.chars().count();
-        if self.asr_cursor_pos < max_pos {
-            self.asr_cursor_pos += 1;
-            self.refresh_input_display()?;
-        }
-        Ok(())
-    }
-
-    pub fn delete_char_before_cursor(&mut self) -> anyhow::Result<()> {
-        if self.asr_cursor_pos > 0 {
-            // 将字符索引转换为字节索引（支持中文等多字节字符）
-            let byte_pos = self
-                .asr_input
-                .char_indices()
-                .nth(self.asr_cursor_pos - 1)
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-
-            self.asr_input.remove(byte_pos);
-            self.asr_cursor_pos -= 1;
-            self.refresh_input_display()?;
-        }
-        Ok(())
-    }
-
-    pub fn clear_input(&mut self) -> anyhow::Result<()> {
-        self.input_mode = false;
-        self.asr_input.clear();
-        self.asr_cursor_pos = 0;
-        self.refresh_input_display()?;
-        Ok(())
-    }
-
-    pub fn take_waiting_input_prompt(&mut self) -> String {
-        self.asr_cursor_pos = 0;
-        self.input_mode = false;
-
-        std::mem::take(&mut self.asr_input)
-    }
-
     // ========== 辅助方法 ==========
-
-    /// 绘制单行文本
-    fn draw_text(
-        &mut self,
-        text: &str,
-        position: Point,
-        color: ColorFormat,
-        bg_color: Option<ColorFormat>,
-        centered: bool,
-    ) -> anyhow::Result<()> {
-        const LINE_HEIGHT: u32 = 14;
-
-        let font = u8g2_fonts::fonts::u8g2_font_boutique_bitmap_7x7_t_gb2312;
-
-        let style = MyTextStyle {
-            font_style: U8g2TextStyle::new(font, color),
-            vertical_offset: 0,
-            bg_color,
-        };
-
-        // 使用 TextBox 绘制单行文本 (与 display_text 保持一致)
-        let text_box = Rectangle::new(
-            position,
-            Size::new((DISPLAY_WIDTH as i32 - position.x) as u32, LINE_HEIGHT),
-        );
-
-        let alignment = if centered {
-            embedded_text::alignment::HorizontalAlignment::Center
-        } else {
-            embedded_text::alignment::HorizontalAlignment::Left
-        };
-
-        let textbox_style = embedded_text::style::TextBoxStyleBuilder::new()
-            .height_mode(embedded_text::style::HeightMode::ShrinkToText(
-                embedded_text::style::VerticalOverdraw::FullRowsOnly,
-            ))
-            .alignment(alignment)
-            .line_height(embedded_graphics::text::LineHeight::Pixels(LINE_HEIGHT))
-            .build();
-
-        embedded_text::TextBox::with_textbox_style(text, text_box, style, textbox_style)
-            .add_plugin(crate::ansi_plugin::MyAnsiPlugin::new())
-            .draw(&mut self.display)?;
-
-        Ok(())
-    }
 
     /// 绘制换行文本
     fn draw_text_wrapped(
@@ -1074,65 +577,5 @@ impl UI {
 impl Default for UI {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl From<crate::protocol::ServerMessage> for UiMessage {
-    fn from(msg: crate::protocol::ServerMessage) -> Self {
-        match msg {
-            crate::protocol::ServerMessage::ScreenImage(data) => {
-                let format = match data.format {
-                    crate::protocol::ImageFormat::Png => ImageFormat::Png,
-                    crate::protocol::ImageFormat::Jpeg => ImageFormat::Jpeg,
-                    crate::protocol::ImageFormat::Gif => ImageFormat::Gif,
-                };
-                UiMessage::ScreenImage {
-                    data: data.data,
-                    format,
-                    is_last: data.is_last,
-                }
-            }
-            crate::protocol::ServerMessage::Notification(data) => {
-                let color = match data.level {
-                    crate::protocol::NotificationLevel::Info => NotificationLevel::Info.to_color(),
-                    crate::protocol::NotificationLevel::Success => {
-                        NotificationLevel::Success.to_color()
-                    }
-                    crate::protocol::NotificationLevel::Warning => {
-                        NotificationLevel::Warning.to_color()
-                    }
-                    crate::protocol::NotificationLevel::Error => {
-                        NotificationLevel::Error.to_color()
-                    }
-                    crate::protocol::NotificationLevel::Custom => {
-                        // (None,R,G,B)
-                        let color_arr = data.color.to_be_bytes();
-                        ColorFormat::new(color_arr[1], color_arr[2], color_arr[3])
-                    }
-                };
-                UiMessage::Notification {
-                    color,
-                    message: data.message,
-                    title: data.title,
-                }
-            }
-            crate::protocol::ServerMessage::Title(text) => UiMessage::Notification {
-                color: NotificationLevel::Info.to_color(),
-                message: text,
-                title: None,
-            },
-            crate::protocol::ServerMessage::AsrResult(text) => UiMessage::AsrResult(text),
-            crate::protocol::ServerMessage::PtyOutput(_) => {
-                if cfg!(debug_assertions) {
-                    unreachable!("Received PtyOutput message, ignoring in UI conversion")
-                } else {
-                    UiMessage::Notification {
-                        color: NotificationLevel::Warning.to_color(),
-                        message: "Received unexpected PtyOutput message".to_string(),
-                        title: Some("Warning".to_string()),
-                    }
-                }
-            }
-        }
     }
 }

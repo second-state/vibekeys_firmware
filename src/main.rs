@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use embedded_graphics::prelude::WebColors;
+use embedded_graphics::prelude::{Dimensions, WebColors};
 use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver};
 
 use crate::lcd::DisplayTargetDrive;
@@ -13,10 +13,12 @@ mod bt_wifi_mode;
 #[cfg(feature = "i2c_oled")]
 mod i2c;
 mod lcd;
+mod mqtt;
+mod new_jpg;
 mod protocol;
+mod ui;
 mod util;
 mod wifi;
-mod ws;
 
 type AnyBtn = PinDriver<'static, esp_idf_svc::hal::gpio::Input>;
 
@@ -31,45 +33,45 @@ fn new_btn(
 }
 
 const DEFAULT_SNTP_SERVERS: [&str; 4] = [
-    "time.apple.com",
     "time.windows.com",
     "time.google.com",
-    "pool.ntp.org",
+    "ntp.aliyun.com",
+    "time.cloudflare.com",
 ];
 
 pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
     use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode, SyncStatus};
 
-    for i in 0..DEFAULT_SNTP_SERVERS.len() {
+    log_heap();
+    log::info!(
+        "SNTP sync time (parallel, {} servers)",
+        DEFAULT_SNTP_SERVERS.len()
+    );
+
+    // 一次配齐所有 server:ESP-IDF SNTP 模块并发查询,谁先回就用谁(不再串行每个等 15s)。
+    let conf = SntpConf {
+        servers: DEFAULT_SNTP_SERVERS,
+        operating_mode: OperatingMode::Poll,
+        sync_mode: SyncMode::Immediate,
+    };
+    let ntp_client = EspSntp::new(&conf)?;
+
+    for i in 0..15 {
+        let p = ".".repeat(i % 4);
+        let _ =
+            ui::render_keyboard_view(display_target, false, false, &format!("Syncing time{}", p));
+        let status = ntp_client.get_sync_status();
+        log::info!("sntp sync status {:?}", status);
         log_heap();
-        log::info!("SNTP sync time with server: {}", DEFAULT_SNTP_SERVERS[i]);
-        lcd::display_text(
-            display_target,
-            &format!("Syncing time with {}", DEFAULT_SNTP_SERVERS[i]),
-            0,
-        )?;
-
-        let conf = SntpConf {
-            servers: [DEFAULT_SNTP_SERVERS[i]],
-            operating_mode: OperatingMode::Poll,
-            sync_mode: SyncMode::Immediate,
-        };
-        let ntp_client = EspSntp::new(&conf)?;
-
-        for _ in 0..15 {
-            let status = ntp_client.get_sync_status();
-            log::info!("sntp sync status {:?}", status);
-            log_heap();
-            if status == SyncStatus::Completed {
-                lcd::display_text(display_target, "Syncing time Completed", 0)?;
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_secs(1));
+        if status == SyncStatus::Completed {
+            let _ =
+                ui::render_keyboard_view(display_target, false, false, "Syncing time Completed");
+            return Ok(());
         }
-        log::info!("SNTP synchronized!");
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    Err(anyhow::anyhow!("Failed to sync time with all SNTP servers"))
+    Err(anyhow::anyhow!("Failed to sync time via SNTP"))
 }
 
 pub fn goto_next_firmware() -> anyhow::Result<()> {
@@ -117,17 +119,22 @@ fn main() -> anyhow::Result<()> {
 
     let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::CSS_BLACK);
     target.flush()?;
-    lcd::display_text(&mut target, "VibeKeys Starting...\n Read setting", 0)?;
+    let _ = ui::render_keyboard_view(
+        &mut target,
+        false,
+        false,
+        "VibeKeys Starting...\n Read setting",
+    );
 
-    // MIC
-    let btn0 = new_btn(
+    // MIC(远程模式下由 app::run 直接持有,用于本地 ASR,故声明为 mut)
+    let mut btn0 = new_btn(
         peripherals.pins.gpio0.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
     // NEXT
-    let btn4 = new_btn(
+    let mut btn4 = new_btn(
         peripherals.pins.gpio4.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -148,7 +155,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // Backspace
-    let btn5 = new_btn(
+    let mut btn5 = new_btn(
         peripherals.pins.gpio5.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -169,14 +176,14 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     // Rotate A
-    let pin16 = new_btn(
+    let mut pin16 = new_btn(
         peripherals.pins.gpio16.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
     // Rotate B
-    let pin17 = new_btn(
+    let mut pin17 = new_btn(
         peripherals.pins.gpio17.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
@@ -191,14 +198,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
 
-    if btn3.is_low() {
-        lcd::display_text(&mut target, "Clear all config", 0)?;
-        bt_wifi_mode::Setting::clear_nvs(&mut nvs)?;
-        bt_keyboard_mode::KeymapConfig::clear_nvs(&mut nvs)?;
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-
-    let setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
+    let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
     // Load keymap config before moving nvs
     let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
     log::info!("Loaded keymap config with {} keys", keymap.keys.len());
@@ -206,10 +206,24 @@ fn main() -> anyhow::Result<()> {
 
     let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
     let mac = wifi.sta_netif().get_mac().unwrap();
-    let _dev_id = format!(
-        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+    let client_id = format!(
+        "vibekeys-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
+
+    let scan_list = match wifi::scan(&mut wifi, sysloop.clone()) {
+        Ok(list) => list,
+        Err(e) => {
+            log::error!("Failed to scan WiFi networks: {:?}", e);
+            let _ = ui::render_keyboard_view(
+                &mut target,
+                false,
+                false,
+                &format!("Failed to scan WiFi networks:\n{:?}", e),
+            );
+            vec![]
+        }
+    };
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -217,64 +231,74 @@ fn main() -> anyhow::Result<()> {
 
     if let Err(e) = runtime {
         log::error!("Failed to create Tokio runtime: {:?}", e);
-        lcd::display_text(
+        let _ = ui::render_keyboard_view(
             &mut target,
+            false,
+            false,
             &format!("Failed to create Tokio runtime:\n{:?}", e),
-            0,
-        )?;
+        );
         std::thread::sleep(std::time::Duration::from_secs(5));
         esp_idf_svc::hal::reset::restart();
     }
 
     let runtime = runtime.unwrap();
 
-    let mut mode = 3;
-
-    for i in 0..5 {
-        lcd::display_text(&mut target, format!(" <ESC> -> OTA mode\n <Accept> -> Remote Control mode\n{}s later enter Keyboard mode", 5-i).as_str(), 0).unwrap();
-
-        mode = runtime.block_on(async {
-            tokio::select! {
-                _ = btn3.wait_for_low() => {
-                    log::info!("Button ESC is pressed, Goto ota mode");
-                    0
-                },
-                _ = btn7.wait_for_low() => {
-                    log::info!("Button Accept is pressed, Starting in Remote Control mode");
-                    1
-                },
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                    log::info!("No button is pressed, Starting in normal mode");
-                    3
+    let mode = loop {
+        let choice = runtime.block_on(ui::boot_menu(&mut target, &mut btn7, &mut btn3, &mut btn4));
+        match choice {
+            ui::BootChoice::Keyboard => break 3,
+            ui::BootChoice::Remote => break 1,
+            ui::BootChoice::Setting => {
+                match runtime.block_on(ui::setting_page(
+                    &mut target,
+                    &scan_list,
+                    &mut btn7,
+                    &mut btn3,
+                    &mut btn4,
+                    &mut pin16,
+                    &mut pin17,
+                    &mut btn5,
+                    &mut setting,
+                    &mut nvs,
+                )) {
+                    ui::SettingOutcome::Back => continue,
+                    ui::SettingOutcome::Ota => {
+                        let mut popup = ui::popup_centered(target.bounding_box());
+                        let _ = popup.show_transient(&mut target, "Entering OTA...");
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        goto_next_firmware()?;
+                    }
+                    ui::SettingOutcome::ClearConfig => {
+                        bt_wifi_mode::Setting::clear_nvs(&mut nvs)?;
+                        bt_keyboard_mode::KeymapConfig::clear_nvs(&mut nvs)?;
+                        let mut popup = ui::popup_centered(target.bounding_box());
+                        let _ = popup.show_transient(&mut target, "Clear all config");
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        // 清空后重启:让(已清空的)配置重新加载,避免继续用内存里的旧值。
+                        esp_idf_svc::hal::reset::restart();
+                    }
                 }
             }
-        });
-        if mode != 3 {
-            break;
         }
-    }
+    };
 
-    if mode == 0 {
-        log::info!("Button ESC is pressed, Goto ota mode");
-        lcd::display_text(&mut target, "Entering OTA mode...", 0)?;
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        goto_next_firmware()?;
-    } else {
+    {
         let mut ota = esp_idf_svc::ota::EspOta::new()?;
         ota.mark_running_slot_valid()?;
     }
 
     if mode == 1 && setting.need_init() {
-        lcd::display_text(
+        let _ = ui::render_keyboard_view(
             &mut target,
+            false,
+            false,
             "Remote Control mode requires network/server config",
-            0,
-        )?;
+        );
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
     if mode == 3 || setting.need_init() {
-        lcd::display_text(&mut target, "Starting in keyboard mode...", 0)?;
+        let _ = ui::render_keyboard_view(&mut target, false, false, "Starting in keyboard mode...");
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
@@ -333,26 +357,45 @@ fn main() -> anyhow::Result<()> {
 
         let mut driver: Option<audio::Driver> = None;
 
-        let r = wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone());
+        // 用 boot 阶段的扫描结果与已配置 wifi_list 匹配,挑当前在范围内的网络连接。
+        let r = match bt_wifi_mode::pick_cred(&scan_list, &setting.wifi_list) {
+            Some(c) => wifi::connect(&mut wifi, &c.ssid, &c.pass, sysloop.clone()),
+            None => {
+                log::error!(
+                    "No known WiFi network in range (scan_list has {})",
+                    scan_list.len()
+                );
+                anyhow::Result::<()>::Err(anyhow::anyhow!("no known network in range"))
+            }
+        };
+        let wifi_on = r.is_ok();
         if r.is_err() {
             let e = r.err();
             log::error!("Failed to connect to WiFi: {:?}", e);
-            lcd::display_text(
+            let _ = ui::render_keyboard_view(
                 &mut target,
+                false,
+                false,
                 &format!(" WiFi connection failed: {:?}\n", e),
-                0,
-            )?;
+            );
             std::thread::sleep(std::time::Duration::from_secs(3));
         } else {
             log::info!("WiFi connected successfully");
             log::info!("ASR config loaded from NVS: {:?}", asr_config);
 
             if let Some(ref asr_config) = asr_config {
-                if asr_config.requires_tls() {
+                // 关闭「优先内置 ASR」时键盘模式不会用 Whisper(MIC 透传给主机),
+                // 也就不需要为 HTTPS 证书校验同步时间 —— 跳过省一段启动耗时。
+                if setting.prefer_builtin_asr && asr_config.requires_tls() {
                     let r = sync_time(&mut target);
                     if r.is_err() {
                         log::error!("Failed to sync time: {:?}", r.err());
-                        let _ = lcd::display_text(&mut target, " Time sync failed\n", 0);
+                        let _ = ui::render_keyboard_view(
+                            &mut target,
+                            false,
+                            false,
+                            " Time sync failed\n",
+                        );
                         std::thread::sleep(std::time::Duration::from_secs(3));
                     } else {
                         let worker = audio::AudioWorker {
@@ -379,7 +422,7 @@ fn main() -> anyhow::Result<()> {
 
         log_heap();
         std::thread::sleep(std::time::Duration::from_millis(500));
-        lcd::display_text(&mut target, "Keyboard Mode", 0)?;
+        let _ = ui::render_keyboard_view(&mut target, false, false, "Keyboard Mode");
 
         runtime.block_on(keyboard_mode_main(
             &mut target,
@@ -393,6 +436,7 @@ fn main() -> anyhow::Result<()> {
             driver,
             asr_config,
             controller,
+            wifi_on,
         ));
     }
 
@@ -416,7 +460,7 @@ fn main() -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
 
     {
-        runtime.spawn(app::key_task::mic_key(btn0, setting.mic_model.into()));
+        // btn0 (MIC) 由 app::run 直接持有用于本地 ASR,不在此 spawn。
 
         runtime.spawn(app::key_task::listen_key_event(
             btn2,
@@ -447,28 +491,41 @@ fn main() -> anyhow::Result<()> {
         runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
     }
 
-    lcd::display_text(&mut target, "Connecting the WiFi...", 0)?;
+    let _ = ui::render_keyboard_view(&mut target, false, false, "Connecting the WiFi...");
 
-    let r = wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone());
+    // 用 boot 阶段的扫描结果与已配置 wifi_list 匹配,挑当前在范围内的网络连接。
+    let r = match bt_wifi_mode::pick_cred(&scan_list, &setting.wifi_list) {
+        Some(c) => wifi::connect(&mut wifi, &c.ssid, &c.pass, sysloop.clone()),
+        None => {
+            log::error!(
+                "No known WiFi network in range (scan_list has {})",
+                scan_list.len()
+            );
+            anyhow::Result::<()>::Err(anyhow::anyhow!("no known network in range"))
+        }
+    };
     if r.is_err() {
         log::error!("Failed to connect to WiFi: {:?}", r.err());
-        lcd::display_text(&mut target, " WiFi connection failed\n", 0)?;
+        let _ = ui::render_keyboard_view(&mut target, false, false, " WiFi connection failed\n");
         std::thread::sleep(std::time::Duration::from_secs(60));
         esp_idf_svc::hal::reset::restart();
     }
 
-    if setting.server_url.starts_with("wss") {
-        // _ = rustls_rustcrypto::provider().install_default();
-        lcd::display_text(&mut target, "Syncing time...", 0)?;
+    if setting.server_url.starts_with("mqtts")
+        || asr_config.as_ref().map_or(false, |c| c.requires_tls())
+    {
+        let _ = ui::render_keyboard_view(&mut target, false, false, "Syncing time...");
         let r = sync_time(&mut target);
         if r.is_err() {
             log::error!("Failed to sync time: {:?}", r.err());
-            lcd::display_text(&mut target, " Time sync failed\n", 0)?;
+            let _ = ui::render_keyboard_view(&mut target, false, false, " Time sync failed\n");
             std::thread::sleep(std::time::Duration::from_secs(60));
             esp_idf_svc::hal::reset::restart();
         }
     }
 
+    // 远程模式改用本地 ASR(MQTT 无语音通道):创建 audio::Driver 持有 I2S,
+    // 不再把音频流发给服务器。
     let worker = audio::AudioWorker {
         in_i2s: peripherals.i2s0,
         in_ws: peripherals.pins.gpio41.into(),
@@ -476,29 +533,55 @@ fn main() -> anyhow::Result<()> {
         din: peripherals.pins.gpio40.into(),
         in_mclk: None,
     };
+    let driver = audio::Driver::new(worker)
+        .map_err(|e| log::error!("Failed to create audio driver: {e:?}"))
+        .ok();
 
-    const AUDIO_STACK_SIZE: usize = 15 * 1024;
+    log::info!("start ASR worker thread");
+    log_heap();
 
-    let audio_tx = tx.clone();
-    let _ = std::thread::Builder::new()
-        .stack_size(AUDIO_STACK_SIZE)
+    // ASR 跑在独立 OS 线程上,栈 64KB(与主任务一致,够跑 Whisper HTTP+TLS 流式录音;
+    // tokio::spawn_blocking 的池线程栈太小会溢出)。Driver 由该线程独占,app_fut 通过
+    // channel 发请求/收结果,避免长阻塞冻死 async runtime 上的 MQTT keepalive。
+    // app_fut 结束 → asr_tx drop → channel 关闭 → worker 的 recv() 返回 Err → 线程退出。
+    let (asr_tx, asr_rx) = std::sync::mpsc::channel::<audio::AsrRequest>();
+    if let Err(e) = std::thread::Builder::new()
+        .name("asr-worker".to_string())
+        .stack_size(1024 * 16)
         .spawn(move || {
-            log::info!(
-                "Starting audio worker thread in core {:?}",
-                esp_idf_svc::hal::cpu::core()
-            );
-            let r = worker.run(audio_tx);
-            if let Err(e) = r {
-                log::error!("Audio worker error: {:?}", e);
+            let mut driver = driver;
+            while let Ok(req) = asr_rx.recv() {
+                let r = match driver.as_mut() {
+                    Some(d) => d.start_asr(
+                        &req.config,
+                        || {},
+                        || req.cancel.load(std::sync::atomic::Ordering::Relaxed),
+                    ),
+                    None => Err(anyhow::anyhow!("audio driver unavailable")),
+                };
+                let _ = req.respond.send(r);
             }
+            log::info!("ASR worker thread exited");
         })
-        .map_err(|e| anyhow::anyhow!("Failed to spawn audio worker thread: {:?}", e))?;
+    {
+        log::error!("Failed to spawn ASR worker thread: {e:?}");
+    }
 
-    lcd::display_text(&mut target, "Connecting the Server...", 0)?;
+    let _ = ui::render_keyboard_view(&mut target, false, false, "Connecting the Server...");
 
     let mut ui = lcd::UI::new_with_target(target);
 
-    let app_fut = app::run(setting.server_url, &mut ui, rx, &keymap);
+    let app_fut = app::run(
+        setting.server_url,
+        &client_id,
+        &mut ui,
+        rx,
+        &keymap,
+        asr_tx,
+        asr_config.as_ref(),
+        app::key_task::MicMode::from(setting.mic_model),
+        &mut btn0,
+    );
     let r = runtime.block_on(app_fut);
     if let Err(e) = r {
         log::error!("App error: {:?}", e);
@@ -527,7 +610,7 @@ pub fn log_heap() {
 fn handle_reset_event(
     setting_arc: &mut Arc<Mutex<(bt_wifi_mode::Setting, esp_idf_svc::nvs::EspDefaultNvs)>>,
 ) -> ! {
-    let mut lock = setting_arc.lock().unwrap();
+    let lock = setting_arc.lock().unwrap();
     let png_to_save = if lock.0.background_png.1 {
         Some(lock.0.background_png.0.clone())
     } else {
@@ -542,7 +625,11 @@ fn handle_reset_event(
 
     log::info!(
         "Received Reset from BLE, SSID:{}, SERVER_URL:{}, restarting",
-        lock.0.ssid,
+        lock.0
+            .wifi_list
+            .first()
+            .map(|c| c.ssid.as_str())
+            .unwrap_or(""),
         lock.0.server_url
     );
     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -573,35 +660,6 @@ fn handle_keymap_config(
     }
 }
 
-fn handle_keymap_asr_config(
-    config: String,
-    nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
-) -> anyhow::Result<String> {
-    log::info!("Received keymap config: {}", config);
-    if config.is_empty() {
-        nvs.remove("asr_config").ok();
-        return Ok("ASR config cleared".to_string());
-    }
-    match audio::AsrConfig::from_json(&config) {
-        Ok(config) => match config.save_to_nvs(nvs) {
-            Ok(()) => {
-                log::info!("asr config merged and saved to NVS successfully");
-                Ok(format!(
-                    "ASR config updated: {}",
-                    serde_json::to_string_pretty(&config)
-                        .unwrap_or_else(|_| "Failed to serialize ASR config".to_string())
-                ))
-            }
-            Err(e) => {
-                anyhow::bail!("Failed to save asr_config to NVS: {:?}", e);
-            }
-        },
-        Err(e) => {
-            anyhow::bail!("Failed to parse asr_config JSON: {:?}", e);
-        }
-    }
-}
-
 async fn keyboard_mode_main(
     display: &mut lcd::FrameBuffer,
     ble_device: &mut esp32_nimble::BLEDevice,
@@ -614,8 +672,15 @@ async fn keyboard_mode_main(
     mut driver: Option<audio::Driver>,
     asr_config: Option<audio::AsrConfig>,
     controller: bt_keyboard_mode::ControllerService,
+    wifi_on: bool,
 ) -> ! {
-    let mut keys_pressed = false;
+    let _ = ui::render_keyboard_view(
+        display,
+        true,
+        ble_device.get_server().connected_count() > 0,
+        "Keyboard",
+    );
+    let mut popup = ui::popup_centered(display.bounding_box());
     loop {
         let event = tokio::select! {
             // Handle setting events (e.g., reset)
@@ -633,19 +698,7 @@ async fn keyboard_mode_main(
                             &mut setting_arc.lock().unwrap().1,
                             keymap,
                         );
-                        lcd::display_text(display, "keymap updated!", 0).unwrap();
-                        continue;
-                    }
-                    bt_keyboard_mode::ControllerCommand::AsrConfig(config) => {
-                        match handle_keymap_asr_config(config, &mut setting_arc.lock().unwrap().1) {
-                            Ok(msg) => {
-                                lcd::display_text(display, &msg, 0).unwrap();
-                            }
-                            Err(e) => {
-                                log::error!("Failed to update ASR config: {:?}", e);
-                                lcd::display_text(display, &format!("Failed to update ASR config:\n{:?}", e), 0).unwrap();
-                            }
-                        }
+                        let _ = ui::render_keyboard_view(display, false, false, "keymap updated!");
                         continue;
                     }
                     controller_evt => controller_evt,
@@ -653,52 +706,96 @@ async fn keyboard_mode_main(
             }
         };
 
+        // 每轮事件先关闭上一轮的弹窗(增量 restore),再处理新事件
+        let _ = popup.hide(display);
+
+        // 内置 ASR(Whisper)只在本设置开启、且驱动与配置都在时才接管 MIC;
+        // 否则 MIC 按键透传给主机(默认映射成 Ctrl+Option,触发主机自带听写)。
+        let prefer_builtin_asr = setting_arc.lock().unwrap().0.prefer_builtin_asr;
         if let (Some(driver), Some(asr_config)) = (driver.as_mut(), asr_config.as_ref()) {
-            if matches!(
-                event,
-                bt_keyboard_mode::ControllerCommand::KeyboardPress(bt_keyboard_mode::KeysPin::MIC)
-            ) {
-                match driver.start_asr(
-                    asr_config,
-                    || lcd::display_text(display, "start recording", 0).unwrap(),
-                    || key_pins.mic.is_high(),
-                ) {
-                    Ok(asr) => {
-                        lcd::display_text(display, &format!("ASR:{asr}"), 0).unwrap();
-                        controller.notify_asr(&asr);
+            if prefer_builtin_asr
+                && matches!(
+                    event,
+                    bt_keyboard_mode::ControllerCommand::KeyboardPress(
+                        bt_keyboard_mode::KeysPin::MIC
+                    )
+                )
+            {
+                // 麦克风模式取自 setting_arc(每次触发都读最新值,setup 改了即时生效)。
+                let mic_mode =
+                    app::key_task::MicMode::from(setting_arc.lock().unwrap().0.mic_model);
+                match mic_mode {
+                    app::key_task::MicMode::PushToTalk => {
+                        // 按住说话:松手(is_high)停止 —— 现状不变。
+                        match driver.start_asr(
+                            asr_config,
+                            || {
+                                let _ = popup.show(display, "recording...");
+                            },
+                            || key_pins.mic.is_high(),
+                        ) {
+                            Ok(asr) => {
+                                let _ = popup.show(display, &asr);
+                                controller.notify_asr(&asr);
+                            }
+                            Err(e) => {
+                                log::error!("ASR error: {:?}", e);
+                                let _ = popup.show(display, "ASR error");
+                            }
+                        }
                     }
-                    Err(e) => {
-                        log::error!("ASR error: {:?}", e);
-                        lcd::display_text(display, &format!("ASR error: {:?}", e), 0).unwrap();
+                    app::key_task::MicMode::Toggle => {
+                        // 按一下开始、再按一下停止。start_asr 同步阻塞本事件循环,第二次
+                        // 按下无法作为 KeyboardPress 事件到达,只能在 is_stop 里轮询引脚电平
+                        // 做状态机:state 0 = 等首按松开;state 1 = 等第二次按下 → 返回 true 停止。
+                        // is_stop 是 FnMut,可直接捕获可变 state,不必用原子。
+                        let mut state: u8 = 0;
+                        match driver.start_asr(
+                            asr_config,
+                            || {
+                                let _ = popup.show(display, "recording...");
+                            },
+                            || {
+                                if key_pins.mic.is_low() {
+                                    // 已松开过(state 1)之后的按下即第二次 → 停止
+                                    state == 1
+                                } else {
+                                    if state == 0 {
+                                        state = 1;
+                                    }
+                                    false
+                                }
+                            },
+                        ) {
+                            Ok(asr) => {
+                                let _ = popup.show(display, &asr);
+                                controller.notify_asr(&asr);
+                            }
+                            Err(e) => {
+                                log::error!("ASR error: {:?}", e);
+                                let _ = popup.show(display, "ASR error");
+                            }
+                        }
                     }
                 }
                 continue;
             }
         }
 
-        let mut is_display_event = false;
-
         match &event {
             bt_keyboard_mode::ControllerCommand::KeyboardPress(pin) => {
                 log::info!("Physical key pressed: {:?}", pin);
-                keys_pressed = true;
             }
             bt_keyboard_mode::ControllerCommand::KeyboardRelease(pin) => {
                 log::info!("Physical key released: {:?}", pin);
-                keys_pressed = false;
-            }
-            bt_keyboard_mode::ControllerCommand::DisplayKeyboard(_) => {
-                is_display_event = true;
             }
             _ => {}
         }
 
-        let _ = handle_key_event(display, ble_device, keyboard, event, keymap);
-
-        if is_display_event && keys_pressed && key_pins.all_is_high() {
-            keys_pressed = false;
-            keyboard.release();
-        }
+        let _ = handle_key_event(
+            display, ble_device, keyboard, event, keymap, key_pins, wifi_on,
+        )
+        .await;
     }
 }
 
@@ -743,12 +840,14 @@ fn execute_key_action(
     Ok(())
 }
 
-pub fn handle_key_event(
+pub async fn handle_key_event(
     display: &mut lcd::FrameBuffer,
     ble_device: &mut esp32_nimble::BLEDevice,
     keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
     event: bt_keyboard_mode::ControllerCommand,
     keymap: &bt_keyboard_mode::KeymapConfig,
+    key_pins: &mut bt_keyboard_mode::KeysPin,
+    wifi_on: bool,
 ) -> anyhow::Result<()> {
     log::info!("Handling controller command: {:?}", event);
     use bt_keyboard_mode::KeysPin;
@@ -763,7 +862,7 @@ pub fn handle_key_event(
             }
         }
         bt_keyboard_mode::ControllerCommand::DisplayKeyboard(text) => {
-            lcd::display_text(display, &text, 0)?;
+            let _ = ui::render_keyboard_view(display, wifi_on, true, &text);
         }
         bt_keyboard_mode::ControllerCommand::KeyboardPress(pin_index) => {
             if pin_index == KeysPin::ACCEPT {
@@ -794,6 +893,9 @@ pub fn handle_key_event(
                     _ => {}
                 }
             }
+
+            key_pins.wait_for_high(pin_index).await?;
+            keyboard.release();
         }
         bt_keyboard_mode::ControllerCommand::KeyboardRelease(pin_index) => {
             let key_name = bt_keyboard_mode::KeymapConfig::get_key_name(pin_index);
@@ -812,9 +914,6 @@ pub fn handle_key_event(
         }
         bt_keyboard_mode::ControllerCommand::KeymapConfig(_) => {
             // KeymapConfig is handled separately in keyboard_mode_main
-        }
-        bt_keyboard_mode::ControllerCommand::AsrConfig(_) => {
-            // AsrConfig is handled separately in keyboard_mode_main
         }
     }
 

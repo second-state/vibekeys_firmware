@@ -39,21 +39,13 @@
 
                     <div class="card bg-base-100 border border-base-300">
                         <div class="card-body">
-                            <h3 class="card-title text-lg" id="ssidTitle">WiFi (MUST be 2.4GHz)</h3>
-                            <label class="form-control">
-                                <div class="label">
-                                    <span class="label-text">Network Name</span>
-                                </div>
-                                <input type="text" id="ssidInput" placeholder="WiFi network name SSID"
-                                    class="input input-bordered w-full">
-                            </label>
-                            <label class="form-control">
-                                <div class="label">
-                                    <span class="label-text">Password</span>
-                                </div>
-                                <input type="password" id="passInput" placeholder="WiFi Password"
-                                    class="input input-bordered w-full">
-                            </label>
+                            <div class="flex justify-between items-center">
+                                <h3 class="card-title text-lg" id="wifiTitle">WiFi networks (2.4GHz)</h3>
+                                <button class="btn btn-xs btn-outline" id="addWifiButton">+ Add</button>
+                            </div>
+                            <p class="text-xs opacity-70">Device connects to the first listed
+                                network that is in range.</p>
+                            <div id="wifiListContainer" class="space-y-3"></div>
                         </div>
                     </div>
 
@@ -64,11 +56,38 @@
                                 <div class="label">
                                     <span class="label-text">WebSocket URL</span>
                                 </div>
-                                <div class="flex gap-2">
-                                    <input type="text" id="serverUrlInput" placeholder="VibeKeys server WebSocket URL"
-                                        class="input input-bordered flex-1">
-                                    <button class="btn btn-outline" id="autoServerUrlBtn">Auto</button>
+                                <input type="text" id="serverUrlInput" placeholder="VibeKeys server WebSocket URL"
+                                    class="input input-bordered w-full">
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="card bg-base-100 border border-base-300">
+                        <div class="card-body">
+                            <h3 class="card-title text-lg" id="asrTitle">ASR (Speech Recognition)</h3>
+                            <p class="text-xs opacity-70">Whisper-compatible endpoint. Sent on save, applied after
+                                device reset.</p>
+                            <label class="form-control">
+                                <div class="label">
+                                    <span class="label-text">Endpoint URI</span>
                                 </div>
+                                <input type="text" id="asrUriInput"
+                                    placeholder="https://host/audio/transcriptions"
+                                    class="input input-bordered w-full">
+                            </label>
+                            <label class="form-control">
+                                <div class="label">
+                                    <span class="label-text">API Key</span>
+                                </div>
+                                <input type="password" id="asrApiKeyInput" placeholder="Bearer token (optional)"
+                                    class="input input-bordered w-full">
+                            </label>
+                            <label class="form-control">
+                                <div class="label">
+                                    <span class="label-text">Model</span>
+                                </div>
+                                <input type="text" id="asrModelInput" placeholder="whisper-1"
+                                    class="input input-bordered w-full">
                             </label>
                         </div>
                     </div>
@@ -79,50 +98,63 @@
                             ⚙️ Advanced Settings
                         </div>
                         <div class="collapse-content">
-                            <div class="card-body pt-0">
+                            <div class="card-body pt-0 space-y-6">
                                 <label class="form-control">
                                     <div class="label">
                                         <span class="label-text">Microphone Mode</span>
                                     </div>
                                     <div class="flex gap-4">
                                         <label class="label cursor-pointer gap-2">
+                                            <input type="radio" name="micMode" value="0" id="micModePTT"
+                                                class="radio radio-primary radio-xs tooltip" />
+                                            <span class="label-text tooltip" data-tip="Hold to speak">PushToTalk</span>
+                                        </label>
+                                        <label class="label cursor-pointer gap-2">
                                             <input type="radio" name="micMode" value="1" id="micModeToggle"
                                                 class="radio radio-primary radio-xs" checked="checked" />
                                             <span class="label-text tooltip"
                                                 data-tip="Press to toggle on/off">Toggle</span>
                                         </label>
-                                        <label class="label cursor-pointer gap-2">
-                                            <input type="radio" name="micMode" value="0" id="micModePTT"
-                                                class="radio radio-primary radio-xs tooltip" />
-                                            <span class="label-text tooltip" data-tip="Hold to speak">PushToTalk</span>
-                                        </label>
                                     </div>
                                 </label>
-                            </div>
-                        </div>
-                    </div>
 
-                    <div class="card bg-base-100 border border-base-300">
-                        <div class="card-body">
-                            <h3 class="card-title text-lg">Background Image</h3>
-                            <div class="form-control mb-4">
-                                <label class="label">
-                                    <span class="label-text">Select a background image (PNG)</span>
+                                <label class="form-control">
+                                    <div class="label">
+                                        <span class="label-text">Built-in ASR (Keyboard Mode)</span>
+                                    </div>
+                                    <label class="label cursor-pointer gap-2 justify-start">
+                                        <input type="checkbox" id="preferBuiltinAsr"
+                                            class="checkbox checkbox-primary checkbox-xs" checked="checked" />
+                                        <span class="label-text tooltip"
+                                            data-tip="On: MIC uses on-device Whisper. Off: MIC forwards to the host (Ctrl+Option) to trigger its native dictation.">
+                                            Prefer built-in ASR
+                                        </span>
+                                    </label>
                                 </label>
-                                <input type="file" class="file-input file-input-bordered w-full" id="backgroundImage"
-                                    accept=".png" onchange="validateAndPreviewFile(this)">
-                                <label class="label">
-                                    <span class="label-text-alt">Must be a PNG file, max 1MB</span>
-                                </label>
-                                <div id="fileError" class="text-error text-sm"></div>
-                                <div id="bgPreview"
-                                    class="hidden mt-2 w-24 h-16 rounded border border-base-300 bg-cover bg-center">
+
+                                <div class="border-t border-base-300 pt-6">
+                                    <h3 class="card-title text-lg mb-4">Background Image</h3>
+                                    <div class="form-control mb-4">
+                                        <label class="label">
+                                            <span class="label-text">Select a background image (PNG)</span>
+                                        </label>
+                                        <input type="file" class="file-input file-input-bordered w-full"
+                                            id="backgroundImage" accept=".png" onchange="validateAndPreviewFile(this)">
+                                        <label class="label">
+                                            <span class="label-text-alt">Must be a PNG file, max 1MB</span>
+                                        </label>
+                                        <div id="fileError" class="text-error text-sm"></div>
+                                        <div id="bgPreview"
+                                            class="hidden mt-2 w-24 h-16 rounded border border-base-300 bg-cover bg-center">
+                                        </div>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button class="btn btn-primary flex-1" id="writeBgButton" disabled>Set
+                                            Background</button>
+                                        <button class="btn btn-outline flex-1" id="clearBgButton">Clear
+                                            Background</button>
+                                    </div>
                                 </div>
-                            </div>
-                            <div class="flex gap-2">
-                                <button class="btn btn-primary flex-1" id="writeBgButton" disabled>Set
-                                    Background</button>
-                                <button class="btn btn-outline flex-1" id="clearBgButton">Clear Background</button>
                             </div>
                         </div>
                     </div>
@@ -155,12 +187,11 @@
     <script>
         // UUIDs
         const SERVICE_ID = "623fa3e2-631b-4f8f-a6e7-a7b09c03e7e0";
-        const SSID_ID = "1fda4d6e-2f14-42b0-96fa-453bed238375";
-        const PASS_ID = "a987ab18-a940-421a-a1d7-b94ee22bccbe";
-        const SERVER_URL_ID = "cef520a9-bcb5-4fc6-87f7-82804eee2b20";
+        // 所有配置项复用同一个 CONFIG 特征值:
+        // 写入为 JSON {"type":"wifi_list|server_url|asr_config|mic_model","value":...},读取返回整份快照。
+        const CONFIG_ID = "cef520a9-bcb5-4fc6-87f7-82804eee2b20";
         const BACKGROUND_IMAGE_ID = "d1f3b2c4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
         const RESET_ID = "f0e1d2c3-b4a5-6789-0abc-def123456789";
-        const MIC_MODEL_ID = "72ae1823-ab95-4d78-af01-4ce8bb88e034";
 
         // global variables
         let device = null;
@@ -171,6 +202,10 @@
         let selectedBackgroundFile = null;
         let skipAutoLoad = false;
 
+        // WiFi 列表(整份经 CONFIG 特征值读写)。顺序即连接优先级。
+        let wifiList = []; // [{ ssid: '', pass: '' }, ...]
+        const WIFI_TITLE_BASE = 'WiFi networks (2.4GHz)';
+
         // DOM
         const connectButton = document.getElementById('connectButton');
         const controlPanel = document.getElementById('controlPanel');
@@ -178,36 +213,101 @@
         const connectionStatus = document.getElementById('connectionStatus');
         const loadAllButton = document.getElementById('loadAllButton');
         const saveAllButton = document.getElementById('saveAllButton');
-        const ssidInput = document.getElementById('ssidInput');
-        const passInput = document.getElementById('passInput');
+        const wifiListContainer = document.getElementById('wifiListContainer');
+        const addWifiButton = document.getElementById('addWifiButton');
+        const wifiTitle = document.getElementById('wifiTitle');
         const serverUrlInput = document.getElementById('serverUrlInput');
-        const ssidTitle = document.getElementById('ssidTitle');
-        const passTitle = document.getElementById('passTitle');
         const urlTitle = document.getElementById('urlTitle');
+        const asrTitle = document.getElementById('asrTitle');
+        const asrUriInput = document.getElementById('asrUriInput');
+        const asrApiKeyInput = document.getElementById('asrApiKeyInput');
+        const asrModelInput = document.getElementById('asrModelInput');
         const backgroundImage = document.getElementById('backgroundImage');
         const bgPreview = document.getElementById('bgPreview');
         const fileError = document.getElementById('fileError');
         const writeBgButton = document.getElementById('writeBgButton');
         const clearBgButton = document.getElementById('clearBgButton');
-        const autoServerUrlBtn = document.getElementById('autoServerUrlBtn');
         const notificationToast = document.getElementById('notificationToast');
         const toastMessage = document.getElementById('toastMessage');
         const resetNotSupportedModal = document.getElementById('resetNotSupportedModal');
         const micModePTT = document.getElementById('micModePTT');
         const micModeToggle = document.getElementById('micModeToggle');
+        const preferBuiltinAsr = document.getElementById('preferBuiltinAsr');
 
         // Track modified fields
         const modifiedFields = {
-            ssid: false,
-            pass: false,
+            wifi: false,
             url: false,
-            micMode: false
+            micMode: false,
+            preferBuiltin: false,
+            asr: false
         };
+
+        // Mark the whole wifi list as modified
+        function markWifiModified() {
+            modifiedFields.wifi = true;
+            if (wifiTitle && !wifiTitle.textContent.endsWith(' *')) {
+                wifiTitle.textContent = WIFI_TITLE_BASE + ' *';
+            }
+            updateSaveButtonState();
+        }
+
+        // Clear wifi modification mark
+        function clearWifiModification() {
+            modifiedFields.wifi = false;
+            if (wifiTitle) {
+                wifiTitle.textContent = WIFI_TITLE_BASE;
+            }
+            updateSaveButtonState();
+        }
+
+        // Rebuild the wifi row DOM from wifiList.
+        function renderWifiRows() {
+            wifiListContainer.innerHTML = '';
+            wifiList.forEach((cred, i) => {
+                const row = document.createElement('div');
+                row.className = 'flex flex-col gap-2 border border-base-300 rounded p-2';
+
+                const ssidInput = document.createElement('input');
+                ssidInput.type = 'text';
+                ssidInput.placeholder = 'Network name (SSID)';
+                ssidInput.className = 'input input-bordered input-sm w-full';
+                ssidInput.value = cred.ssid || '';
+                ssidInput.addEventListener('input', () => {
+                    wifiList[i].ssid = ssidInput.value;
+                    markWifiModified();
+                });
+
+                const passInput = document.createElement('input');
+                passInput.type = 'password';
+                passInput.placeholder = 'Password';
+                passInput.className = 'input input-bordered input-sm w-full';
+                passInput.value = cred.pass || '';
+                passInput.addEventListener('input', () => {
+                    wifiList[i].pass = passInput.value;
+                    markWifiModified();
+                });
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'btn btn-xs btn-error btn-outline self-end';
+                removeBtn.textContent = 'Remove';
+                removeBtn.addEventListener('click', () => {
+                    wifiList.splice(i, 1);
+                    renderWifiRows();
+                    markWifiModified();
+                });
+
+                row.appendChild(ssidInput);
+                row.appendChild(passInput);
+                row.appendChild(removeBtn);
+                wifiListContainer.appendChild(row);
+            });
+        }
 
         // Mark field as modified
         function markFieldAsModified(fieldName, titleElement) {
             modifiedFields[fieldName] = true;
-            if (!titleElement.textContent.endsWith(' *')) {
+            if (titleElement && !titleElement.textContent.endsWith(' *')) {
                 titleElement.textContent += ' *';
             }
             updateSaveButtonState();
@@ -369,9 +469,10 @@
         function enableControls() {
             loadAllButton.disabled = false;
             saveAllButton.disabled = false;
-            ssidInput.disabled = false;
-            passInput.disabled = false;
             serverUrlInput.disabled = false;
+            asrUriInput.disabled = false;
+            asrApiKeyInput.disabled = false;
+            asrModelInput.disabled = false;
             backgroundImage.disabled = false;
             clearBgButton.disabled = false;
             controlPanel.classList.remove('opacity-50', 'pointer-events-none');
@@ -381,39 +482,17 @@
         function disableControls() {
             loadAllButton.disabled = true;
             saveAllButton.disabled = true;
-            ssidInput.disabled = true;
-            passInput.disabled = true;
             serverUrlInput.disabled = true;
+            asrUriInput.disabled = true;
+            asrApiKeyInput.disabled = true;
+            asrModelInput.disabled = true;
             backgroundImage.disabled = true;
             writeBgButton.disabled = true;
             clearBgButton.disabled = true;
             controlPanel.classList.add('opacity-50', 'pointer-events-none');
         }
 
-        // Reads Characteristic
-        async function readCharacteristic(characteristicId, inputElement) {
-            if (!isConnected || !service) {
-                showNotification('Error', 'VibeKeys is not connected', true);
-                return false;
-            }
-
-            try {
-                const characteristic = await service.getCharacteristic(characteristicId);
-                const value = await characteristic.readValue();
-
-                const decoder = new TextDecoder();
-                const stringValue = decoder.decode(value);
-
-                inputElement.value = stringValue;
-                return true;
-            } catch (error) {
-                console.error('Read error: ', error);
-                showNotification('Error', 'Read error: ' + error.message, true);
-                return false;
-            }
-        }
-
-        // Load all configuration
+        // Load all configuration (single read on CONFIG returns a JSON snapshot)
         async function loadAllConfiguration() {
             if (!isConnected || !service) {
                 showNotification('Error', 'VibeKeys is not connected', true);
@@ -424,15 +503,35 @@
             loadAllButton.textContent = 'Loading...';
 
             try {
-                await readCharacteristic(SSID_ID, ssidInput);
-                await readCharacteristic(PASS_ID, passInput);
-                await readCharacteristic(SERVER_URL_ID, serverUrlInput);
-                await readMicMode();
+                const characteristic = await service.getCharacteristic(CONFIG_ID);
+                const value = await characteristic.readValue();
+                const snap = JSON.parse(new TextDecoder().decode(value));
+                console.log('[CONFIG] snapshot:', snap);
+                wifiList = (snap.wifi_list || []).map(c => ({
+                    ssid: c.ssid || '',
+                    pass: c.pass || ''
+                }));
+                if (wifiList.length === 0) {
+                    wifiList.push({ ssid: '', pass: '' });
+                }
+                renderWifiRows();
+                serverUrlInput.value = snap.server_url || '';
+                // ASR config (Whisper): {platform, uri, api_key, model}
+                const asr = snap.asr_config || {};
+                asrUriInput.value = asr.uri || '';
+                asrApiKeyInput.value = asr.api_key || '';
+                asrModelInput.value = asr.model || '';
+                // mic mode(PTT=0 / Toggle=1),走 CONFIG 快照;旧固件无该字段时默认 Toggle。
+                const micMode = (typeof snap.mic_model === 'number') ? snap.mic_model : 1;
+                micModePTT.checked = (micMode === 0);
+                micModeToggle.checked = (micMode === 1);
+                // 是否优先用内置 ASR(键盘模式);旧固件无该字段时默认开启。
+                preferBuiltinAsr.checked = (snap.prefer_builtin_asr !== false);
 
                 // Clear all modification marks
-                clearFieldModification('ssid', ssidTitle);
-                clearFieldModification('pass', passTitle);
+                clearWifiModification();
                 clearFieldModification('url', urlTitle);
+                clearFieldModification('asr', asrTitle);
 
                 showNotification('Success', 'All configuration loaded');
             } catch (error) {
@@ -455,44 +554,34 @@
             saveAllButton.textContent = 'Saving...';
 
             try {
-                let savedCount = 0;
                 const hasModifications = Object.values(modifiedFields).some(modified => modified);
 
-                // If no modifications, send all four parameters
-                if (!hasModifications) {
-                    await writeCharacteristic(SSID_ID, ssidInput.value);
-                    await writeCharacteristic(PASS_ID, passInput.value);
-                    await writeCharacteristic(SERVER_URL_ID, serverUrlInput.value);
-                    await writeMicMode();
-                    savedCount = 4;
-                } else {
-                    // If there are modifications, only send modified fields
-                    if (modifiedFields.ssid) {
-                        await writeCharacteristic(SSID_ID, ssidInput.value);
-                        clearFieldModification('ssid', ssidTitle);
-                        savedCount++;
-                    }
+                // 过滤掉 ssid 为空的网络,避免把空条目写进设备。
+                const nonEmptyWifi = wifiList.filter(c => c.ssid && c.ssid.trim() !== '');
 
-                    if (modifiedFields.pass) {
-                        await writeCharacteristic(PASS_ID, passInput.value);
-                        clearFieldModification('pass', passTitle);
-                        savedCount++;
-                    }
+                // 攒一个部分配置对象:无改动时发整份,有改动时只发改动的字段。
+                // 一次 writeConfigPatch 发出去,设备只更新出现的 key —— 不再逐字段发多次。
+                const include = (modified) => !hasModifications || modified;
+                const patch = {};
+                if (include(modifiedFields.wifi)) patch.wifi_list = nonEmptyWifi;
+                if (include(modifiedFields.url)) patch.server_url = serverUrlInput.value;
+                if (include(modifiedFields.asr)) patch.asr_config = buildAsrConfig();
+                if (include(modifiedFields.micMode)) patch.mic_model = micModePTT.checked ? 0 : 1;
+                if (include(modifiedFields.preferBuiltin)) patch.prefer_builtin_asr = !!preferBuiltinAsr.checked;
 
-                    if (modifiedFields.url) {
-                        await writeCharacteristic(SERVER_URL_ID, serverUrlInput.value);
-                        clearFieldModification('url', urlTitle);
-                        savedCount++;
-                    }
-
-                    if (modifiedFields.micMode) {
-                        await writeMicMode();
-                        modifiedFields.micMode = false;
-                        savedCount++;
-                    }
+                const fieldCount = Object.keys(patch).length;
+                if (fieldCount > 0) {
+                    await writeConfigPatch(patch);
                 }
 
-                showNotification('Success', `Saved ${savedCount} changes`);
+                // 清掉所有改动标记
+                clearWifiModification();
+                clearFieldModification('url', urlTitle);
+                clearFieldModification('asr', asrTitle);
+                modifiedFields.micMode = false;
+                modifiedFields.preferBuiltin = false;
+
+                showNotification('Success', `Saved ${fieldCount} field(s) in 1 write`);
 
                 // Try to reset device after saving
                 try {
@@ -540,18 +629,19 @@
             }
         }
 
-        // Writes Characteristic
-        async function writeCharacteristic(characteristicId, inputValue) {
+        // 写一个部分配置对象到 CONFIG 特征值:一次写可携带多项,设备只更新出现(非 null)的 key。
+        async function writeConfigPatch(patch) {
             if (!isConnected || !service) {
                 throw new Error('VibeKeys is not connected');
             }
 
-            inputValue = inputValue || '';
+            console.log('[CONFIG] write patch:', patch);
+            const json = JSON.stringify(patch);
 
             try {
-                const characteristic = await service.getCharacteristic(characteristicId);
+                const characteristic = await service.getCharacteristic(CONFIG_ID);
                 const encoder = new TextEncoder();
-                const data = encoder.encode(inputValue);
+                const data = encoder.encode(json);
                 await characteristic.writeValue(data);
             } catch (error) {
                 console.error('Write error:', error);
@@ -559,47 +649,14 @@
             }
         }
 
-        // Read mic mode
-        async function readMicMode() {
-            if (!isConnected || !service) {
-                return false;
-            }
-
-            try {
-                const characteristic = await service.getCharacteristic(MIC_MODEL_ID);
-                const value = await characteristic.readValue();
-                const modeValue = value.getUint8(0);
-                console.log('Read mic mode value:', modeValue);
-                if (modeValue === 0) {
-                    micModePTT.checked = true;
-                    micModeToggle.checked = false;
-                } else if (modeValue === 1) {
-                    micModeToggle.checked = true;
-                    micModePTT.checked = false;
-                }
-                return true;
-            } catch (error) {
-                console.error('Read mic mode error:', error);
-                return false;
-            }
-        }
-
-        // Write mic mode
-        async function writeMicMode() {
-            if (!isConnected || !service) {
-                throw new Error('VibeKeys is not connected');
-            }
-
-            const modeValue = micModePTT.checked ? 0 : 1;
-
-            try {
-                const characteristic = await service.getCharacteristic(MIC_MODEL_ID);
-                const data = new Uint8Array([modeValue]);
-                await characteristic.writeValue(data);
-            } catch (error) {
-                console.error('Write mic mode error:', error);
-                throw error;
-            }
+        // Build the Whisper AsrConfig object from the three ASR inputs.
+        function buildAsrConfig() {
+            return {
+                platform: 'whisper',
+                uri: asrUriInput.value || '',
+                api_key: asrApiKeyInput.value || '',
+                model: asrModelInput.value || ''
+            };
         }
 
         async function writeBackgroundImage() {
@@ -676,18 +733,21 @@
             saveAllModifications();
         });
 
+        addWifiButton.addEventListener('click', () => {
+            wifiList.push({ ssid: '', pass: '' });
+            renderWifiRows();
+            markWifiModified();
+        });
+
         // Listen for input changes
-        ssidInput.addEventListener('input', () => {
-            markFieldAsModified('ssid', ssidTitle);
-        });
-
-        passInput.addEventListener('input', () => {
-            markFieldAsModified('pass', passTitle);
-        });
-
         serverUrlInput.addEventListener('input', () => {
             markFieldAsModified('url', urlTitle);
         });
+
+        // ASR fields: any edit marks the whole ASR card modified
+        asrUriInput.addEventListener('input', () => markFieldAsModified('asr', asrTitle));
+        asrApiKeyInput.addEventListener('input', () => markFieldAsModified('asr', asrTitle));
+        asrModelInput.addEventListener('input', () => markFieldAsModified('asr', asrTitle));
 
         // Listen for mic mode changes
         micModePTT.addEventListener('change', () => {
@@ -700,15 +760,9 @@
             updateSaveButtonState();
         });
 
-        // Auto fill server URL button
-        autoServerUrlBtn.addEventListener('click', () => {
-            const currentUrl = new URL(window.location.href);
-            const protocol = currentUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-            const host = currentUrl.host;
-            const wsUrl = `${protocol}//${host}/ws`;
-            serverUrlInput.value = wsUrl;
-            markFieldAsModified('url', urlTitle);
-            showNotification('Message', `Auto-filled server URL: ${wsUrl}`);
+        preferBuiltinAsr.addEventListener('change', () => {
+            modifiedFields.preferBuiltin = true;
+            updateSaveButtonState();
         });
 
         writeBgButton.addEventListener('click', () => {
@@ -725,31 +779,21 @@
             connectButton.disabled = true;
         }
 
-        // Disable Auto button for loopback addresses (localhost, 127.0.0.1, etc.)
-        const currentHost = window.location.hostname;
-        const isLoopback = currentHost === 'localhost' ||
-            currentHost === '127.0.0.1' ||
-            currentHost === '[::1]' ||
-            currentHost.startsWith('127.');
-        if (isLoopback) {
-            autoServerUrlBtn.disabled = true;
-            autoServerUrlBtn.title = 'Not available for loopback addresses';
-        }
-
-        // Read WiFi credentials from URL query parameters
+        // Read WiFi credentials from URL query parameters (?ssid=...&pass=...)
         const urlParams = new URLSearchParams(window.location.search);
         const ssidParam = urlParams.get('ssid');
         const passParam = urlParams.get('pass');
-        if (ssidParam) {
-            ssidInput.value = ssidParam;
-            markFieldAsModified('ssid', ssidTitle);
+        if (ssidParam || passParam) {
+            wifiList = [{ ssid: ssidParam || '', pass: passParam || '' }];
+            markWifiModified();
             skipAutoLoad = true;
         }
-        if (passParam) {
-            passInput.value = passParam;
-            markFieldAsModified('pass', passTitle);
-            skipAutoLoad = true;
+
+        // Initial render: at least one empty row so the UI is usable before connect.
+        if (wifiList.length === 0) {
+            wifiList.push({ ssid: '', pass: '' });
         }
+        renderWifiRows();
 
         // Initialize controls as disabled
         disableControls();

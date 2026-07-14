@@ -38,6 +38,13 @@ const DEFAULT_SNTP_SERVERS: [&str; 4] = [
     "ntp.aliyun.com",
     "time.cloudflare.com",
 ];
+const SNTP_SYNC_TIMEOUT_SECS: usize = 30;
+const TIME_SYNC_FAILED_PROMPT: &str = "Time sync failed\nAccept=Retry\nESC=Exit";
+
+enum TimeSyncFailureAction {
+    Retry,
+    Exit,
+}
 
 pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
     use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode, SyncStatus};
@@ -48,7 +55,7 @@ pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
         DEFAULT_SNTP_SERVERS.len()
     );
 
-    // 一次配齐所有 server:ESP-IDF SNTP 模块并发查询,谁先回就用谁(不再串行每个等 15s)。
+    // 一次配齐所有 server:ESP-IDF SNTP 模块并发查询,谁先回就用谁(不再串行每个等 30s)。
     let conf = SntpConf {
         servers: DEFAULT_SNTP_SERVERS,
         operating_mode: OperatingMode::Poll,
@@ -56,7 +63,7 @@ pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
     };
     let ntp_client = EspSntp::new(&conf)?;
 
-    for i in 0..15 {
+    for i in 0..SNTP_SYNC_TIMEOUT_SECS {
         let p = ".".repeat(i % 4);
         let _ =
             ui::render_keyboard_view(display_target, false, false, &format!("Syncing time{}", p));
@@ -71,7 +78,54 @@ pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    Err(anyhow::anyhow!("Failed to sync time via SNTP"))
+    Err(anyhow::anyhow!(
+        "Failed to sync time via SNTP ({}s)",
+        SNTP_SYNC_TIMEOUT_SECS
+    ))
+}
+
+fn wait_button_release(btn: &AnyBtn) {
+    while btn.is_low() {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn wait_time_sync_failure_action(
+    display_target: &mut lcd::FrameBuffer,
+    accept: &AnyBtn,
+    esc: &AnyBtn,
+) -> TimeSyncFailureAction {
+    let _ = ui::render_keyboard_view(display_target, false, false, TIME_SYNC_FAILED_PROMPT);
+    loop {
+        if accept.is_low() {
+            wait_button_release(accept);
+            return TimeSyncFailureAction::Retry;
+        }
+        if esc.is_low() {
+            wait_button_release(esc);
+            return TimeSyncFailureAction::Exit;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn sync_time_with_retry(
+    display_target: &mut lcd::FrameBuffer,
+    accept: &AnyBtn,
+    esc: &AnyBtn,
+) -> bool {
+    loop {
+        match sync_time(display_target) {
+            Ok(()) => return true,
+            Err(e) => {
+                log::error!("Failed to sync time: {:?}", e);
+                match wait_time_sync_failure_action(display_target, accept, esc) {
+                    TimeSyncFailureAction::Retry => continue,
+                    TimeSyncFailureAction::Exit => return false,
+                }
+            }
+        }
+    }
 }
 
 pub fn goto_next_firmware() -> anyhow::Result<()> {
@@ -387,17 +441,7 @@ fn main() -> anyhow::Result<()> {
                 // 关闭「优先内置 ASR」时键盘模式不会用 Whisper(MIC 透传给主机),
                 // 也就不需要为 HTTPS 证书校验同步时间 —— 跳过省一段启动耗时。
                 if setting.prefer_builtin_asr && asr_config.requires_tls() {
-                    let r = sync_time(&mut target);
-                    if r.is_err() {
-                        log::error!("Failed to sync time: {:?}", r.err());
-                        let _ = ui::render_keyboard_view(
-                            &mut target,
-                            false,
-                            false,
-                            " Time sync failed\n",
-                        );
-                        std::thread::sleep(std::time::Duration::from_secs(3));
-                    } else {
+                    if sync_time_with_retry(&mut target, &key_pins.accept, &key_pins.esc) {
                         let worker = audio::AudioWorker {
                             in_i2s: peripherals.i2s0,
                             in_ws: peripherals.pins.gpio41.into(),
@@ -406,6 +450,8 @@ fn main() -> anyhow::Result<()> {
                             in_mclk: None,
                         };
                         let _ = driver.insert(audio::Driver::new(worker)?);
+                    } else {
+                        log::warn!("Time sync canceled; starting keyboard mode without TLS ASR");
                     }
                 } else {
                     let worker = audio::AudioWorker {
@@ -459,6 +505,36 @@ fn main() -> anyhow::Result<()> {
 
     let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
 
+    let _ = ui::render_keyboard_view(&mut target, false, false, "Connecting the WiFi...");
+
+    // 用 boot 阶段的扫描结果与已配置 wifi_list 匹配,挑当前在范围内的网络连接。
+    let r = match bt_wifi_mode::pick_cred(&scan_list, &setting.wifi_list) {
+        Some(c) => wifi::connect(&mut wifi, &c.ssid, &c.pass, sysloop.clone()),
+        None => {
+            log::error!(
+                "No known WiFi network in range (scan_list has {})",
+                scan_list.len()
+            );
+            anyhow::Result::<()>::Err(anyhow::anyhow!("no known network in range"))
+        }
+    };
+    if r.is_err() {
+        log::error!("Failed to connect to WiFi: {:?}", r.err());
+        let _ = ui::render_keyboard_view(&mut target, false, false, " WiFi connection failed\n");
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        esp_idf_svc::hal::reset::restart();
+    }
+
+    if setting.server_url.starts_with("mqtts")
+        || asr_config.as_ref().map_or(false, |c| c.requires_tls())
+    {
+        let _ = ui::render_keyboard_view(&mut target, false, false, "Syncing time...");
+        if !sync_time_with_retry(&mut target, &btn7, &btn3) {
+            log::warn!("Time sync canceled; restarting before remote mode");
+            esp_idf_svc::hal::reset::restart();
+        }
+    }
+
     {
         // btn0 (MIC) 由 app::run 直接持有用于本地 ASR,不在此 spawn。
 
@@ -489,39 +565,6 @@ fn main() -> anyhow::Result<()> {
         runtime.spawn(app::key_task::rotate_key(pin16, pin17, tx.clone()));
 
         runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
-    }
-
-    let _ = ui::render_keyboard_view(&mut target, false, false, "Connecting the WiFi...");
-
-    // 用 boot 阶段的扫描结果与已配置 wifi_list 匹配,挑当前在范围内的网络连接。
-    let r = match bt_wifi_mode::pick_cred(&scan_list, &setting.wifi_list) {
-        Some(c) => wifi::connect(&mut wifi, &c.ssid, &c.pass, sysloop.clone()),
-        None => {
-            log::error!(
-                "No known WiFi network in range (scan_list has {})",
-                scan_list.len()
-            );
-            anyhow::Result::<()>::Err(anyhow::anyhow!("no known network in range"))
-        }
-    };
-    if r.is_err() {
-        log::error!("Failed to connect to WiFi: {:?}", r.err());
-        let _ = ui::render_keyboard_view(&mut target, false, false, " WiFi connection failed\n");
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        esp_idf_svc::hal::reset::restart();
-    }
-
-    if setting.server_url.starts_with("mqtts")
-        || asr_config.as_ref().map_or(false, |c| c.requires_tls())
-    {
-        let _ = ui::render_keyboard_view(&mut target, false, false, "Syncing time...");
-        let r = sync_time(&mut target);
-        if r.is_err() {
-            log::error!("Failed to sync time: {:?}", r.err());
-            let _ = ui::render_keyboard_view(&mut target, false, false, " Time sync failed\n");
-            std::thread::sleep(std::time::Duration::from_secs(60));
-            esp_idf_svc::hal::reset::restart();
-        }
     }
 
     // 远程模式改用本地 ASR(MQTT 无语音通道):创建 audio::Driver 持有 I2S,

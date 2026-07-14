@@ -110,6 +110,14 @@ pub async fn run(
     // 当前帧是否还有下文。vibetty 在每帧 JPEG 末尾附一个大端 u32 作为滚动 offset 标记,
     // 0 = 本页是最底页(没有下文)。本地缓冲滚到底后据此决定:有下文才请求下一页,否则忽略。
     let mut current_has_more_below: bool = true;
+    // 正在等待服务端的翻页响应。发 ScrollUp/ScrollDown 时置位并显示 loading;新帧
+    //(ActiveScreen)到达后据此定位窗口:Up→拉到最底(接旧帧最顶)、Down→拉到最顶(接旧帧最底)。
+    #[derive(Clone, Copy)]
+    enum PendingScroll {
+        Up,
+        Down,
+    }
+    let mut pending_scroll: Option<PendingScroll> = None;
     let view_windows_height = crate::lcd::DISPLAY_HEIGHT as usize;
     /// 滚轮每格本地平移的像素步长(可调)。
     const SCROLL_STEP_PX: usize = 20;
@@ -156,12 +164,10 @@ pub async fn run(
                             }
                         }
                     } else {
-                        // 已经在缓冲最顶,请服务端继续往上翻(scrollback)。
-                        // 预先把窗口拉到底:新帧的最底正好接在旧帧最顶之下,连续阅读不跳。
-                        view_window_offset = current_screen
-                            .as_ref()
-                            .map(|b| b.height.saturating_sub(view_windows_height))
-                            .unwrap_or(0);
+                        // 已在缓冲最顶,请服务端往上翻(scrollback)。不立刻动窗口:保持当前画面、
+                        // 显示 loading,等新帧到达再把窗口拉到最底(新帧最底接旧帧最顶,连续阅读不跳)。
+                        pending_scroll = Some(PendingScroll::Up);
+                        let _ = popup.show(ui.display_mut(), "loading...");
                         server
                             .send(protocol::ClientMessage::ScrollUp { rows: 0 })
                             .await?;
@@ -188,9 +194,10 @@ pub async fn run(
                                 }
                             }
                         } else if current_has_more_below {
-                            // 已经在缓冲最底、且本页还有下文:请服务端继续往下翻。
-                            // 预先把窗口拉到顶:新帧的最顶正好接在旧帧最底之上,连续阅读不跳。
-                            view_window_offset = 0;
+                            // 已在缓冲最底、且本页还有下文:请服务端往下翻。不立刻动窗口:保持当前画面、
+                            // 显示 loading,等新帧到达再把窗口拉到最顶(新帧最顶接旧帧最底,连续阅读不跳)。
+                            pending_scroll = Some(PendingScroll::Down);
+                            let _ = popup.show(ui.display_mut(), "loading...");
                             server
                                 .send(protocol::ClientMessage::ScrollDown { rows: 0 })
                                 .await?;
@@ -334,10 +341,14 @@ pub async fn run(
                         );
                         match crate::new_jpg::esp_jpeg_decode_one_picture(jpeg) {
                             Ok(display) => {
-                                // 新帧到达:保留当前滚动位置,只夹到新缓冲的合法区间,
-                                // 避免每次刷帧都把视图拉回原点。
+                                // 新帧到达:只有主动翻页(Up/Down)才跳变 offset;服务端定时推送的
+                                // screen 保持当前滚动位置不动(flush_window 内部会夹到合法区间,越界也安全)。
                                 let max_offset = display.height.saturating_sub(view_windows_height);
-                                view_window_offset = view_window_offset.min(max_offset);
+                                match pending_scroll.take() {
+                                    Some(PendingScroll::Up) => view_window_offset = max_offset,
+                                    Some(PendingScroll::Down) => view_window_offset = 0,
+                                    None => {}
+                                }
                                 if let Err(e) =
                                     display.flush_window(view_window_offset, view_windows_height)
                                 {
@@ -363,6 +374,8 @@ pub async fn run(
                 }
                 crate::mqtt::MqttEvent::Disconnected => {
                     log::warn!("MQTT broker disconnected; showing offline popup");
+                    // 断线作废正在等待的翻页请求,避免重连后 resubscribe 的 sync 帧被误当翻页响应。
+                    pending_scroll = None;
                     disconnected = true;
                     let _ = popup.show(ui.display_mut(), "MQTT disconnected");
                 }

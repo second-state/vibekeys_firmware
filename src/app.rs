@@ -118,6 +118,20 @@ pub async fn run(
         Down,
     }
     let mut pending_scroll: Option<PendingScroll> = None;
+    // pending_scroll 的置位时刻 = 发出翻页请求的 Instant。两用:既做超时检查的起点,
+    // 收到响应时又用来算本轮 RTT(更新 rtt_avg)。vibetty 到顶/到底不发图、或丢包时,
+    // 超过基于 rtt_avg 算出的阈值就清掉 pending,恢复滚动。
+    let mut pending_since: Option<std::time::Instant> = None;
+    // 最近翻页往返时间(RTT)的指数移动平均;pending 超时阈值据此自适应。
+    let mut rtt_avg: Option<std::time::Duration> = None;
+    // 事件循环轮询间隔(也是 pending 超时检查的精度)。
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+    // 超时 = 平均 RTT × 此倍数(留余量给网络抖动)。
+    const RTT_TIMEOUT_MULT: u32 = 2;
+    // 超时下限,避免 RTT 样本很小时阈值过紧误清。
+    const RTT_TIMEOUT_FLOOR: std::time::Duration = std::time::Duration::from_millis(400);
+    // 还没有 RTT 样本时(首次翻页前)用的默认超时。
+    const RTT_TIMEOUT_DEFAULT: std::time::Duration = std::time::Duration::from_millis(1500);
     let view_windows_height = crate::lcd::DISPLAY_HEIGHT as usize;
     /// 滚轮每格本地平移的像素步长(可调)。
     const SCROLL_STEP_PX: usize = 20;
@@ -126,7 +140,33 @@ pub async fn run(
         // 把 desired_prefix 落实为 subscribe(必须在 select 之外,不可被取消)。
         server.flush_pending().await?;
 
-        let Some(evt) = select_event(&mut server, &mut rx, mic_btn).await else {
+        // 事件获取带轮询超时:无事件时每 POLL_INTERVAL 醒来一次,检查 pending 是否超时
+        // (vibetty 到顶/到底不发图 → 翻页请求永远等不到响应,超时清掉才能恢复滚动)。
+        let evt =
+            match tokio::time::timeout(POLL_INTERVAL, select_event(&mut server, &mut rx, mic_btn))
+                .await
+            {
+                Ok(inner) => inner,
+                Err(_) => {
+                    // 超时阈值 = 平均 RTT × 倍数(下限 RTT_TIMEOUT_FLOOR);无样本用默认。
+                    let timeout = rtt_avg
+                        .map(|a| a * RTT_TIMEOUT_MULT)
+                        .unwrap_or(RTT_TIMEOUT_DEFAULT)
+                        .max(RTT_TIMEOUT_FLOOR);
+                    if pending_scroll.is_some()
+                        && pending_since.map_or(false, |t| t.elapsed() >= timeout)
+                    {
+                        log::info!(
+                            "Pending scroll timed out (>{timeout:?}, avg RTT={rtt_avg:?}), clearing"
+                        );
+                        pending_scroll = None;
+                        pending_since = None;
+                        let _ = popup.hide(ui.display_mut());
+                    }
+                    continue;
+                }
+            };
+        let Some(evt) = evt else {
             log::warn!("All event sources closed, exiting run loop");
             break;
         };
@@ -169,6 +209,7 @@ pub async fn run(
                         // loading 期间(pending_scroll 已置位)忽略新的翻页请求,避免连按重复发包/覆盖方向。
                         if pending_scroll.is_none() {
                             pending_scroll = Some(PendingScroll::Up);
+                            pending_since = Some(std::time::Instant::now());
                             let _ = popup.show(ui.display_mut(), "loading...");
                             server
                                 .send(protocol::ClientMessage::ScrollUp { rows: 0 })
@@ -202,6 +243,7 @@ pub async fn run(
                             // loading 期间(pending_scroll 已置位)忽略新的翻页请求,避免连按重复发包/覆盖方向。
                             if pending_scroll.is_none() {
                                 pending_scroll = Some(PendingScroll::Down);
+                                pending_since = Some(std::time::Instant::now());
                                 let _ = popup.show(ui.display_mut(), "loading...");
                                 server
                                     .send(protocol::ClientMessage::ScrollDown { rows: 0 })
@@ -350,10 +392,26 @@ pub async fn run(
                                 // 新帧到达:只有主动翻页(Up/Down)才跳变 offset;服务端定时推送的
                                 // screen 保持当前滚动位置不动(flush_window 内部会夹到合法区间,越界也安全)。
                                 let max_offset = display.height.saturating_sub(view_windows_height);
-                                match pending_scroll.take() {
+                                let taken = pending_scroll.take();
+                                let is_response = taken.is_some();
+                                match taken {
                                     Some(PendingScroll::Up) => view_window_offset = max_offset,
                                     Some(PendingScroll::Down) => view_window_offset = 0,
                                     None => {}
+                                }
+                                // 收到翻页响应(is_response):用「发出→收到」时长更新平均 RTT,
+                                // 作为后续 pending 超时阈值的依据;定时 screen 则仅清计时。
+                                if is_response {
+                                    if let Some(sent) = pending_since.take() {
+                                        let rtt = sent.elapsed();
+                                        rtt_avg = Some(match rtt_avg {
+                                            Some(prev) => prev * 3 / 5 + rtt * 2 / 5,
+                                            None => rtt,
+                                        });
+                                        log::debug!("scroll RTT={rtt:?}, avg={rtt_avg:?}");
+                                    }
+                                } else {
+                                    pending_since = None;
                                 }
                                 if let Err(e) =
                                     display.flush_window(view_window_offset, view_windows_height)
@@ -382,6 +440,7 @@ pub async fn run(
                     log::warn!("MQTT broker disconnected; showing offline popup");
                     // 断线作废正在等待的翻页请求,避免重连后 resubscribe 的 sync 帧被误当翻页响应。
                     pending_scroll = None;
+                    pending_since = None;
                     disconnected = true;
                     let _ = popup.show(ui.display_mut(), "MQTT disconnected");
                 }

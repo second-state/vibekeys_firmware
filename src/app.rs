@@ -89,6 +89,10 @@ pub async fn run(
     // Remote 外壳:连接/首屏前的 stop 占位(收到 vibetty 屏幕后由 ui.handle_message 覆盖)。
     let _ = crate::ui::render_remote_view(ui.display_mut(), false);
     let mut popup = crate::ui::popup_centered(ui.display_mut().bounding_box());
+    // 是否处于「与 broker 断开」状态。断线期间每轮重新 show 下线弹窗(覆盖瞬态提示),
+    // 由 Disconnected 置位、Reconnected 清零。首个 Connected 被 wait_first_connected 吃掉,
+    // 所以只有真实重连才会触发 Reconnected,不会误关弹窗。
+    let mut disconnected = false;
 
     // 进入 remote 模式直接弹会话列表让用户挑,而不是先自动看活跃会话的屏。
     // 冷启动时 retained presence 还没经 recv() 落进 sessions 表,picker 入口会先等它们到达。
@@ -119,8 +123,19 @@ pub async fn run(
             break;
         };
 
-        // 每轮事件先关闭上一轮弹窗(增量 restore),再处理新事件
-        let _ = popup.hide(ui.display_mut());
+        // 弹窗收敛:在线则关闭上一轮瞬态弹窗;断线则(重新)显示「下线」弹窗,
+        // 让它在无事件期间也持续保持(断线时不会有 MQTT 事件来触发重绘)。
+        if disconnected {
+            let _ = popup.show(ui.display_mut(), "MQTT disconnected");
+        } else {
+            let _ = popup.hide(ui.display_mut());
+        }
+
+        // 断线期间忽略除 Reconnected 外的一切事件(按键/MIC 发不出去、残余 Presence/Screen
+        // 无效),避免这些操作的画面刷新覆盖下线弹窗。首次 Disconnected 由下方 match 立即 show。
+        if disconnected && !matches!(evt, SelectResult::Mqtt(crate::mqtt::MqttEvent::Reconnected)) {
+            continue;
+        }
 
         match evt {
             SelectResult::Event(e) => match e {
@@ -345,6 +360,16 @@ pub async fn run(
                         log::info!("Session went offline: {prefix}");
                         let _ = popup.show(ui.display_mut(), "session offline");
                     }
+                }
+                crate::mqtt::MqttEvent::Disconnected => {
+                    log::warn!("MQTT broker disconnected; showing offline popup");
+                    disconnected = true;
+                    let _ = popup.show(ui.display_mut(), "MQTT disconnected");
+                }
+                crate::mqtt::MqttEvent::Reconnected => {
+                    log::info!("MQTT reconnected; subscriptions restored");
+                    disconnected = false;
+                    let _ = popup.hide(ui.display_mut());
                 }
             },
             SelectResult::MicPressed => {
@@ -576,6 +601,12 @@ async fn open_session_picker(
             }
             PickerEvt::Mqtt(crate::mqtt::MqttEvent::ActiveScreen(_)) => {
                 // 选择器开着时不刷屏;退出时 sync() 会要新帧。
+            }
+            PickerEvt::Mqtt(crate::mqtt::MqttEvent::Disconnected) => {
+                // 选择器内断线:不弹窗(会和列表重绘打架);列表内容随下次 presence 自然更新。
+            }
+            PickerEvt::Mqtt(crate::mqtt::MqttEvent::Reconnected) => {
+                // 选择器内重连:订阅已在 mqtt 层恢复,无需处理。
             }
         }
     }

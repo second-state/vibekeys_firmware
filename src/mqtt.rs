@@ -72,6 +72,10 @@ pub enum MqttEvent {
     ActiveScreen(ScreenImageChunk),
     /// 会话注册表变化:上线(online=true)/下线 LWT(online=false)。
     Presence { prefix: String, online: bool },
+    /// 与 broker 的连接断开(app 据此显示「下线」弹窗,重连后由 Reconnected 关闭)。
+    Disconnected,
+    /// 断线后重连成功且订阅(discovery + 活跃 screen)已恢复。
+    Reconnected,
 }
 
 /// vibetty presence 公告。
@@ -235,12 +239,18 @@ impl MqttServer {
             // 从 tokio channel 取一条已拷成 owned 的事件。
             let (topic, data, details) = match self.rx.recv().await? {
                 RawEvent::Connected => {
-                    if let Err(e) = self.resubscribe_after_reconnect().await {
-                        log::error!("MQTT resubscribe after reconnect failed: {e:?}");
+                    // 重连成功:先重建订阅(discovery + 活跃 screen)才算真正恢复 ——
+                    // 成功才上报 Reconnected(让 app 关掉「下线」弹窗);订阅恢复失败则
+                    // 等下一次重连再试,期间 app 仍认为处于断线状态。
+                    match self.resubscribe_after_reconnect().await {
+                        Ok(()) => return Some(MqttEvent::Reconnected),
+                        Err(e) => {
+                            log::error!("MQTT resubscribe after reconnect failed: {e:?}");
+                            continue;
+                        }
                     }
-                    continue;
                 }
-                RawEvent::Disconnected => continue,
+                RawEvent::Disconnected => return Some(MqttEvent::Disconnected),
                 RawEvent::Received {
                     topic,
                     data,

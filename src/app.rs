@@ -307,7 +307,7 @@ pub async fn run(
                     } else {
                         let now = std::time::Instant::now();
                         server
-                            .send(protocol::ClientMessage::PtyInput(vec![0x08]))
+                            .send(protocol::ClientMessage::PtyInput(vec![0x7f]))
                             .await?;
                         log::info!("Backspace sent, took {} ms", now.elapsed().as_millis());
                     }

@@ -47,11 +47,17 @@ The custom keys act as a Bluetooth keyboard. Default keymap (overridable via key
 
 ### Remote mode (MQTT → vibetty)
 
-On entering Remote mode the **session picker opens automatically**, listing the vibetty sessions currently published to the broker (it waits briefly for them to arrive).
+Remote mode connects to the vibetty bridge over MQTT. It does **not** bind to a single session — it subscribes to presence for **all of your sessions at once** (`{user}/+/+/vibetty`, retained), so every vibetty terminal you have running shows up, and you can **switch between them on the fly** without reconnecting.
 
-> **Press the rotary knob at any time to (re)open the session picker** and switch which session is displayed.
+On entering Remote mode the **session picker opens automatically** (it waits briefly for sessions to arrive).
 
-In the **session picker**:
+> **Press the rotary knob at any time to (re)open the picker** and switch which session is displayed.
+
+In the **session picker** each session is one row. Its label color reflects that session's live agent state, and the focused row is highlighted separately:
+
+- **white** label — the session is **working** (agent running);
+- **orange** label — the session has **stopped** (idle / waiting);
+- **blue** background — the currently focused row.
 
 | Key | Action |
 |---|---|

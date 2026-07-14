@@ -48,6 +48,8 @@ pub struct MqttServer {
     /// 用户选定的活跃会话(= screen 订阅目标 = input 发送目标)。
     /// 当前无活跃时,首个注册会话自动激活;此后不再自动切换。
     active: Option<String>,
+    /// discovery 订阅目标:`{user}/+/+/vibetty`。
+    discovery_topic: String,
     /// 已落实 screen 订阅的实例 prefix(flush_pending 维护)。
     subscribed_prefix: Option<String>,
     /// screen 分片重组缓冲,key = topic。
@@ -194,6 +196,7 @@ impl MqttServer {
             rx,
             sessions: HashMap::new(),
             active: None,
+            discovery_topic: discovery,
             subscribed_prefix: None,
             reassembly: HashMap::new(),
         })
@@ -231,7 +234,12 @@ impl MqttServer {
         loop {
             // 从 tokio channel 取一条已拷成 owned 的事件。
             let (topic, data, details) = match self.rx.recv().await? {
-                RawEvent::Connected => continue,
+                RawEvent::Connected => {
+                    if let Err(e) = self.resubscribe_after_reconnect().await {
+                        log::error!("MQTT resubscribe after reconnect failed: {e:?}");
+                    }
+                    continue;
+                }
                 RawEvent::Disconnected => continue,
                 RawEvent::Received {
                     topic,
@@ -344,6 +352,26 @@ impl MqttServer {
                 None
             }
         }
+    }
+
+    async fn resubscribe_after_reconnect(&mut self) -> anyhow::Result<()> {
+        log::info!(
+            "Resubscribing discovery topic after reconnect: {}",
+            self.discovery_topic
+        );
+        self.client
+            .subscribe(&self.discovery_topic, QoS::AtLeastOnce)
+            .map_err(|e| anyhow::anyhow!("resubscribe discovery failed: {e:?}"))?;
+
+        self.subscribed_prefix = None;
+        self.reassembly.clear();
+        self.flush_pending().await?;
+
+        if self.active.is_some() {
+            let _ = self.send(ClientMessage::sync()).await;
+        }
+
+        Ok(())
     }
 
     /// 发送按键 / 控制消息。`PtyInput` 走 `{P}/pty_in` raw;其余(Sync/Input/Scroll)

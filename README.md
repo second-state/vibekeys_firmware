@@ -77,6 +77,16 @@ While viewing a **remote terminal**:
 
 Entered from the boot menu. Options: **WiFi networks**, **OTA Update**, **Clear config**. Move with **NEXT** (or the rotary in sub-screens), pick/edit with **ACCEPT**, delete with **BACKSPACE**, go back with **ESC**. **OTA Update** reboots into the OTA rescue firmware; **Clear config** wipes NVS and reboots.
 
+## Multiple WiFi (wifi_list)
+
+The device keeps a **list of WiFi credentials** (`wifi_list`) rather than a single network. On boot it scans the surroundings and **connects to the first network in the list that is currently in range** — the list order is the priority order.
+
+The point of a list is **mobility**: so the device can follow you between places — **office → café → home** — and come back online at each one without reconfiguring WiFi on the spot. Configure every network you use once (under **Setting → WiFi networks**, or via `setup.html` during provisioning); after that the device picks the right one automatically, wherever you happen to be.
+
+- List order = priority: the first entry whose SSID is visible in the scan wins.
+- Up to **8** credentials are stored in NVS (`MAX_WIFI_CREDS`).
+- Every mode and the OTA rescue firmware share the same list and the same priority logic, so an over-the-air update also connects from wherever you are.
+
 ## Hardware
 
 ESP32-S3 + PSRAM (octal), SPI LCD, I2S microphone, custom keys, optional I2C OLED.

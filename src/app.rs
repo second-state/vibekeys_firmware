@@ -166,11 +166,14 @@ pub async fn run(
                     } else {
                         // 已在缓冲最顶,请服务端往上翻(scrollback)。不立刻动窗口:保持当前画面、
                         // 显示 loading,等新帧到达再把窗口拉到最底(新帧最底接旧帧最顶,连续阅读不跳)。
-                        pending_scroll = Some(PendingScroll::Up);
-                        let _ = popup.show(ui.display_mut(), "loading...");
-                        server
-                            .send(protocol::ClientMessage::ScrollUp { rows: 0 })
-                            .await?;
+                        // loading 期间(pending_scroll 已置位)忽略新的翻页请求,避免连按重复发包/覆盖方向。
+                        if pending_scroll.is_none() {
+                            pending_scroll = Some(PendingScroll::Up);
+                            let _ = popup.show(ui.display_mut(), "loading...");
+                            server
+                                .send(protocol::ClientMessage::ScrollUp { rows: 0 })
+                                .await?;
+                        }
                     }
                 }
                 Event::RotateDown => {
@@ -196,11 +199,14 @@ pub async fn run(
                         } else if current_has_more_below {
                             // 已在缓冲最底、且本页还有下文:请服务端往下翻。不立刻动窗口:保持当前画面、
                             // 显示 loading,等新帧到达再把窗口拉到最顶(新帧最顶接旧帧最底,连续阅读不跳)。
-                            pending_scroll = Some(PendingScroll::Down);
-                            let _ = popup.show(ui.display_mut(), "loading...");
-                            server
-                                .send(protocol::ClientMessage::ScrollDown { rows: 0 })
-                                .await?;
+                            // loading 期间(pending_scroll 已置位)忽略新的翻页请求,避免连按重复发包/覆盖方向。
+                            if pending_scroll.is_none() {
+                                pending_scroll = Some(PendingScroll::Down);
+                                let _ = popup.show(ui.display_mut(), "loading...");
+                                server
+                                    .send(protocol::ClientMessage::ScrollDown { rows: 0 })
+                                    .await?;
+                            }
                         }
                         // else:本页已是最底(尾部 u32 == 0),没有下文 —— 忽略向下滚动。
                     }

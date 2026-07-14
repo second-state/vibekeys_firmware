@@ -79,6 +79,8 @@ While viewing a **remote terminal**:
 | Rotary push | open the session picker |
 | MIC | local voice input (PTT / Toggle); after recognition, an inline editor lets the rotary move the cursor and ACCEPT submit the text |
 
+When you scroll past the edge of the current page, the device asks vibetty for the previous/next page and pops up a `loading...` hint until the new frame arrives.
+
 ### Setting
 
 Entered from the boot menu. Options: **WiFi networks**, **OTA Update**, **Clear config**. Move with **NEXT** (or the rotary in sub-screens), pick/edit with **ACCEPT**, delete with **BACKSPACE**, go back with **ESC**. **OTA Update** reboots into the OTA rescue firmware; **Clear config** wipes NVS and reboots.

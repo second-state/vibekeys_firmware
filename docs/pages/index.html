@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VibeKeys ESP32 Flash</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
+    <style>
+      .terminal {
+        min-height: 220px;
+        max-height: 360px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      }
+    </style>
+  </head>
+
+  <body class="bg-base-200 min-h-screen py-8">
+    <main class="container mx-auto px-4 max-w-5xl">
+      <div class="card bg-base-100 shadow-xl">
+        <div class="card-body gap-6">
+          <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h1 class="card-title text-2xl">VibeKeys ESP32 Flash</h1>
+              <p class="text-sm opacity-70">esptool-js Web Serial flasher</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="badge badge-error" id="statusIndicator">●</span>
+              <span id="connectionStatus">Disconnected</span>
+            </div>
+          </div>
+
+          <div id="unsupportedAlert" class="alert alert-warning hidden">
+            <span>当前浏览器不支持 Web Serial。请使用 Chrome 或 Edge，并通过 HTTPS 或 localhost 打开。</span>
+          </div>
+
+          <section class="card bg-base-100 border border-base-300">
+            <div class="card-body gap-4">
+              <div class="flex items-center justify-between gap-3">
+                <h2 class="card-title text-lg">Firmware images</h2>
+                <button class="btn btn-outline btn-sm" id="addImageButton" type="button">Add image</button>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th class="w-36">Offset</th>
+                      <th>File</th>
+                      <th class="w-20"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="imageRows"></tbody>
+                </table>
+              </div>
+              <div class="form-control">
+                <label class="label cursor-pointer justify-start gap-3">
+                  <input type="checkbox" class="checkbox checkbox-primary checkbox-sm" id="eraseAll">
+                  <span class="label-text">Erase all flash before writing</span>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <div class="grid gap-3 md:grid-cols-4">
+            <button class="btn btn-primary" id="connectButton" type="button">Connect</button>
+            <button class="btn btn-outline" id="eraseButton" type="button" disabled>Erase</button>
+            <button class="btn btn-primary" id="flashButton" type="button" disabled>Flash</button>
+            <button class="btn btn-outline" id="disconnectButton" type="button" disabled>Disconnect</button>
+          </div>
+
+          <section class="space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="font-medium">Progress</span>
+              <span class="text-sm opacity-70" id="progressText">0%</span>
+            </div>
+            <progress class="progress progress-primary w-full" id="progressBar" value="0" max="100"></progress>
+          </section>
+
+          <section class="card bg-neutral text-neutral-content">
+            <div class="card-body gap-3">
+              <div class="flex items-center justify-between gap-3">
+                <h2 class="card-title text-lg">Log</h2>
+                <button class="btn btn-sm btn-ghost" id="clearLogButton" type="button">Clear</button>
+              </div>
+              <pre class="terminal text-sm" id="terminal"></pre>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <div class="toast toast-top toast-end z-50">
+      <div class="alert hidden" id="toast">
+        <span id="toastMessage"></span>
+      </div>
+    </div>
+
+    <script type="module">
+      import { ESPLoader, Transport } from "https://unpkg.com/esptool-js/lib/index.js";
+
+      const statusIndicator = document.getElementById("statusIndicator");
+      const connectionStatus = document.getElementById("connectionStatus");
+      const unsupportedAlert = document.getElementById("unsupportedAlert");
+      const eraseAll = document.getElementById("eraseAll");
+      const imageRows = document.getElementById("imageRows");
+      const addImageButton = document.getElementById("addImageButton");
+      const connectButton = document.getElementById("connectButton");
+      const eraseButton = document.getElementById("eraseButton");
+      const flashButton = document.getElementById("flashButton");
+      const disconnectButton = document.getElementById("disconnectButton");
+      const progressBar = document.getElementById("progressBar");
+      const progressText = document.getElementById("progressText");
+      const terminal = document.getElementById("terminal");
+      const clearLogButton = document.getElementById("clearLogButton");
+      const toast = document.getElementById("toast");
+      const toastMessage = document.getElementById("toastMessage");
+
+      let port = null;
+      let transport = null;
+      let esploader = null;
+      let chip = null;
+      const FLASH_BAUDRATE = 921600;
+      const FLASH_MODE = undefined;
+      const FLASH_FREQ = undefined;
+      const FLASH_SIZE = "keep";
+
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      const terminalAdapter = {
+        clean() {
+          terminal.textContent = "";
+        },
+        writeLine(data) {
+          writeLog(data);
+        },
+        write(data) {
+          writeLog(data, false);
+        },
+      };
+
+      function writeLog(message, newline = true) {
+        terminal.textContent += `${message}${newline ? "\n" : ""}`;
+        terminal.scrollTop = terminal.scrollHeight;
+      }
+
+      function notify(message, type = "alert-info") {
+        toast.className = `alert ${type}`;
+        toastMessage.textContent = message;
+        toast.classList.remove("hidden");
+        window.clearTimeout(notify.timer);
+        notify.timer = window.setTimeout(() => toast.classList.add("hidden"), 2800);
+      }
+
+      function setConnected(nextConnected, label = "") {
+        statusIndicator.className = `badge ${nextConnected ? "badge-success" : "badge-error"}`;
+        connectionStatus.textContent = nextConnected ? label || "Connected" : "Disconnected";
+        connectButton.disabled = nextConnected;
+        eraseButton.disabled = !nextConnected;
+        flashButton.disabled = !nextConnected;
+        disconnectButton.disabled = !nextConnected;
+      }
+
+      function setBusy(isBusy) {
+        connectButton.disabled = isBusy || Boolean(esploader);
+        eraseButton.disabled = isBusy || !esploader;
+        flashButton.disabled = isBusy || !esploader;
+        disconnectButton.disabled = isBusy || !transport;
+        addImageButton.disabled = isBusy;
+        imageRows.querySelectorAll("input, button").forEach((node) => {
+          node.disabled = isBusy;
+        });
+      }
+
+      function setProgress(value) {
+        const percent = Math.max(0, Math.min(100, Math.round(value)));
+        progressBar.value = percent;
+        progressText.textContent = `${percent}%`;
+      }
+
+      function addImageRow(offset = "0x0") {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>
+            <input class="input input-bordered input-sm w-32" type="text" value="${offset}" aria-label="offset">
+          </td>
+          <td>
+            <input class="file-input file-input-bordered file-input-sm w-full" type="file" accept=".bin,application/octet-stream">
+          </td>
+          <td class="text-right">
+            <button class="btn btn-ghost btn-sm" type="button">Remove</button>
+          </td>
+        `;
+
+        const removeButton = row.querySelector("button");
+        removeButton.addEventListener("click", () => {
+          if (imageRows.children.length > 1) {
+            row.remove();
+          }
+        });
+
+        imageRows.appendChild(row);
+      }
+
+      function parseOffset(value) {
+        const trimmed = value.trim();
+        const parsed = Number.parseInt(trimmed, trimmed.startsWith("0x") ? 16 : 10);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          throw new Error(`Invalid offset: ${value}`);
+        }
+        return parsed;
+      }
+
+      async function collectImages() {
+        const rows = Array.from(imageRows.querySelectorAll("tr"));
+        const images = [];
+
+        for (const [index, row] of rows.entries()) {
+          const offsetInput = row.querySelector("input[type='text']");
+          const fileInput = row.querySelector("input[type='file']");
+          const file = fileInput.files[0];
+
+          if (!file) {
+            throw new Error(`No firmware file selected in row ${index + 1}`);
+          }
+
+          images.push({
+            address: parseOffset(offsetInput.value),
+            data: new Uint8Array(await file.arrayBuffer()),
+          });
+        }
+
+        return images;
+      }
+
+      async function connect() {
+        if (!navigator.serial) {
+          unsupportedAlert.classList.remove("hidden");
+          return;
+        }
+
+        setBusy(true);
+        setProgress(0);
+        writeLog("Requesting serial port...");
+
+        try {
+          port = await navigator.serial.requestPort();
+          transport = new Transport(port, true);
+          esploader = new ESPLoader({
+            transport,
+            baudrate: FLASH_BAUDRATE,
+            terminal: terminalAdapter,
+            debugLogging: false,
+          });
+
+          chip = await esploader.main();
+          setConnected(true, `Connected: ${chip}`);
+          writeLog(`Connected to ${chip}`);
+          notify(`Connected to ${chip}`, "alert-success");
+        } catch (error) {
+          writeLog(`Error: ${error.message || error}`);
+          await disconnect(false);
+          notify("Connect failed", "alert-error");
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function eraseFlash() {
+        if (!esploader) return;
+
+        setBusy(true);
+        setProgress(0);
+        writeLog("Erasing flash...");
+
+        try {
+          await esploader.eraseFlash();
+          setProgress(100);
+          writeLog("Erase complete");
+          notify("Erase complete", "alert-success");
+        } catch (error) {
+          writeLog(`Error: ${error.message || error}`);
+          notify("Erase failed", "alert-error");
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function flashFirmware() {
+        if (!esploader) return;
+
+        setBusy(true);
+        setProgress(0);
+
+        try {
+          const fileArray = await collectImages();
+          writeLog(`Writing ${fileArray.length} image${fileArray.length === 1 ? "" : "s"}...`);
+
+          await esploader.writeFlash({
+            fileArray,
+            flashMode: FLASH_MODE,
+            flashFreq: FLASH_FREQ,
+            flashSize: FLASH_SIZE,
+            eraseAll: eraseAll.checked,
+            compress: true,
+            reportProgress: (_fileIndex, written, total) => {
+              setProgress((written / total) * 100);
+            },
+          });
+
+          writeLog("Resetting device...");
+          await esploader.after("hard_reset");
+          await sleep(300);
+          setProgress(100);
+          writeLog("Flash complete");
+          notify("Flash complete", "alert-success");
+        } catch (error) {
+          writeLog(`Error: ${error.message || error}`);
+          notify("Flash failed", "alert-error");
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function disconnect(showToast = true) {
+        try {
+          if (transport) {
+            await transport.disconnect();
+          }
+        } catch (error) {
+          writeLog(`Disconnect warning: ${error.message || error}`);
+        }
+
+        port = null;
+        transport = null;
+        esploader = null;
+        chip = null;
+        setConnected(false);
+        setProgress(0);
+
+        if (showToast) {
+          notify("Disconnected", "alert-info");
+        }
+      }
+
+      addImageButton.addEventListener("click", () => addImageRow("0x10000"));
+      connectButton.addEventListener("click", connect);
+      eraseButton.addEventListener("click", eraseFlash);
+      flashButton.addEventListener("click", flashFirmware);
+      disconnectButton.addEventListener("click", () => disconnect(true));
+      clearLogButton.addEventListener("click", () => terminalAdapter.clean());
+
+      addImageRow("0x0");
+
+      if (!navigator.serial) {
+        unsupportedAlert.classList.remove("hidden");
+      }
+    </script>
+  </body>
+</html>

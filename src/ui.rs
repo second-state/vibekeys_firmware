@@ -85,7 +85,13 @@ fn draw_text_cjk(
     TextBox::with_textbox_style(
         text,
         rect,
-        U8g2TextStyle::new(u8g2_font_wqy12_t_gb2312, color),
+        // 用 lcd::MyTextStyle 而非裸 U8g2TextStyle:u8g2 的文泉驿中文会向上偏 3px,
+        // MyTextStyle 的 draw_string 里 position.y += vertical_offset 把它修回来。
+        crate::lcd::MyTextStyle {
+            font_style: U8g2TextStyle::new(u8g2_font_wqy12_t_gb2312, color),
+            vertical_offset: 3,
+            bg_color: None,
+        },
         style,
     )
     .draw(target)?;

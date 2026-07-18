@@ -208,8 +208,22 @@ pub async fn run(
                         e.move_left();
                         e.render(ui.display_mut())?;
                     } else if ui.terminal_active() {
-                        // text 模式:滚动是本地 scrollback 翻页,无网络往返。
-                        let _ = ui.scroll_terminal_text(crate::lcd::TerminalScroll::Up);
+                        // text 模式:先在 3 屏画布内本地平移窗口;到顶了再向服务端要更早的历史。
+                        // 与 JPEG 一致:loading 期间(pending_scroll 已置位)忽略新的翻页请求,
+                        // 避免连按把服务端 scrollback 冲过头。
+                        match ui.scroll_terminal_text(crate::lcd::TerminalScroll::Up) {
+                            Ok(true) => {}
+                            _ => {
+                                if pending_scroll.is_none() {
+                                    pending_scroll = Some(PendingScroll::Up);
+                                    pending_since = Some(std::time::Instant::now());
+                                    let _ = popup.show(ui.display_mut(), "loading...");
+                                    server
+                                        .send(protocol::ClientMessage::ScrollUp { rows: 0 })
+                                        .await?;
+                                }
+                            }
+                        }
                     } else if view_window_offset > 0 {
                         // 还有上方内容:本地平移上去即可,不发 MQTT。
                         view_window_offset = view_window_offset.saturating_sub(SCROLL_STEP_PX);
@@ -239,7 +253,22 @@ pub async fn run(
                         e.move_right();
                         e.render(ui.display_mut())?;
                     } else if ui.terminal_active() {
-                        let _ = ui.scroll_terminal_text(crate::lcd::TerminalScroll::Down);
+                        // text 模式:先在 3 屏画布内本地平移;到底了发 scroll_down
+                        // 把服务端 scrollback 调回更新(向上翻出画布后,靠它回到最新)。
+                        // 同样用 pending_scroll 守门,避免连按重发。
+                        match ui.scroll_terminal_text(crate::lcd::TerminalScroll::Down) {
+                            Ok(true) => {}
+                            _ => {
+                                if pending_scroll.is_none() {
+                                    pending_scroll = Some(PendingScroll::Down);
+                                    pending_since = Some(std::time::Instant::now());
+                                    let _ = popup.show(ui.display_mut(), "loading...");
+                                    server
+                                        .send(protocol::ClientMessage::ScrollDown { rows: 0 })
+                                        .await?;
+                                }
+                            }
+                        }
                     } else {
                         let max_offset = current_screen
                             .as_ref()
@@ -451,6 +480,11 @@ pub async fn run(
                 }
                 crate::mqtt::MqttEvent::ActiveText(frame) => {
                     // text 模式屏帧(首字节 tag + ANSI 流)。
+                    // 全屏帧(tag=0x00)是 sync/scroll_up/scroll_down 的响应:翻页完成,清掉 pending。
+                    if frame.first().copied() == Some(0x00) {
+                        pending_scroll = None;
+                        pending_since = None;
+                    }
                     if asr_editor.is_some() {
                         // 编辑 ASR 文本期间不刷屏(避免覆盖编辑器),只排空保活 MQTT。
                         log::debug!("Draining text frame ({}B) while in ASR editor", frame.len());

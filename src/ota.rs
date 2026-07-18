@@ -46,16 +46,36 @@ pub fn run(
 ) -> anyhow::Result<()> {
     crate::lcd::display_text(target, "OTA Mode\n Connecting wifi", 0)?;
 
-    // 与主固件一致的连法:扫描结果匹配已配置 wifi_list。
-    let r = match crate::bt_wifi_mode::pick_cred(scan_list, &setting.wifi_list) {
-        Some(c) => crate::wifi::connect(wifi, &c.ssid, &c.pass, sysloop),
-        None => anyhow::Result::<()>::Err(anyhow::anyhow!(
-            "no known network in range (scan {})",
-            scan_list.len()
-        )),
-    };
-    if r.is_err() || !wifi.is_connected().unwrap_or(false) {
-        log::error!("OTA wifi connect failed: {:?}", r.err());
+    // 合并后 OTA 复用主固件的 wifi 实例:若刚从 remote 过来,wifi 可能已经连上了,
+    // 这时再调 wifi::connect 的 connect() 会因「已连接」报错。所以已连接就直接复用,
+    // 没连才走 pick_cred + connect(与主固件 remote 一致)。
+    if !wifi.is_connected().unwrap_or(false) {
+        // 进 OTA 重新扫一次:boot 阶段的 scan_list 可能漏扫/已过期(开机首次扫描常漏 AP)。
+        // 与旧 OTA 二进制一致——现扫现连。scan_list 形参留作 fallback。
+        let fresh = crate::wifi::scan(wifi, sysloop.clone()).unwrap_or_else(|e| {
+            log::warn!("OTA fresh scan failed: {e:?}, fallback to boot scan_list");
+            scan_list.to_vec()
+        });
+        log::info!(
+            "OTA: scan {} ssids, wifi_list {} creds",
+            fresh.len(),
+            setting.wifi_list.len()
+        );
+        let r = match crate::bt_wifi_mode::pick_cred(&fresh, &setting.wifi_list) {
+            Some(c) => {
+                log::info!("OTA: picked ssid={:?} pass_len={}", c.ssid, c.pass.len());
+                crate::wifi::connect(wifi, &c.ssid, &c.pass, sysloop)
+            }
+            None => anyhow::Result::<()>::Err(anyhow::anyhow!(
+                "no known network in range (scan {})",
+                fresh.len()
+            )),
+        };
+        if let Err(e) = r {
+            log::error!("OTA wifi connect failed: {:?}", e);
+        }
+    }
+    if !wifi.is_connected().unwrap_or(false) {
         crate::lcd::display_text(target, "OTA Mode\n Connect wifi Failed\n ESC to back", 0)?;
         wait_button_release(esc_btn);
         return Ok(());

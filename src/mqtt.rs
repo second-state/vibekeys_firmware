@@ -64,6 +64,9 @@ struct Session {
     title: String,
     /// agent 是否在工作中(state=="working");waiting 时为 false。
     is_working: bool,
+    /// 输出模式(presence 的 format):"high"/"medium"/"low"(JPEG)或 "text"。
+    /// 固件目前仅支持 JPEG;text 模式会话激活时由 app 给「暂不支持」提示。
+    format: String,
 }
 
 /// `recv()` 上报给 app 的事件。
@@ -91,6 +94,14 @@ struct Presence {
     /// 旧端不发时 default "working"(与 vibetty 初始状态一致)。
     #[serde(default = "default_state_working")]
     state: String,
+    /// 输出模式:"high"/"medium"/"low"(JPEG)或 "text"。据此选订 `{p}/screen` 还是
+    /// `{p}/screen_text`。旧端不发时 default "high"(按 JPEG 处理)。
+    #[serde(default = "default_format_jpeg")]
+    format: String,
+}
+
+fn default_format_jpeg() -> String {
+    "high".to_string()
 }
 
 fn default_state_working() -> String {
@@ -281,22 +292,18 @@ impl MqttServer {
                                 ts: p.ts,
                                 title: p.title.clone(),
                                 is_working,
+                                format: p.format.clone(),
                             });
                             s.client_id = p.client_id;
                             s.ts = p.ts;
                             s.title = p.title;
                             s.is_working = is_working;
+                            s.format = p.format;
                             self.cap_sessions();
 
-                            // 首会话自动活跃;此后不再自动切(由用户通过旋钮弹窗手动切换)。
+                            // 不自动激活任何会话:进 remote 只停在 session list,
+                            // 由用户手动挑选(旋钮 NEXT + ACCEPT)。active 保持 None 直到 set_active。
                             let prefix = p.prefix;
-                            if self.active.is_none() {
-                                log::info!("Auto-activate first session: {prefix}");
-                                self.active = Some(prefix.clone());
-                                // 立刻请求首帧。screen 订阅由随后的 flush_pending 落实;
-                                // 首帧往返(渲染+编码+网络)远慢于订阅落实,不会丢帧。
-                                let _ = self.send(ClientMessage::sync()).await;
-                            }
                             return Some(MqttEvent::Presence {
                                 prefix,
                                 online: true,
@@ -418,6 +425,13 @@ impl MqttServer {
             }
         }
         Ok(())
+    }
+
+    /// 活跃会话的输出模式(format),无活跃会话返回 None。
+    /// "high"/"medium"/"low" = JPEG(本端支持);"text" = 文本模式(本端暂不支持)。
+    pub fn active_format(&self) -> Option<&str> {
+        let prefix = self.active.as_deref()?;
+        self.sessions.get(prefix).map(|s| s.format.as_str())
     }
 
     /// 当前已知会话列表,供选择器渲染。排序:waiting(!is_working) 优先排前(需要关注),

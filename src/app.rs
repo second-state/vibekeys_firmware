@@ -96,7 +96,7 @@ pub async fn run(
 
     // 进入 remote 模式直接弹会话列表让用户挑,而不是先自动看活跃会话的屏。
     // 冷启动时 retained presence 还没经 recv() 落进 sessions 表,picker 入口会先等它们到达。
-    let _ = open_session_picker(&mut server, ui, &mut rx, &mut popup).await;
+    let _ = open_session_picker(&mut server, ui, &mut rx, &mut popup, false).await;
 
     // ASR 文本编辑器:Some = 正在编辑(屏幕显示编辑器,不刷会话屏);None = 空闲。
     // 用 ui::AsrEditor(ui.rs 弹窗风格),不用 lcd::UI 那套(麦克风状态条,风格不一致)。
@@ -173,8 +173,12 @@ pub async fn run(
 
         // 弹窗收敛:在线则关闭上一轮瞬态弹窗;断线则(重新)显示「下线」弹窗,
         // 让它在无事件期间也持续保持(断线时不会有 MQTT 事件来触发重绘)。
+        // 活跃会话是 text 模式时持续显示「暂不支持」——本端只实现了 JPEG 模式,
+        // text 模式收不到任何屏帧,屏幕本来就是空的,提示占住画面比黑屏清楚。
         if disconnected {
             let _ = popup.show(ui.display_mut(), "MQTT disconnected");
+        } else if server.active_format() == Some("text") {
+            let _ = popup.show(ui.display_mut(), "text mode N/A (JPEG only)");
         } else {
             let _ = popup.hide(ui.display_mut());
         }
@@ -336,7 +340,7 @@ pub async fn run(
                         continue; // 编辑 ASR 文本时忽略这些键
                     }
                     // 旋钮按下:不再发按键,改为弹出会话选择器(NEXT 切换 / ACCEPT 确认 / ESC 取消)。
-                    open_session_picker(&mut server, ui, &mut rx, &mut popup).await?;
+                    open_session_picker(&mut server, ui, &mut rx, &mut popup, true).await?;
                 }
                 Event::Custom => {
                     if asr_editor.is_some() {
@@ -563,6 +567,10 @@ async fn open_session_picker(
     ui: &mut crate::lcd::UI,
     rx: &mut tokio::sync::mpsc::Receiver<Event>,
     popup: &mut crate::ui::Popup,
+    // `true` = 此刻正在观察活跃屏(中途旋钮按下重开选择器),进入时发 `close=true`
+    // 让服务端停推,省得选择器期间推的帧被白白 drain。`false` = 冷启动首次挑选,
+    // 还没选定/没在观察任何会话,不该对一个没选过的会话发 close。
+    pause_active_push: bool,
 ) -> anyhow::Result<()> {
     // 入口:retained presence 在 subscribe 后很快到达,但需 poll recv 才会进 sessions 表。
     // 给最多 ENTRY_WAIT 让它们落地(已有 >=2 个会话则立即跳过);期间 ESC 可退出。
@@ -602,6 +610,14 @@ async fn open_session_picker(
         .unwrap();
     // 上次渲染的指纹(items + 焦点行);只在其变化时重绘。
     let mut last_sig: Option<(Vec<(String, bool)>, usize)> = None;
+
+    // 仅当确在观察活跃屏(中途重开)时,进入选择器前发 close=true 让服务端停推——
+    // 选择器期间 ActiveScreen 被 drain 排空,推了也是浪费。冷启动首次挑选不带此标志:
+    // 此时还没选定任何会话,不该对一个没选过的会话发 close。
+    // 所有退出分支都会发 sync()(close=false)恢复推屏并要一帧新画面,进出成对,不泄漏。
+    if pause_active_push {
+        let _ = server.send(protocol::ClientMessage::sync_close(true)).await;
+    }
 
     loop {
         let items: Vec<(String, bool)> = labels

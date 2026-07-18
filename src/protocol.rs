@@ -2,6 +2,11 @@ use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
 
+/// `Sync.pixels` 的 serde 缺省值:旧端/省略字段时按像素计(与服务端默认一致)。
+fn default_pixels_true() -> bool {
+    true
+}
+
 // ========== 客户端 -> 服务器 ==========
 //
 // 设备 -> 服务端的线路协议,需与 vibetty 的 `protocol.rs` 保持一致。
@@ -13,10 +18,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
-    /// Sync:客户端声明自己显示区的【像素】尺寸 `width`/`height`,
+    /// Sync:客户端声明自己显示区尺寸 `width`/`height`,
     /// 服务端按 char cell 尺寸换算成列/行后 resize PTY,并回送整张屏幕。
+    ///
+    /// - `pixels`(默认 true):`true` = width/height 是**像素**(服务端按字符格
+    ///   换算 cols/rows);`false` = 已是**字符列/行**,直接用。
+    /// - `close`(默认 false):省流量开关。`true` = 暂停服务端主动推屏(息屏);
+    ///   `false` = 恢复。即便 `close=true`,这条 sync 仍会触发一次屏幕回送。
     #[serde(rename = "sync")]
-    Sync { width: u16, height: u16 },
+    Sync {
+        width: u16,
+        height: u16,
+        #[serde(default = "default_pixels_true")]
+        pixels: bool,
+        #[serde(default)]
+        close: bool,
+    },
 
     /// PTY 输入（键盘输入发送到终端）
     #[serde(rename = "pty_in")]
@@ -44,10 +61,17 @@ pub enum ClientMessage {
 impl Debug for ClientMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClientMessage::Sync { width, height } => f
+            ClientMessage::Sync {
+                width,
+                height,
+                pixels,
+                close,
+            } => f
                 .debug_struct("Sync")
                 .field("width", width)
                 .field("height", height)
+                .field("pixels", pixels)
+                .field("close", close)
                 .finish(),
             ClientMessage::PtyInput(data) => f
                 .debug_tuple("PtyInput")
@@ -108,12 +132,14 @@ impl ClientMessage {
         Self::Input(text.into())
     }
 
-    /// 构造一帧 Sync:声明设备显示区像素尺寸。
+    /// 构造一帧 Sync:声明设备显示区像素尺寸,正常推送(close=false)。
     #[cfg(not(feature = "max2"))]
     pub fn sync() -> Self {
         Self::Sync {
             width: 288,
             height: 5 * 80,
+            pixels: true,
+            close: false,
         }
     }
 
@@ -122,6 +148,31 @@ impl ClientMessage {
         Self::Sync {
             width: 320,
             height: 3 * 168,
+            pixels: true,
+            close: false,
+        }
+    }
+
+    /// 构造一帧带 `close` 开关的 Sync:复用当前机型像素尺寸,
+    /// 仅切换服务端主动推屏(`close=true` 息屏 / `close=false` 恢复)。
+    /// 仍会触发一次屏幕回送。
+    #[cfg(not(feature = "max2"))]
+    pub fn sync_close(close: bool) -> Self {
+        Self::Sync {
+            width: 288,
+            height: 5 * 80,
+            pixels: true,
+            close,
+        }
+    }
+
+    #[cfg(feature = "max2")]
+    pub fn sync_close(close: bool) -> Self {
+        Self::Sync {
+            width: 320,
+            height: 3 * 168,
+            pixels: true,
+            close,
         }
     }
 
@@ -169,11 +220,45 @@ mod tests {
         let msg = ClientMessage::Sync {
             width: 320,
             height: 172,
+            pixels: true,
+            close: false,
         };
         let json = msg.to_json().unwrap();
-        assert_eq!(json, r#"{"type":"sync","data":{"width":320,"height":172}}"#);
+        assert_eq!(
+            json,
+            r#"{"type":"sync","data":{"width":320,"height":172,"pixels":true,"close":false}}"#
+        );
         match ClientMessage::from_json(&json).unwrap() {
-            ClientMessage::Sync { width, height } => assert_eq!((width, height), (320, 172)),
+            ClientMessage::Sync {
+                width,
+                height,
+                pixels,
+                close,
+            } => {
+                assert_eq!((width, height), (320, 172));
+                assert!(pixels);
+                assert!(!close);
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_client_sync_defaults_back_compat() {
+        // 旧端只发 width/height(无 pixels/close):serde default 应解出 pixels=true、close=false。
+        match ClientMessage::from_json(r#"{"type":"sync","data":{"width":80,"height":24}}"#)
+            .unwrap()
+        {
+            ClientMessage::Sync {
+                width,
+                height,
+                pixels,
+                close,
+            } => {
+                assert_eq!((width, height), (80, 24));
+                assert!(pixels);
+                assert!(!close);
+            }
             _ => panic!("Wrong message type"),
         }
     }

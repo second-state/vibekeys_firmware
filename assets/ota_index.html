@@ -57,11 +57,15 @@
                 </div>
 
                 <!-- Start OTA Button -->
-                <div class="card-actions justify-end mt-6">
+                <div class="card-actions justify-between mt-6 items-center">
+                    <button id="downloadLatestBtn" class="btn btn-outline btn-secondary">
+                        Download latest
+                    </button>
                     <button id="startOtaBtn" class="btn btn-primary" disabled>
                         Start OTA
                     </button>
                 </div>
+                <p class="text-xs text-base-content/50 mt-1 break-all">Latest release: {{OTA_DOWNLOAD_URL}}</p>
             </div>
         </div>
     </div>
@@ -74,6 +78,7 @@
         const fileName = document.getElementById('fileName');
         const fileSize = document.getElementById('fileSize');
         const startOtaBtn = document.getElementById('startOtaBtn');
+        const downloadLatestBtn = document.getElementById('downloadLatestBtn');
         const progressContainer = document.getElementById('progressContainer');
         const progressBar = document.getElementById('progressBar');
         const progressPercent = document.getElementById('progressPercent');
@@ -125,6 +130,25 @@
             if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
             return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
         }
+
+        // Download latest from GitHub release:device pulls & flashes, then reboots.
+        downloadLatestBtn.addEventListener('click', async () => {
+            downloadLatestBtn.disabled = true;
+            startOtaBtn.disabled = true;
+            showStatus('info', 'Downloading latest on device... it will reboot automatically.');
+            try {
+                const resp = await fetch('/ota/download', { method: 'POST' });
+                if (resp.ok) {
+                    showStatus('success', 'Download started. Device will reboot after OTA completes.');
+                } else {
+                    showStatus('error', `Download request failed: ${resp.statusText}`);
+                    downloadLatestBtn.disabled = false;
+                }
+            } catch (err) {
+                showStatus('error', `Error: ${err.message}`);
+                downloadLatestBtn.disabled = false;
+            }
+        });
 
         // Start OTA
         startOtaBtn.addEventListener('click', async () => {

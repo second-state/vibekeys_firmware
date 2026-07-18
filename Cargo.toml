@@ -11,11 +11,6 @@ name = "vibekeys"
 harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
 path = "src/main.rs"
 
-[[bin]]
-name = "ota"
-harness = false
-path = "src/ota.rs"
-
 [profile.release]
 opt-level = "s"
 

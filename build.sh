@@ -1,62 +1,51 @@
 #!/bin/bash
 
-# Build script for vibekeys project
-# Usage: ./build.sh [ota|keys]
+# Build script for vibekeys project (单二进制,A/B OTA)
+# Usage: ./build.sh {keys|max2|keys_bin|max2_bin|keys_ota_bin|max2_ota_bin}
+#
+# keys / max2                 - OTA 镜像(仅 app),供 OTA 上传 / download-latest
+# keys_bin / max2_bin         - 合并工厂镜像,app 在 ota_1
+# keys_ota_bin / max2_ota_bin - 合并工厂镜像,app 在 ota_0(首启槽;OTA 会写 ota_1)
 
 MODE="${1:-}"
 
 case "$MODE" in
-    ota)
-        echo "Building OTA image..."
-        cargo build --bin ota --release
-        espflash save-image --chip esp32s3 --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_0 target/xtensa-esp32s3-espidf/release/ota ./ota.bin
-        ;;
     keys)
-        echo "Building keys image..."
+        echo "Building keys OTA image..."
         cargo build --bin vibekeys --release
         espflash save-image --chip esp32s3 --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys_ota.bin
         ;;
     max2)
-        echo "Building max2 image..."
+        echo "Building max2 OTA image..."
         cargo build --bin vibekeys --release --features max2
         espflash save-image --chip esp32s3 --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys_max2_ota.bin
         ;;
     keys_bin)
-        echo "Building keys binary image..."
+        echo "Building keys factory image (ota_1)..."
         cargo build --bin vibekeys --release
         espflash save-image --chip esp32s3 --merge --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys.bin
         ;;
     max2_bin)
-        echo "Building max2 binary image..."
+        echo "Building max2 factory image (ota_1)..."
         cargo build --bin vibekeys --release --features max2
         espflash save-image --chip esp32s3 --merge --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys_max2.bin
         ;;
     keys_ota_bin)
-        echo "Building keys binary image with OTA header..."
+        echo "Building keys factory image (ota_0, first boot slot)..."
         cargo build --bin vibekeys --release
-        cargo build --bin ota --release
-        espflash save-image --chip esp32s3 --merge --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys.bin
-        espflash save-image --chip esp32s3 --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_0 target/xtensa-esp32s3-espidf/release/ota ./ota.bin
-        dd if=ota.bin of=vibekeys.bin bs=1 seek=$((0x210000)) conv=notrunc
+        espflash save-image --chip esp32s3 --merge --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_0 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys.bin
         ;;
     max2_ota_bin)
-        echo "Building max2 binary image with OTA header..."
+        echo "Building max2 factory image (ota_0, first boot slot)..."
         cargo build --bin vibekeys --release --features max2
-        cargo build --bin ota --release --features max2
-        espflash save-image --chip esp32s3 --merge --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys_max2.bin
-        espflash save-image --chip esp32s3 --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_0 target/xtensa-esp32s3-espidf/release/ota ./ota.bin
-        dd if=ota.bin of=vibekeys_max2.bin bs=1 seek=$((0x210000)) conv=notrunc
+        espflash save-image --chip esp32s3 --merge --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_0 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys_max2.bin
         ;;
     *)
-        echo "Usage: $0 {ota|keys|max2|keys_bin|max2_bin|keys_ota_bin|max2_ota_bin}"
+        echo "Usage: $0 {keys|max2|keys_bin|max2_bin|keys_ota_bin|max2_ota_bin}"
         echo ""
-        echo "  ota   - Build OTA image"
-        echo "  keys  - Build keys image"
-        echo "  max2  - Build max2 image"
-        echo "  keys_bin - Build keys binary image (without OTA header)"
-        echo "  max2_bin - Build max2 binary image (without OTA header)"
-        echo "  keys_ota_bin - Build keys binary image with OTA header"
-        echo "  max2_ota_bin - Build max2 binary image with OTA header"
+        echo "  keys / max2                 - OTA image for OTA upload / download-latest"
+        echo "  keys_bin / max2_bin         - merged factory image, app in ota_1"
+        echo "  keys_ota_bin / max2_ota_bin - merged factory image, app in ota_0 (first boot)"
         exit 1
         ;;
 esac

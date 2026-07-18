@@ -15,6 +15,7 @@ mod i2c;
 mod lcd;
 mod mqtt;
 mod new_jpg;
+mod ota;
 mod protocol;
 mod ui;
 mod util;
@@ -126,17 +127,6 @@ fn sync_time_with_retry(
             }
         }
     }
-}
-
-pub fn goto_next_firmware() -> anyhow::Result<()> {
-    use esp_idf_svc::sys::{esp_ota_get_next_update_partition, esp_ota_set_boot_partition};
-
-    unsafe {
-        let partition = esp_ota_get_next_update_partition(std::ptr::null());
-        esp_idf_svc::sys::esp!(esp_ota_set_boot_partition(partition))?;
-    };
-
-    esp_idf_svc::hal::reset::restart();
 }
 
 fn main() -> anyhow::Result<()> {
@@ -317,10 +307,18 @@ fn main() -> anyhow::Result<()> {
                 )) {
                     ui::SettingOutcome::Back => continue,
                     ui::SettingOutcome::Ota => {
-                        let mut popup = ui::popup_centered(target.bounding_box());
-                        let _ = popup.show_transient(&mut target, "Entering OTA...");
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                        goto_next_firmware()?;
+                        // 同进程进入 OTA 模式:复用已建好的 wifi/按钮/显示。返回=ESC/失败
+                        // → 回 boot menu;成功在 ota::run 内部 restart。
+                        let _ = ota::run(
+                            &mut target,
+                            &mut btn7,
+                            &mut btn3,
+                            &mut wifi,
+                            sysloop.clone(),
+                            &scan_list,
+                            &setting,
+                        );
+                        continue;
                     }
                     ui::SettingOutcome::ClearConfig => {
                         bt_wifi_mode::Setting::clear_nvs(&mut nvs)?;

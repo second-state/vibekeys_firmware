@@ -624,21 +624,35 @@ impl UI {
     ///
     /// 无论哪种,都 `process` 后用 `render_rows` 重画当前窗口 `[offset, offset+visible)`
     /// (lib 把该范围平移到 y=0),整屏 flush。delta 帧也走整窗重画(不维护脏区,
-    /// 实现简单;PTY 输出频繁时靠字形缓存扛)。全屏基线把窗口拉到底部(看最新)。
-    pub fn show_terminal_text_frame(&mut self, payload: &[u8]) -> anyhow::Result<()> {
+    /// 实现简单;PTY 输出频繁时靠字形缓存扛)。
+    ///
+    /// `snap_top`:全屏基线时窗口对齐到哪里——
+    /// - false(sync 首帧 / scroll_up 响应):offset=bottom,看最新 / 旧页底;
+    /// - true(scroll_down 响应,新页是更新的内容):offset=0,看新页顶
+    ///   (新页顶接旧页底,连续向下阅读,与 JPEG 翻页一致)。
+    pub fn show_terminal_text_frame(
+        &mut self,
+        payload: &[u8],
+        snap_top: bool,
+    ) -> anyhow::Result<()> {
         let Some((&tag, bytes)) = payload.split_first() else {
             log::warn!("empty screen_text frame");
             return Ok(());
         };
         let (cols, rows) = terminal_text_cells(); // rows = 3×可见(画布高)
         let visible = terminal_visible_rows();
-        let bottom = rows.saturating_sub(visible); // 窗口在底部时 offset = bottom(看最新)
+        let bottom = rows.saturating_sub(visible);
         match tag {
             0x00 => {
-                log::info!("screen_text full frame: {}B", bytes.len());
+                log::info!(
+                    "screen_text full frame: {}B (snap_top={})",
+                    bytes.len(),
+                    snap_top
+                );
                 self.terminal_parser =
                     Some(vt100::Parser::new(rows, cols, TERMINAL_SCROLLBACK_ROWS));
-                self.terminal_offset = bottom; // 全屏基线 = 重新对齐到最新
+                // 全屏基线 = 新页;scroll_down 来的新页看顶(0),其余看底(bottom)。
+                self.terminal_offset = if snap_top { 0 } else { bottom };
             }
             0x01 => {
                 log::debug!("screen_text delta frame: {}B", bytes.len());

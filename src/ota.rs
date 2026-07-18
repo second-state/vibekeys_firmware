@@ -28,6 +28,14 @@ enum OtaEvent {
     DownloadLatest,
 }
 
+/// OTA 只读输入(scan_list + setting)打包成一个 struct 按引用传,避免 ota::run 参数过多
+/// 触发 Xtensa codegen bug(最后一个栈参数 setting 被传成 null)。打包后 ota::run 共 6 个
+/// 参数,全进寄存器(a2-a7),不压栈。
+pub struct OtaData<'a> {
+    pub scan_list: &'a Vec<String>,
+    pub setting: &'a crate::bt_wifi_mode::Setting,
+}
+
 /// 进入 OTA 模式。复用调用方(main)已建好的 WiFi/显示/按钮。
 ///
 /// - 先用 boot 阶段的 `scan_list` 与 `setting.wifi_list` 匹配连 WiFi;
@@ -41,34 +49,32 @@ pub fn run(
     esc_btn: &mut crate::AnyBtn,
     wifi: &mut esp_idf_svc::wifi::EspWifi<'static>,
     sysloop: EspSystemEventLoop,
-    scan_list: &[String],
-    setting: &crate::bt_wifi_mode::Setting,
+    data: &OtaData,
 ) -> anyhow::Result<()> {
+    let scan_list = data.scan_list;
+    let setting = data.setting;
+
     crate::lcd::display_text(target, "OTA Mode\n Connecting wifi", 0)?;
 
     // 合并后 OTA 复用主固件的 wifi 实例:若刚从 remote 过来,wifi 可能已经连上了,
     // 这时再调 wifi::connect 的 connect() 会因「已连接」报错。所以已连接就直接复用,
     // 没连才走 pick_cred + connect(与主固件 remote 一致)。
+    // 直接复用 boot 阶段的 scan_list(remote 也用它):在已扫描过的 wifi 上再做一次
+    // wifi::scan 会触发驱动空指针崩溃(第二次 scan 状态不稳),故不再重扫。
     if !wifi.is_connected().unwrap_or(false) {
-        // 进 OTA 重新扫一次:boot 阶段的 scan_list 可能漏扫/已过期(开机首次扫描常漏 AP)。
-        // 与旧 OTA 二进制一致——现扫现连。scan_list 形参留作 fallback。
-        let fresh = crate::wifi::scan(wifi, sysloop.clone()).unwrap_or_else(|e| {
-            log::warn!("OTA fresh scan failed: {e:?}, fallback to boot scan_list");
-            scan_list.to_vec()
-        });
         log::info!(
-            "OTA: scan {} ssids, wifi_list {} creds",
-            fresh.len(),
+            "OTA: scan_list={} ssids, wifi_list={} creds",
+            scan_list.len(),
             setting.wifi_list.len()
         );
-        let r = match crate::bt_wifi_mode::pick_cred(&fresh, &setting.wifi_list) {
+        let r = match crate::bt_wifi_mode::pick_cred(scan_list.as_slice(), &setting.wifi_list) {
             Some(c) => {
                 log::info!("OTA: picked ssid={:?} pass_len={}", c.ssid, c.pass.len());
                 crate::wifi::connect(wifi, &c.ssid, &c.pass, sysloop)
             }
             None => anyhow::Result::<()>::Err(anyhow::anyhow!(
                 "no known network in range (scan {})",
-                fresh.len()
+                scan_list.len()
             )),
         };
         if let Err(e) = r {

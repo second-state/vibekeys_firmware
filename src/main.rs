@@ -315,8 +315,10 @@ fn main() -> anyhow::Result<()> {
                             &mut btn3,
                             &mut wifi,
                             sysloop.clone(),
-                            &scan_list,
-                            &setting,
+                            &ota::OtaData {
+                                scan_list: &scan_list,
+                                setting: &setting,
+                            },
                         );
                         continue;
                     }

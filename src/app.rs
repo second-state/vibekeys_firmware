@@ -126,7 +126,7 @@ pub async fn run(
     let mut current_has_more_below: bool = true;
     // 正在等待服务端的翻页响应。发 ScrollUp/ScrollDown 时置位并显示 loading;新帧
     //(ActiveScreen)到达后据此定位窗口:Up→拉到最底(接旧帧最顶)、Down→拉到最顶(接旧帧最底)。
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
     enum PendingScroll {
         Up,
         Down,
@@ -481,14 +481,18 @@ pub async fn run(
                 crate::mqtt::MqttEvent::ActiveText(frame) => {
                     // text 模式屏帧(首字节 tag + ANSI 流)。
                     // 全屏帧(tag=0x00)是 sync/scroll_up/scroll_down 的响应:翻页完成,清掉 pending。
-                    if frame.first().copied() == Some(0x00) {
+                    // scroll_down 的新页是更新的内容,应从顶部看(snap_top=true,接旧页底);
+                    // 其余(sync / scroll_up)从底部看。须在清 pending 前取方向。
+                    let is_full = frame.first().copied() == Some(0x00);
+                    let snap_top = is_full && pending_scroll == Some(PendingScroll::Down);
+                    if is_full {
                         pending_scroll = None;
                         pending_since = None;
                     }
                     if asr_editor.is_some() {
                         // 编辑 ASR 文本期间不刷屏(避免覆盖编辑器),只排空保活 MQTT。
                         log::debug!("Draining text frame ({}B) while in ASR editor", frame.len());
-                    } else if let Err(e) = ui.show_terminal_text_frame(&frame) {
+                    } else if let Err(e) = ui.show_terminal_text_frame(&frame, snap_top) {
                         log::error!("flush text screen failed: {e:?}");
                     }
                 }

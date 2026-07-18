@@ -309,6 +309,11 @@ impl GetPixel for FrameBuffer {
 }
 
 impl FrameBuffer {
+    /// 清空可绘制缓冲区(背景快照缓冲不动)。终端全屏帧重绘前用它清屏。
+    pub fn clear(&mut self, color: ColorFormat) -> anyhow::Result<()> {
+        self.buffers.clear(color).map_err(Into::into)
+    }
+
     /// 只把指定矩形区域推送到 LCD(增量重绘用),不刷新整屏。
     /// `rect` 会被裁剪到屏幕范围内。
     pub fn flush_rect(&mut self, rect: Rectangle) -> anyhow::Result<()> {
@@ -505,6 +510,51 @@ pub fn display_text(
 pub struct UI {
     /// 显示缓冲区
     display: FrameBuffer,
+    /// text 模式终端:vt100 解析器(Some = 当前在用 text 屏)。JPEG 模式 / 未选会话时为 None。
+    terminal_parser: Option<vt100::Parser>,
+    /// text 模式终端渲染器(缓存字形 + 上一帧 cell 状态,做增量 render_diff)。take()/放回 复用。
+    terminal_renderer: Option<embedded_graphics_terminal::TerminalRenderer>,
+}
+
+/// 终端本地滚动步长(滚轮每格滚动的 scrollback 行数)。
+const TERMINAL_SCROLL_ROWS: usize = 10;
+/// vt100 解析器保留的历史行数(向上翻页可见的行)。
+const TERMINAL_SCROLLBACK_ROWS: usize = 64;
+
+/// 终端滚动方向(本地 scrollback 翻页)。
+#[derive(Clone, Copy)]
+pub enum TerminalScroll {
+    Up,
+    Down,
+}
+
+/// 构造终端渲染器:unifont(含中文 gb2312)+ 符号/拉丁回退字体,黑白配色,
+/// 常见非 BMP 符号替换成 ASCII 避免缺字。与 vibetty text 模式配色一致(白字黑底)。
+fn new_terminal_renderer() -> embedded_graphics_terminal::TerminalRenderer {
+    use embedded_graphics_terminal::TerminalRenderer;
+    use u8g2_fonts::fonts::{
+        u8g2_font_unifont_t_78_79, u8g2_font_unifont_t_gb2312, u8g2_font_unifont_t_symbols,
+    };
+
+    TerminalRenderer::new(
+        Size::new(DISPLAY_WIDTH as u32, DISPLAY_HEIGHT as u32),
+        u8g2_font_unifont_t_gb2312,
+        ColorFormat::WHITE,
+        ColorFormat::BLACK,
+    )
+    .with_fallback_font(u8g2_font_unifont_t_symbols)
+    .with_fallback_font(u8g2_font_unifont_t_78_79)
+    .with_substitution('›', '>')
+    .with_substitution('•', '*')
+    .with_substitution('✻', '*')
+    .with_substitution('⏺', '*')
+}
+
+/// text 模式下终端的字符列/行数(由渲染器的 cell 尺寸对屏幕取整得到)。
+/// 发 sync_cells 时用这个尺寸让服务端 resize PTY。
+pub fn terminal_text_cells() -> (u16, u16) {
+    let renderer = new_terminal_renderer();
+    (renderer.cols() as u16, renderer.rows() as u16)
 }
 
 impl UI {
@@ -517,18 +567,154 @@ impl UI {
     pub fn new() -> Self {
         Self {
             display: FrameBuffer::new(ColorFormat::new(30, 30, 30)),
+            terminal_parser: None,
+            terminal_renderer: None,
         }
     }
 
     /// 使用指定显示目标创建 UI
     pub fn new_with_target(display: FrameBuffer) -> Self {
-        Self { display }
+        Self {
+            display,
+            terminal_parser: None,
+            terminal_renderer: None,
+        }
     }
 
     pub fn show_notification(&mut self, color: ColorFormat, message: &str) -> anyhow::Result<()> {
         self.draw_text_wrapped(message, Point::new(2, 2), color)?;
         self.display.flush()?;
         Ok(())
+    }
+
+    // ========== text 模式终端渲染 ==========
+
+    /// 当前是否持有 text 终端(JPEG 模式 / 未激活会话时为 false)。
+    /// app 据此决定 sync 发像素还是 cells、滚动走本地还是 MQTT。
+    pub fn terminal_active(&self) -> bool {
+        self.terminal_parser.is_some()
+    }
+
+    /// 渲染一帧 screen_text。payload 首字节是 tag:
+    /// `0x00` = 整屏基线(重置 vt100 解析器后重放,含 ANSI 颜色/光标),
+    /// `0x01` = PTY 增量(直接喂进解析器)。后续字节是 ANSI 终端流。
+    /// 全屏帧清屏后整屏重绘 + flush;增量帧只 render_diff 脏区 + flush_rect。
+    pub fn show_terminal_text_frame(&mut self, payload: &[u8]) -> anyhow::Result<()> {
+        let Some((&tag, bytes)) = payload.split_first() else {
+            log::warn!("empty screen_text frame");
+            return Ok(());
+        };
+        let (cols, rows) = terminal_text_cells();
+        let full_frame = tag == 0x00;
+        match tag {
+            0x00 => {
+                log::info!("screen_text full frame: {}B", bytes.len());
+                self.terminal_parser =
+                    Some(vt100::Parser::new(rows, cols, TERMINAL_SCROLLBACK_ROWS));
+            }
+            0x01 => {
+                log::debug!("screen_text delta frame: {}B", bytes.len());
+                if self.terminal_parser.is_none() {
+                    log::warn!("screen_text delta before full frame; creating blank terminal");
+                    self.terminal_parser =
+                        Some(vt100::Parser::new(rows, cols, TERMINAL_SCROLLBACK_ROWS));
+                    if let Some(renderer) = self.terminal_renderer.as_mut() {
+                        renderer.invalidate();
+                    }
+                }
+            }
+            other => {
+                log::warn!("unknown screen_text tag: {other}");
+                return Ok(());
+            }
+        }
+
+        if let Some(parser) = self.terminal_parser.as_mut() {
+            parser.process(bytes);
+        }
+
+        let mut renderer = self
+            .terminal_renderer
+            .take()
+            .unwrap_or_else(new_terminal_renderer);
+        let dirty = if full_frame {
+            self.display.clear(ColorFormat::CSS_BLACK)?;
+            if let Some(parser) = self.terminal_parser.as_ref() {
+                renderer.render(parser.screen(), &mut self.display)?;
+            }
+            renderer.invalidate();
+            Some(self.display.bounding_box())
+        } else {
+            match self.terminal_parser.as_ref() {
+                Some(parser) => renderer.render_diff(parser.screen(), &mut self.display)?,
+                None => None,
+            }
+        };
+        self.terminal_renderer = Some(renderer);
+
+        match (full_frame, dirty) {
+            (true, Some(_)) => self.display.flush()?,
+            (false, Some(rect)) => self.display.flush_rect(rect)?,
+            (_, None) => {}
+        }
+        Ok(())
+    }
+
+    /// 本地翻页 text 终端(改 scrollback 偏移后 render_diff)。成功移动返回 true,
+    /// 已到顶/到底(偏移未变)返回 false——调用方据此决定是否回退到 MQTT 翻页。
+    pub fn scroll_terminal_text(&mut self, direction: TerminalScroll) -> anyhow::Result<bool> {
+        let Some(parser) = self.terminal_parser.as_mut() else {
+            return Ok(false);
+        };
+        let before = parser.screen().scrollback();
+        let next = match direction {
+            TerminalScroll::Up => before.saturating_add(TERMINAL_SCROLL_ROWS),
+            TerminalScroll::Down => before.saturating_sub(TERMINAL_SCROLL_ROWS),
+        };
+        parser.screen_mut().set_scrollback(next);
+        let after = parser.screen().scrollback();
+        if after == before {
+            return Ok(false);
+        }
+
+        log::info!("local text scroll: {before} -> {after}");
+        let mut renderer = self
+            .terminal_renderer
+            .take()
+            .unwrap_or_else(new_terminal_renderer);
+        let dirty = renderer.render_diff(parser.screen(), &mut self.display)?;
+        self.terminal_renderer = Some(renderer);
+        if let Some(rect) = dirty {
+            self.display.flush_rect(rect)?;
+        }
+        Ok(true)
+    }
+
+    /// 用缓存的 vt100 screen 整屏重绘终端(全屏 + flush)。用于其它画面(如 ASR 编辑器、
+    /// 弹窗)覆盖过终端后恢复显示,或重连后强制对齐。
+    #[allow(dead_code)] // 当前编辑退出用 send_active_sync 取新鲜帧(编辑期间增量已排空,缓存过期);保留备用。
+    pub fn redraw_cached_terminal_text(&mut self) -> anyhow::Result<bool> {
+        let Some(parser) = self.terminal_parser.as_ref() else {
+            return Ok(false);
+        };
+
+        let mut renderer = self
+            .terminal_renderer
+            .take()
+            .unwrap_or_else(new_terminal_renderer);
+        self.display.clear(ColorFormat::CSS_BLACK)?;
+        renderer.render(parser.screen(), &mut self.display)?;
+        renderer.invalidate();
+        self.terminal_renderer = Some(renderer);
+
+        self.display.flush()?;
+        Ok(true)
+    }
+
+    /// 丢弃 text 终端状态(切到 JPEG 会话 / 退订 text 屏时调用,释放内存)。
+    pub fn clear_terminal(&mut self) {
+        self.terminal_parser = None;
+        // renderer 保留复用(字形缓存);若担心内存可一并清空,这里保守保留。
     }
 
     // ========== 辅助方法 ==========

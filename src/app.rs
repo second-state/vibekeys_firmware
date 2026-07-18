@@ -66,6 +66,20 @@ async fn select_event(
     }
 }
 
+/// 发一帧 sync 给活跃会话,按其模式选形态:
+/// text 模式 → `sync_cells(cols, rows, close)`(声明终端格子尺寸);
+/// JPEG 模式 → `sync_close(close)`(像素尺寸)。`close=true` 暂停服务端主动推屏。
+async fn send_active_sync(server: &mut crate::mqtt::MqttServer, close: bool) -> anyhow::Result<()> {
+    let msg = if server.active_uses_text_screen() {
+        let (cols, rows) = crate::lcd::terminal_text_cells();
+        log::info!("Sending text-mode sync: cols={cols} rows={rows} close={close}");
+        protocol::ClientMessage::sync_cells(cols, rows, close)
+    } else {
+        protocol::ClientMessage::sync_close(close)
+    };
+    server.send(msg).await
+}
+
 pub async fn run(
     uri: String,
     client_id: &str,
@@ -173,12 +187,8 @@ pub async fn run(
 
         // 弹窗收敛:在线则关闭上一轮瞬态弹窗;断线则(重新)显示「下线」弹窗,
         // 让它在无事件期间也持续保持(断线时不会有 MQTT 事件来触发重绘)。
-        // 活跃会话是 text 模式时持续显示「暂不支持」——本端只实现了 JPEG 模式,
-        // text 模式收不到任何屏帧,屏幕本来就是空的,提示占住画面比黑屏清楚。
         if disconnected {
             let _ = popup.show(ui.display_mut(), "MQTT disconnected");
-        } else if server.active_format() == Some("text") {
-            let _ = popup.show(ui.display_mut(), "text mode N/A (JPEG only)");
         } else {
             let _ = popup.hide(ui.display_mut());
         }
@@ -197,6 +207,9 @@ pub async fn run(
                     if let Some(e) = asr_editor.as_mut() {
                         e.move_left();
                         e.render(ui.display_mut())?;
+                    } else if ui.terminal_active() {
+                        // text 模式:滚动是本地 scrollback 翻页,无网络往返。
+                        let _ = ui.scroll_terminal_text(crate::lcd::TerminalScroll::Up);
                     } else if view_window_offset > 0 {
                         // 还有上方内容:本地平移上去即可,不发 MQTT。
                         view_window_offset = view_window_offset.saturating_sub(SCROLL_STEP_PX);
@@ -225,6 +238,8 @@ pub async fn run(
                     if let Some(e) = asr_editor.as_mut() {
                         e.move_right();
                         e.render(ui.display_mut())?;
+                    } else if ui.terminal_active() {
+                        let _ = ui.scroll_terminal_text(crate::lcd::TerminalScroll::Down);
                     } else {
                         let max_offset = current_screen
                             .as_ref()
@@ -261,7 +276,9 @@ pub async fn run(
                     if asr_editor.is_some() {
                         // 放弃编辑,回屏幕。
                         asr_editor = None;
-                        let _ = server.send(protocol::ClientMessage::sync()).await;
+                        // 退出编辑后要一帧把屏幕刷回来(编辑期间屏帧被排空了)。
+                        // text 模式发 sync_cells 触发整屏重绘;JPEG 发像素 sync。
+                        let _ = send_active_sync(&mut server, false).await;
                     } else {
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x1b]))
@@ -277,8 +294,8 @@ pub async fn run(
                                 .send(protocol::ClientMessage::Input(trimmed.to_string()))
                                 .await?;
                         }
-                        // 退出编辑后要一帧把屏幕刷回来(编辑期间 ActiveScreen 被排空了)。
-                        let _ = server.send(protocol::ClientMessage::sync()).await;
+                        // 退出编辑后要一帧把屏幕刷回来(编辑期间屏帧被排空了)。
+                        let _ = send_active_sync(&mut server, false).await;
                     } else {
                         server
                             .send(protocol::ClientMessage::PtyInput(vec![0x0d]))
@@ -432,6 +449,15 @@ pub async fn run(
                         let _ = popup.show(ui.display_mut(), "Only JPEG is supported");
                     }
                 }
+                crate::mqtt::MqttEvent::ActiveText(frame) => {
+                    // text 模式屏帧(首字节 tag + ANSI 流)。
+                    if asr_editor.is_some() {
+                        // 编辑 ASR 文本期间不刷屏(避免覆盖编辑器),只排空保活 MQTT。
+                        log::debug!("Draining text frame ({}B) while in ASR editor", frame.len());
+                    } else if let Err(e) = ui.show_terminal_text_frame(&frame) {
+                        log::error!("flush text screen failed: {e:?}");
+                    }
+                }
                 crate::mqtt::MqttEvent::Presence { prefix, online } => {
                     if online {
                         log::info!("Session registered: {prefix}");
@@ -452,6 +478,9 @@ pub async fn run(
                     log::info!("MQTT reconnected; subscriptions restored");
                     disconnected = false;
                     let _ = popup.hide(ui.display_mut());
+                    // 重连后按活跃会话模式发一帧 sync 要新画面(text→sync_cells,JPEG→像素)。
+                    // 无活跃会话时 send 会报错并被忽略。
+                    let _ = send_active_sync(&mut server, false).await;
                 }
             },
             SelectResult::MicPressed => {
@@ -616,7 +645,7 @@ async fn open_session_picker(
     // 此时还没选定任何会话,不该对一个没选过的会话发 close。
     // 所有退出分支都会发 sync()(close=false)恢复推屏并要一帧新画面,进出成对,不泄漏。
     if pause_active_push {
-        let _ = server.send(protocol::ClientMessage::sync_close(true)).await;
+        let _ = send_active_sync(server, true).await;
     }
 
     loop {
@@ -647,7 +676,7 @@ async fn open_session_picker(
 
         match evt {
             PickerEvt::Closed => {
-                let _ = server.send(protocol::ClientMessage::sync()).await;
+                let _ = send_active_sync(server, false).await;
                 return Ok(());
             }
             PickerEvt::Key(Event::NEXT) => {
@@ -658,8 +687,11 @@ async fn open_session_picker(
             }
             PickerEvt::Key(Event::Accept) => {
                 server.set_active(&focus_prefix);
-                // 让新活跃会话立刻推一帧,免得干等下一帧。
-                let _ = server.send(protocol::ClientMessage::sync()).await;
+                // 切了活跃会话:丢弃旧 text 终端状态(若是 text→JPEG 或换会话),
+                // 新会话若是 text 会在首帧 ActiveText 重建。
+                ui.clear_terminal();
+                // 让新活跃会话立刻推一帧,免得干等下一帧。text 模式发 sync_cells,JPEG 发像素 sync。
+                let _ = send_active_sync(server, false).await;
                 let label = labels
                     .iter()
                     .find(|(p, _, _, _)| p == &focus_prefix)
@@ -670,14 +702,14 @@ async fn open_session_picker(
             }
             PickerEvt::Key(Event::Esc) => {
                 // 取消:活跃未变。发个 sync 让当前会话立即重绘一帧覆盖列表。
-                let _ = server.send(protocol::ClientMessage::sync()).await;
+                let _ = send_active_sync(server, false).await;
                 return Ok(());
             }
             PickerEvt::Key(_) => {} // 旋钮方向 / 其它键在选择器里忽略
             PickerEvt::Mqtt(crate::mqtt::MqttEvent::Presence { .. }) => {
                 let new_labels = server.session_labels();
                 if new_labels.is_empty() {
-                    let _ = server.send(protocol::ClientMessage::sync()).await;
+                    let _ = send_active_sync(server, false).await;
                     let _ = popup.show(ui.display_mut(), "no session");
                     return Ok(());
                 }
@@ -695,6 +727,9 @@ async fn open_session_picker(
             }
             PickerEvt::Mqtt(crate::mqtt::MqttEvent::ActiveScreen(_)) => {
                 // 选择器开着时不刷屏;退出时 sync() 会要新帧。
+            }
+            PickerEvt::Mqtt(crate::mqtt::MqttEvent::ActiveText(_)) => {
+                // 同上:text 帧在选择器期间也排空,不渲染。
             }
             PickerEvt::Mqtt(crate::mqtt::MqttEvent::Disconnected) => {
                 // 选择器内断线:不弹窗(会和列表重绘打架);列表内容随下次 presence 自然更新。

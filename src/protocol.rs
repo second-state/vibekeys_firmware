@@ -176,6 +176,18 @@ impl ClientMessage {
         }
     }
 
+    /// 构造一帧 text 模式的 Sync:`width/height` 直接是字符列/行(`pixels=false`),
+    /// 服务端据此 resize PTY 成对应 cols×rows 并回送一整屏(`screen_text` tag=0x00)。
+    /// 用于活跃会话是 text 模式时声明终端格子尺寸。
+    pub fn sync_cells(cols: u16, rows: u16, close: bool) -> Self {
+        Self::Sync {
+            width: cols,
+            height: rows,
+            pixels: false,
+            close,
+        }
+    }
+
     /// 序列化为 JSON 字符串
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
@@ -238,6 +250,30 @@ mod tests {
                 assert_eq!((width, height), (320, 172));
                 assert!(pixels);
                 assert!(!close);
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_client_sync_cells_json() {
+        // text 模式:cols/rows + pixels=false
+        let msg = ClientMessage::sync_cells(80, 24, true);
+        let json = msg.to_json().unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"sync","data":{"width":80,"height":24,"pixels":false,"close":true}}"#
+        );
+        match ClientMessage::from_json(&json).unwrap() {
+            ClientMessage::Sync {
+                width,
+                height,
+                pixels,
+                close,
+            } => {
+                assert_eq!((width, height), (80, 24));
+                assert!(!pixels);
+                assert!(close);
             }
             _ => panic!("Wrong message type"),
         }

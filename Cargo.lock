@@ -499,10 +499,10 @@ dependencies = [
 [[package]]
 name = "embedded-graphics-terminal"
 version = "0.1.0"
-source = "git+https://github.com/second-state/embedded-graphics-terminal?rev=d133a30bbeba5464b453bc726e020b81d485c105#d133a30bbeba5464b453bc726e020b81d485c105"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16e3ecaa4a3b427a32b0d4f7c5eb6641b29b09180cdc5b099eb726c5b17fc20d"
 dependencies = [
  "embedded-graphics",
- "log",
  "lru",
  "u8g2-fonts",
  "vt100",
@@ -1939,7 +1939,8 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 [[package]]
 name = "vt100"
 version = "0.16.2"
-source = "git+https://github.com/second-state/vt100-rust?rev=a34c13a22acb5ba16dab30f103c85f27c9dad930#a34c13a22acb5ba16dab30f103c85f27c9dad930"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "054ff75fb8fa83e609e685106df4faeffdf3a735d3c74ebce97ec557d5d36fd9"
 dependencies = [
  "itoa",
  "unicode-width",

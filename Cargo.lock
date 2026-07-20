@@ -499,6 +499,7 @@ dependencies = [
 [[package]]
 name = "embedded-graphics-terminal"
 version = "0.1.0"
+source = "git+https://github.com/second-state/embedded-graphics-terminal?rev=d133a30bbeba5464b453bc726e020b81d485c105#d133a30bbeba5464b453bc726e020b81d485c105"
 dependencies = [
  "embedded-graphics",
  "log",

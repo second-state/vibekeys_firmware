@@ -46,8 +46,9 @@ embedded-text = { version = "0.7.3", features = ["plugin", "ansi"] }
 ansi-parser = "0.9.1"
 u8g2-fonts = { version = "0.8", features = ["embedded_graphics_textstyle"] }
 # text 模式终端渲染:vt100 解析 + embedded-graphics 绘制。
-# 锁到与 vibetty/embedded-graphics-terminal 相同的 second-state vt100 fork rev,保证唯一副本。
-embedded-graphics-terminal = { path = "../embedded-graphics-terminal", features = ["timing"] }
+# 用 second-state/embedded-graphics-terminal 的 git 依赖(钉到 d133a30,带 render_rows,
+# 且其 vt100 依赖与下方一致,统一成一份),避免本地 path 依赖在 CI 上找不到。
+embedded-graphics-terminal = { git = "https://github.com/second-state/embedded-graphics-terminal", rev = "d133a30bbeba5464b453bc726e020b81d485c105", features = ["timing"] }
 vt100 = { git = "https://github.com/second-state/vt100-rust", rev = "a34c13a22acb5ba16dab30f103c85f27c9dad930" }
 image = { version = "0.25.6", default-features = false, features = [
     "png",

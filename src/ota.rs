@@ -12,13 +12,13 @@ use esp_idf_svc::{
 };
 
 /// 从 GitHub release 拉最新固件的目标 URL。按硬件 feature 选资产:max2 用 max2 镜像,
-/// 否则用 keys 镜像。repo 指向本项目自己的 release(L-jasmine/vibekeys_firmware)。
+/// 否则用 keys 镜像。指向本项目(second-state/vibekeys_firmware)的最新 release。
 #[cfg(feature = "max2")]
 pub const OTA_DOWNLOAD_URL: &str =
-    "https://github.com/L-jasmine/vibekeys_firmware/releases/latest/download/vibekeys_max2_ota.bin";
+    "https://github.com/second-state/vibekeys_firmware/releases/latest/download/vibekeys_max2_ota.bin";
 #[cfg(not(feature = "max2"))]
 pub const OTA_DOWNLOAD_URL: &str =
-    "https://github.com/L-jasmine/vibekeys_firmware/releases/latest/download/vibekeys_ota.bin";
+    "https://github.com/second-state/vibekeys_firmware/releases/latest/download/vibekeys_ota.bin";
 
 static OTA_INDEX_HTML: &str = include_str!("../assets/ota_index.html");
 

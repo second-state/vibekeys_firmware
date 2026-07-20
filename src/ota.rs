@@ -11,14 +11,22 @@ use esp_idf_svc::{
     ota::EspOta,
 };
 
-/// 从 GitHub release 拉最新固件的目标 URL。按硬件 feature 选资产:max2 用 max2 镜像,
-/// 否则用 keys 镜像。指向本项目(second-state/vibekeys_firmware)的最新 release。
+/// 从 GitHub release 拉最新固件的目标 URL。
+///
+/// 默认指向本项目(second-state/vibekeys_firmware)的 `releases/latest`(稳定版)。CI 构建
+/// 预发布(rc/beta)时,通过环境变量 `VIBEKEYS_OTA_URL` 覆盖成该 tag 的具体资产 URL——因为
+/// GitHub 的 `releases/latest` 排除 prerelease,prerelease 必须钉死 tag 才能下到。
+/// 资产按硬件 feature 选:max2 → `vibekeys_max2_ota.bin`,否则 → `vibekeys_ota.bin`。
 #[cfg(feature = "max2")]
-pub const OTA_DOWNLOAD_URL: &str =
-    "https://github.com/second-state/vibekeys_firmware/releases/latest/download/vibekeys_max2_ota.bin";
+const DEFAULT_OTA_URL: &str = "https://github.com/second-state/vibekeys_firmware/releases/latest/download/vibekeys_max2_ota.bin";
 #[cfg(not(feature = "max2"))]
-pub const OTA_DOWNLOAD_URL: &str =
+const DEFAULT_OTA_URL: &str =
     "https://github.com/second-state/vibekeys_firmware/releases/latest/download/vibekeys_ota.bin";
+
+pub const OTA_DOWNLOAD_URL: &str = match option_env!("VIBEKEYS_OTA_URL") {
+    Some(url) => url,
+    None => DEFAULT_OTA_URL,
+};
 
 static OTA_INDEX_HTML: &str = include_str!("../assets/ota_index.html");
 

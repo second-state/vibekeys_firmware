@@ -44,15 +44,23 @@ jobs:
 
       - name: Build keys
         run: ./build.sh keys
+        env:
+          VIBEKEYS_OTA_URL: https://github.com/second-state/vibekeys_firmware/releases/download/${{ github.event.inputs.release_tag || github.ref_name }}/vibekeys_ota.bin
 
       - name: Build max2
         run: ./build.sh max2
+        env:
+          VIBEKEYS_OTA_URL: https://github.com/second-state/vibekeys_firmware/releases/download/${{ github.event.inputs.release_tag || github.ref_name }}/vibekeys_max2_ota.bin
 
       - name: Build keys_ota_bin
         run: ./build.sh keys_ota_bin
+        env:
+          VIBEKEYS_OTA_URL: https://github.com/second-state/vibekeys_firmware/releases/download/${{ github.event.inputs.release_tag || github.ref_name }}/vibekeys_ota.bin
 
       - name: Build max2_ota_bin
         run: ./build.sh max2_ota_bin
+        env:
+          VIBEKEYS_OTA_URL: https://github.com/second-state/vibekeys_firmware/releases/download/${{ github.event.inputs.release_tag || github.ref_name }}/vibekeys_max2_ota.bin
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

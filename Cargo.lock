@@ -499,10 +499,9 @@ dependencies = [
 [[package]]
 name = "embedded-graphics-terminal"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16e3ecaa4a3b427a32b0d4f7c5eb6641b29b09180cdc5b099eb726c5b17fc20d"
 dependencies = [
  "embedded-graphics",
+ "log",
  "lru",
  "u8g2-fonts",
  "vt100",

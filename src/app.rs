@@ -305,8 +305,9 @@ pub async fn run(
                     if asr_editor.is_some() {
                         // 放弃编辑,回屏幕。
                         asr_editor = None;
-                        // 退出编辑后要一帧把屏幕刷回来(编辑期间屏帧被排空了)。
-                        // text 模式发 sync_cells 触发整屏重绘;JPEG 发像素 sync。
+                        // 先把缓存的终端整屏画回去(编辑器覆盖过整屏,显示缓冲已是编辑器内容;
+                        // 不先恢复的话,后续 delta 的脏区会画在错的内容上)。再发 sync 拉新鲜帧。
+                        let _ = ui.redraw_cached_terminal_text();
                         let _ = send_active_sync(&mut server, false).await;
                     } else {
                         server
@@ -323,7 +324,8 @@ pub async fn run(
                                 .send(protocol::ClientMessage::Input(trimmed.to_string()))
                                 .await?;
                         }
-                        // 退出编辑后要一帧把屏幕刷回来(编辑期间屏帧被排空了)。
+                        // 退出编辑:先恢复缓存终端整屏,再发 sync 拉新鲜帧。
+                        let _ = ui.redraw_cached_terminal_text();
                         let _ = send_active_sync(&mut server, false).await;
                     } else {
                         server

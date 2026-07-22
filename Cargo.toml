@@ -45,9 +45,12 @@ embedded-graphics = "0.8.1"
 embedded-text = { version = "0.7.3", features = ["plugin", "ansi"] }
 ansi-parser = "0.9.1"
 u8g2-fonts = { version = "0.8", features = ["embedded_graphics_textstyle"] }
-# text 模式终端渲染:vt100 解析 + embedded-graphics 绘制。用 crates.io 发布版(后续正式版)。
-# vt100 也用 crates.io(与 egt 0.1.0 的 vt100 依赖一致,统一成一份,避免 render_rows 类型不匹配)。
-embedded-graphics-terminal = "0.1"
+# text 模式终端渲染:vt100 解析 + embedded-graphics 绘制。
+# 临时用本地 path 依赖(egt 最新改动含 render_rows_diff);正式发布前换回 crates.io。
+# vt100 用 crates.io 0.16(与本地的 egt 依赖一致,统一成一份)。
+# embedded-graphics-terminal = "0.1"
+# vt100 = "0.16"
+embedded-graphics-terminal = { path = "../embedded-graphics-terminal", features = ["timing"] }
 vt100 = "0.16"
 image = { version = "0.25.6", default-features = false, features = [
     "png",

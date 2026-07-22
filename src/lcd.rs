@@ -516,6 +516,9 @@ pub struct UI {
     terminal_renderer: Option<embedded_graphics_terminal::TerminalRenderer>,
     /// 当前窗口顶部在画布中的行号(本地平移用)。0 = 画布最老;底部 = canvas_rows − visible(最新)。
     terminal_offset: u16,
+    /// 上次 delta 帧实际渲染的时刻。delta 节流用:距上次渲染不足 TERMINAL_RENDER_MIN_INTERVAL
+    /// 时只把文本喂进 vt100、不 render(PTY 高频输出时减少渲染/flush 次数)。
+    terminal_last_render: Option<std::time::Instant>,
 }
 
 /// 终端画布是物理屏高的几倍。renderer/parser/sync 都按这个高度,本地用 render_rows 只显示
@@ -527,6 +530,9 @@ const TERMINAL_TALL: u32 = 3;
 const TERMINAL_TALL: u32 = 5;
 /// vt100 解析器保留的画布外历史行数。本地平移在 3 屏画布内进行,更老的走服务端,故设 0。
 const TERMINAL_SCROLLBACK_ROWS: usize = 0;
+/// delta 帧渲染节流:两次渲染最少间隔。不足则只把文本喂进 vt100、不 render,
+/// 累积的变更会在下一次渲染时由 render_row_diff 一次性补画。PTY 高频输出时大幅减少 flush。
+const TERMINAL_RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// 终端滚动方向(本地窗口平移)。
 #[derive(Clone, Copy)]
@@ -591,6 +597,7 @@ impl UI {
             terminal_parser: None,
             terminal_renderer: None,
             terminal_offset: 0,
+            terminal_last_render: None,
         }
     }
 
@@ -601,6 +608,7 @@ impl UI {
             terminal_parser: None,
             terminal_renderer: None,
             terminal_offset: 0,
+            terminal_last_render: None,
         }
     }
 
@@ -622,9 +630,9 @@ impl UI {
     /// `0x00` = 整屏基线(重置 vt100 解析器后重放,含 ANSI 颜色/光标),
     /// `0x01` = PTY 增量(直接喂进解析器)。后续字节是 ANSI 终端流。
     ///
-    /// 无论哪种,都 `process` 后用 `render_rows` 重画当前窗口 `[offset, offset+visible)`
-    /// (lib 把该范围平移到 y=0),整屏 flush。delta 帧也走整窗重画(不维护脏区,
-    /// 实现简单;PTY 输出频繁时靠字形缓存扛)。
+    /// delta 帧用 `render_row_diff`(只画变化的 cell,返回脏区)`flush_rect` 局部刷新,
+    /// 不再每帧整屏 clear+flush——text 流期间 runtime 不会被 SPI 整屏传输长时间卡住,
+    /// 按键更跟手。全屏基线(tag=0x00)是整窗重画 + 整屏 flush(含清掉 cell 外的底部留白)。
     ///
     /// `snap_top`:全屏基线时窗口对齐到哪里——
     /// - false(sync 首帧 / scroll_up 响应):offset=bottom,看最新 / 旧页底;
@@ -642,6 +650,7 @@ impl UI {
         let (cols, rows) = terminal_text_cells(); // rows = 3×可见(画布高)
         let visible = terminal_visible_rows();
         let bottom = rows.saturating_sub(visible);
+        let full_frame = tag == 0x00;
         match tag {
             0x00 => {
                 log::info!(
@@ -673,16 +682,42 @@ impl UI {
             parser.process(bytes);
         }
 
-        self.render_terminal_window()?;
-        self.display.flush()?;
+        if full_frame {
+            // 全屏基线:清掉 cell 外的底部留白,整窗重画,整屏 flush(基线不频繁)。
+            self.display.clear(ColorFormat::CSS_BLACK)?;
+            let _ = self.render_terminal_window_diff(true)?;
+            self.display.flush()?;
+            self.terminal_last_render = Some(std::time::Instant::now());
+        } else {
+            // delta:节流——距上次渲染不足 TERMINAL_RENDER_MIN_INTERVAL 时只 process、不 render,
+            // 累积变更留给下一次渲染(render_row_diff 会一次性补画)。≥间隔才渲染并刷新。
+            let now = std::time::Instant::now();
+            let throttle = self
+                .terminal_last_render
+                .map(|t| now.duration_since(t) < TERMINAL_RENDER_MIN_INTERVAL)
+                .unwrap_or(false);
+            if throttle {
+                log::debug!("screen_text delta throttled (only processed into vt100)");
+            } else {
+                if let Some(rect) = self.render_terminal_window_diff(false)? {
+                    self.display.flush_rect(rect)?;
+                }
+                self.terminal_last_render = Some(now);
+            }
+        }
         Ok(())
     }
 
-    /// 用当前 `terminal_offset` 把画布的 `[offset, offset+visible)` 一屏重画到 display
-    /// (render_rows 平移到 y=0)。供帧到达 / 本地平移 / 恢复显示复用。
-    fn render_terminal_window(&mut self) -> anyhow::Result<()> {
-        let Some(parser) = self.terminal_parser.as_ref() else {
-            return Ok(());
+    /// 用 `render_row_diff` 把画布 `[offset, offset+visible)` 一屏画到 display。
+    /// `force_full=true` 时先 invalidate(强制整窗重画,用于全屏基线 / 窗口平移)。
+    /// 返回脏区(display 坐标,已平移到 y=0),无变化返回 None。供帧到达 / 平移复用。
+    fn render_terminal_window_diff(
+        &mut self,
+        force_full: bool,
+    ) -> anyhow::Result<Option<Rectangle>> {
+        let parser = match self.terminal_parser.as_ref() {
+            Some(p) => p,
+            None => return Ok(None),
         };
         let visible = terminal_visible_rows();
         let start = self.terminal_offset;
@@ -691,11 +726,12 @@ impl UI {
             .terminal_renderer
             .take()
             .unwrap_or_else(new_terminal_renderer);
-        self.display.clear(ColorFormat::CSS_BLACK)?;
-        renderer.render_rows(parser.screen(), &mut self.display, start, end)?;
-        renderer.invalidate();
+        if force_full {
+            renderer.invalidate();
+        }
+        let dirty = renderer.render_row_diff(parser.screen(), &mut self.display, start, end)?;
         self.terminal_renderer = Some(renderer);
-        Ok(())
+        Ok(dirty)
     }
 
     /// 本地平移 text 终端窗口(改 `terminal_offset`,在 3 屏画布内上下移动可见窗)。
@@ -722,20 +758,22 @@ impl UI {
 
         log::info!("local text pan: offset {before} -> {next}");
         self.terminal_offset = next;
-        self.render_terminal_window()?;
-        self.display.flush()?;
+        // 平移 = 整窗内容变了:invalidate 强制整窗重画,flush_rect 整窗脏区。
+        if let Some(rect) = self.render_terminal_window_diff(true)? {
+            self.display.flush_rect(rect)?;
+        }
         Ok(true)
     }
 
     /// 用缓存的 vt100 screen 整窗重绘终端(当前 offset 的可见窗 + flush)。
-    /// 用于其它画面(ASR 编辑器、弹窗)覆盖过终端后恢复显示,或重连后强制对齐。
-    #[allow(dead_code)] // 当前编辑退出 / 重连都用 send_active_sync 取新鲜帧;保留备用。
+    /// 用于其它画面(ASR 编辑器)覆盖过终端后恢复显示——先画回缓存,再发 sync 拉新鲜帧。
     pub fn redraw_cached_terminal_text(&mut self) -> anyhow::Result<bool> {
         if self.terminal_parser.is_none() {
             return Ok(false);
         }
-        self.render_terminal_window()?;
-        self.display.flush()?;
+        if let Some(rect) = self.render_terminal_window_diff(true)? {
+            self.display.flush_rect(rect)?;
+        }
         Ok(true)
     }
 
@@ -743,6 +781,7 @@ impl UI {
     pub fn clear_terminal(&mut self) {
         self.terminal_parser = None;
         self.terminal_offset = 0;
+        self.terminal_last_render = None;
         // renderer 保留复用(字形缓存);若担心内存可一并清空,这里保守保留。
     }
 

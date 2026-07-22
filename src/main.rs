@@ -594,10 +594,17 @@ fn main() -> anyhow::Result<()> {
         .spawn(move || {
             let mut driver = driver;
             while let Ok(req) = asr_rx.recv() {
+                // on_start_listen:连上 server(TLS 完成、开始上传录音)时 fire connected_tx,
+                // 通知 UI 把弹窗从「connecting 黄框」切到「listening 绿框」。
+                let mut connected_tx = Some(req.connected_tx);
                 let r = match driver.as_mut() {
                     Some(d) => d.start_asr(
                         &req.config,
-                        || {},
+                        move || {
+                            if let Some(tx) = connected_tx.take() {
+                                let _ = tx.send(());
+                            }
+                        },
                         || req.cancel.load(std::sync::atomic::Ordering::Relaxed),
                     ),
                     None => Err(anyhow::anyhow!("audio driver unavailable")),

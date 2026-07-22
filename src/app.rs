@@ -540,12 +540,19 @@ pub async fn run(
                     }
                 };
                 let (otx, orx) = tokio::sync::oneshot::channel();
+                let (ctx, crx) = tokio::sync::oneshot::channel(); // 连上 server(TLS 完成)信号
                 let cancel = Arc::new(AtomicBool::new(false));
-                let _ = popup.show(ui.display_mut(), "listening...");
+                // 先显示 connecting(黄框);worker 完成 TLS 后 fire ctx,这里切到 listening(绿框)。
+                let _ = popup.show_with_border(
+                    ui.display_mut(),
+                    "connecting...",
+                    ColorFormat::CSS_YELLOW,
+                );
                 let req = crate::audio::AsrRequest {
                     config: cfg,
                     cancel: cancel.clone(),
                     respond: otx,
+                    connected_tx: ctx,
                 };
                 if asr_tx.send(req).is_err() {
                     // worker 线程没起来 / 已退出。
@@ -556,7 +563,9 @@ pub async fn run(
 
                 let mut released = false;
                 let mut conn_dead = false;
+                let mut connected = false; // 是否已切到 listening
                 tokio::pin!(orx);
+                tokio::pin!(crx);
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await; // 防抖
                 let asr_result = loop {
                     tokio::select! {
@@ -564,6 +573,15 @@ pub async fn run(
                         r = &mut orx => break r.unwrap_or_else(|_| {
                             Err(anyhow::anyhow!("ASR worker dropped request"))
                         }),
+                        // 连上 server(TLS 完成):切 listening 绿框(只触发一次)。
+                        _ = &mut crx, if !connected => {
+                            connected = true;
+                            let _ = popup.show_with_border(
+                                ui.display_mut(),
+                                "listening...",
+                                ColorFormat::CSS_GREEN,
+                            );
+                        }
                         // 停止录音的边沿按麦克风模式分:
                         //   PTT  → 松手停止(wait_for_high:此时按下为低,等 rising level 即松手);
                         //   Toggle → 再按一下停止。此时按键仍处于按下(低电平),level 触发的
@@ -1105,10 +1123,10 @@ pub mod key_task {
                 return Err(anyhow::anyhow!("Failed to wait for button K{port} edge"));
             }
 
-            if !btn.is_low() {
-                continue;
-            }
-
+            // 不再做 `is_low()` 二次确认:下降沿已由 ISR 捕获 = 真实按下。单线程 runtime
+            // 被(全屏 flush 等)阻塞时,处理会延迟到松手之后,此时 is_low() 为 false 会把
+            // 真实按下误判为抖动丢弃 → text 流期间按旋钮打不开 session list。改用 ISR 边沿
+            // 触发,下面的 sleep 做去抖。
             log::info!("Button K{port} pressed");
             if let Err(_) = tx.send(event.clone()).await {
                 return Err(anyhow::anyhow!("Failed to send K{port} event"));

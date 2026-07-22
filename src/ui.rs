@@ -863,10 +863,20 @@ impl Popup {
 
     /// 显示弹窗。若已打开则只重画内容(不重复 backup)。
     pub fn show(&mut self, target: &mut FrameBuffer, text: &str) -> anyhow::Result<()> {
+        self.show_with_border(target, text, ColorFormat::CSS_WHITE)
+    }
+
+    /// 显示弹窗,指定边框颜色(connecting=黄 / listening=绿 等)。若已打开则只重画(不重复 backup)。
+    pub fn show_with_border(
+        &mut self,
+        target: &mut FrameBuffer,
+        text: &str,
+        border: ColorFormat,
+    ) -> anyhow::Result<()> {
         if self.backup.is_none() {
             self.backup = Some(backup_rect(target, self.rect));
         }
-        draw_popup(target, self.rect, text)?;
+        draw_popup_with_border(target, self.rect, text, border)?;
         target.flush_rect(self.rect)?;
         Ok(())
     }
@@ -924,13 +934,19 @@ fn restore_rect(
 }
 
 fn draw_popup(target: &mut FrameBuffer, rect: Rectangle, text: &str) -> anyhow::Result<()> {
+    draw_popup_with_border(target, rect, text, ColorFormat::CSS_WHITE)
+}
+
+fn draw_popup_with_border(
+    target: &mut FrameBuffer,
+    rect: Rectangle,
+    text: &str,
+    border: ColorFormat,
+) -> anyhow::Result<()> {
     let r = rect.intersection(&target.bounding_box());
     fill_rect(target, r, ColorFormat::CSS_BLACK)?;
     // TUI 风格描边
-    r.draw_styled(
-        &PrimitiveStyle::with_stroke(ColorFormat::CSS_WHITE, 1),
-        target,
-    )?;
+    r.draw_styled(&PrimitiveStyle::with_stroke(border, 1), target)?;
     // 文字内缩 2px,留出描边
     let inner = Rectangle::new(
         Point::new(r.top_left.x + 2, r.top_left.y + 2),

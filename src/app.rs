@@ -957,6 +957,66 @@ pub fn key_action_to_ansi(action: &bt_keyboard_mode::KeyAction) -> Option<Vec<u8
     }
 }
 
+/// 合并所有非 MIC 按钮到一个 select! 循环里,跑在专用线程上(释放主 runtime 的 8 个 task)。
+/// 任一按钮边沿 → 发对应 Event → 去抖 sleep。Backspace 长按连发;旋钮 A 任一边沿做正交解码。
+pub async fn listen_all_keys(
+    mut btn_custom: crate::AnyBtn,    // btn2
+    mut btn_next: crate::AnyBtn,      // btn4
+    mut btn_backspace: crate::AnyBtn, // btn5
+    mut btn_switch: crate::AnyBtn,    // btn6
+    mut btn_esc: crate::AnyBtn,       // btn3
+    mut btn_accept: crate::AnyBtn,    // btn7
+    mut rot_a: crate::AnyBtn,         // pin16
+    rot_b: crate::AnyBtn,             // pin17(只读电平做正交)
+    mut rot_push: crate::AnyBtn,      // pin18
+    tx: crate::audio::EventTx,
+) -> anyhow::Result<()> {
+    use std::time::Duration;
+    loop {
+        tokio::select! {
+            biased;
+            _ = btn_custom.wait_for_falling_edge() => {
+                let _ = tx.send(Event::Custom).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            _ = btn_next.wait_for_falling_edge() => {
+                let _ = tx.send(Event::NEXT).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            _ = btn_switch.wait_for_falling_edge() => {
+                let _ = tx.send(Event::SwitchMode).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            _ = btn_esc.wait_for_falling_edge() => {
+                let _ = tx.send(Event::Esc).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            _ = btn_accept.wait_for_falling_edge() => {
+                let _ = tx.send(Event::Accept).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            _ = rot_push.wait_for_falling_edge() => {
+                let _ = tx.send(Event::RotatePush).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            // Backspace:首次 + 长按连发(每 200ms 一次,直到松开)。
+            _ = btn_backspace.wait_for_falling_edge() => {
+                let _ = tx.send(Event::Backspace).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                while btn_backspace.is_low() {
+                    let _ = tx.send(Event::Backspace).await;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+            // 旋钮 A 任一边沿:正交解码。A 高→B 高=Up/B 低=Down;A 低→B 低=Up/B 高=Down。
+            _ = rot_a.wait_for_any_edge() => {
+                let up = if rot_a.is_high() { rot_b.is_high() } else { rot_b.is_low() };
+                let _ = tx.send(if up { Event::RotateUp } else { Event::RotateDown }).await;
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub mod key_task {
 

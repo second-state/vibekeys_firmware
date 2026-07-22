@@ -536,35 +536,22 @@ fn main() -> anyhow::Result<()> {
     }
 
     {
-        // btn0 (MIC) 由 app::run 直接持有用于本地 ASR,不在此 spawn。
-
-        runtime.spawn(app::key_task::listen_key_event(
-            btn2,
-            tx.clone(),
-            app::Event::Custom,
-        ));
-
-        runtime.spawn(app::key_task::listen_key_event(
-            btn4,
-            tx.clone(),
-            app::Event::NEXT,
-        ));
-
-        runtime.spawn(app::key_task::backspace_key(btn5, tx.clone()));
-
-        runtime.spawn(app::key_task::listen_key_event(
-            btn6,
-            tx.clone(),
-            app::Event::SwitchMode,
-        ));
-
-        runtime.spawn(app::key_task::esc_key(btn3, tx.clone()));
-
-        runtime.spawn(app::key_task::accept_key(btn7, tx.clone()));
-
-        runtime.spawn(app::key_task::rotate_key(pin16, pin17, tx.clone()));
-
-        runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
+        // 所有非 MIC 按钮合并成一个 select! 循环,跑在专用 4k 线程上
+        // (自带 current-thread tokio runtime 驱动 select! 和 sleep)。
+        // btn0 (MIC) 由 app::run 直接持有用于本地 ASR,不在此。
+        let key_tx = tx.clone();
+        std::thread::Builder::new()
+            .name("keys".to_string())
+            .stack_size(6 * 1024)
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("key-thread runtime");
+                rt.block_on(app::listen_all_keys(
+                    btn2, btn4, btn5, btn6, btn3, btn7, pin16, pin17, pin18, key_tx,
+                )).unwrap();
+            })?;
     }
 
     // 远程模式改用本地 ASR(MQTT 无语音通道):创建 audio::Driver 持有 I2S,

@@ -12,15 +12,16 @@ VibeKeys is a Rust firmware for the **ESP32-S3** that turns a piece of custom ha
 
 ## ⚠️ Upgrade note (0.3.x → 0.4.0)
 
-0.4.0 makes incompatible changes to the WiFi-related parts, so **upgrading from 0.3.x to 0.4.0 cannot be done via OTA** — you must perform a **full USB flash** (use one of the `*_bin` images built below, e.g. `vibekeys.bin`). A full flash erases flash, which **invalidates previous settings (WiFi / MQTT server / ASR, stored in NVS); you'll need to reconfigure after upgrading**.
+0.4.0 makes **breaking changes** to the partition layout (symmetric 4 MB/4 MB OTA slots) and the WiFi-related parts. **Upgrading from 0.3.x to 0.4.0 cannot be done via OTA** — you must perform a **full USB flash** of the bootloader, partition table, and firmware (use one of the `*_bin` images, e.g. `vibekeys.bin`). This **invalidates previous settings** (WiFi / MQTT server / ASR, stored in NVS); you'll need to reconfigure after upgrading.
 
 ## Key features
 
 - **Two modes**: `Keyboard` (Bluetooth keyboard + ASR) and `Remote` (MQTT remote).
 - **ASR (voice input)**: two trigger styles — PTT (push-to-talk) and Toggle (tap to toggle); recognition is done by an HTTP Whisper service (set `asr_config` in `setup.html`: `uri` / `api_key` / `model`); "prefer built-in ASR" can be toggled in settings.
-- **LCD UI**: the SPI display renders the keyboard view / remote view / status; optional I2C OLED (`i2c_oled`).
+- **Dual-format remote screen**: JPEG mode (full-frame images, long buffer for local scroll-back) and text mode (vt100 terminal emulation with ANSI colors, incremental dirty-rect rendering). The firmware auto-detects the format from vibetty's presence announcement.
+- **LCD UI**: the SPI display renders the keyboard view / remote view / terminal / status; optional I2C OLED (`i2c_oled`).
 - **Web provisioning**: in AP/OTA mode, open `setup.html` to configure WiFi, MQTT broker, ASR, MIC mode, etc.; stored in NVS.
-- **Dual-partition OTA**: a standalone `ota` firmware serves as the bootloader for online upgrades of the main firmware.
+- **Dual-partition OTA**: the firmware writes the new image to the inactive OTA partition and reboots into it. Two update sources: browser upload (HTTP PUT), or **download-latest** directly from GitHub releases.
 - **SNTP**: queries multiple NTP servers in parallel (for HTTPS certificate validation).
 
 ## Operation
@@ -79,11 +80,15 @@ While viewing a **remote terminal**:
 | Rotary push | open the session picker |
 | MIC | local voice input (PTT / Toggle); after recognition, an inline editor lets the rotary move the cursor and ACCEPT submit the text |
 
-When you scroll past the edge of the current page, the device asks vibetty for the previous/next page and pops up a `loading...` hint until the new frame arrives.
+When you scroll past the edge of the local buffer, the device asks vibetty for the previous/next page and pops up a `loading...` hint until the new frame arrives.
+
+**JPEG mode**: a tall image buffer (3 screen heights) lets you pan locally; when you reach the top/bottom the device requests the next page from vibetty.
+
+**Text mode**: a vt100 terminal canvas (3 screen heights on max2, 5 on keys) with incremental dirty-rect rendering. The rotary pans the visible window locally; at the canvas edges it sends `scroll_up` / `scroll_down` to vibetty for older/newer history. Delta frames are throttled (≤10 renders/s) and only the changed cells are flushed, keeping the UI responsive during high-frequency output.
 
 ### Setting
 
-Entered from the boot menu. Options: **WiFi networks**, **OTA Update**, **Clear config**. Move with **NEXT** (or the rotary in sub-screens), pick/edit with **ACCEPT**, delete with **BACKSPACE**, go back with **ESC**. **OTA Update** reboots into the OTA rescue firmware; **Clear config** wipes NVS and reboots.
+Entered from the boot menu. Options: **WiFi networks**, **OTA Update**, **Clear config**. Move with **NEXT** (or the rotary in sub-screens), pick/edit with **ACCEPT**, delete with **BACKSPACE**, go back with **ESC**. **OTA Update** enters OTA mode in-process (same firmware, no rescue reboot): it connects WiFi, starts an HTTP server for browser upload, and offers a **download-latest** button to fetch the newest firmware from GitHub releases. **Clear config** wipes NVS and reboots.
 
 ## Multiple WiFi (wifi_list)
 
@@ -104,10 +109,14 @@ ESP32-S3 + PSRAM (octal), SPI LCD, I2S microphone, custom keys, optional I2C OLE
 Built on [Rust + ESP-IDF](https://github.com/esp-rs), target `xtensa-esp32s3-espidf`. Common commands:
 
 ```bash
-./build.sh keys_bin      # main firmware single image: vibekeys.bin
+./build.sh keys_bin      # main firmware merged image (bootloader + partition + app): vibekeys.bin
 ./build.sh max2_bin      # max2 hardware variant (--features max2)
-./build.sh keys_ota_bin  # image with OTA header, upgradable by the ota firmware
-./build.sh ota           # OTA bootloader firmware
+./build.sh keys          # OTA image (app only, for OTA upload / download-latest)
+./build.sh max2          # max2 OTA image
+./build.sh keys_ota_bin  # factory image (app in ota_0 slot): vibekeys.bin
+./build.sh max2_ota_bin  # max2 factory image: vibekeys_max2.bin
 ```
 
 See `./build.sh` for the full list of targets. Feature flags: `max2` (max2 hardware variant), `i2c_oled` (I2C OLED).
+
+> The OTA partition layout is symmetric (`ota_0` / `ota_1`, each 4 MB). The `*_bin` images include the bootloader + partition table for first-time flashing; the bare `keys` / `max2` images are app-only for OTA updates.

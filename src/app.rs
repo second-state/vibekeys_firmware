@@ -976,31 +976,53 @@ pub async fn listen_all_keys(
         tokio::select! {
             biased;
             _ = btn_custom.wait_for_falling_edge() => {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if !btn_custom.is_low() {
+                    continue
+                }
                 let _ = tx.send(Event::Custom).await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             _ = btn_next.wait_for_falling_edge() => {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if !btn_next.is_low() {
+                    continue
+                }
                 let _ = tx.send(Event::NEXT).await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             _ = btn_switch.wait_for_falling_edge() => {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if !btn_switch.is_low() {
+                    continue
+                }
                 let _ = tx.send(Event::SwitchMode).await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             _ = btn_esc.wait_for_falling_edge() => {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if !btn_esc.is_low() {
+                    continue
+                }
                 let _ = tx.send(Event::Esc).await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             _ = btn_accept.wait_for_falling_edge() => {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if !btn_accept.is_low() {
+                    continue
+                }
                 let _ = tx.send(Event::Accept).await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             _ = rot_push.wait_for_falling_edge() => {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if !rot_push.is_low() {
+                    continue
+                }
                 let _ = tx.send(Event::RotatePush).await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             // Backspace:首次 + 长按连发(每 200ms 一次,直到松开)。
             _ = btn_backspace.wait_for_falling_edge() => {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if !btn_backspace.is_low() {
+                    continue
+                }
                 let _ = tx.send(Event::Backspace).await;
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 while btn_backspace.is_low() {

@@ -972,68 +972,75 @@ pub async fn listen_all_keys(
     tx: crate::audio::EventTx,
 ) -> anyhow::Result<()> {
     use std::time::Duration;
+    // 消抖参数:边沿后等 N ms 再确认 is_low(),过滤机械抖动。
+    const KEY_DEBOUNCE: Duration = Duration::from_millis(30);
+    const ROTATE_DEBOUNCE: Duration = Duration::from_millis(30);
+    // Backspace 长按连发:首次延迟 + 连发间隔。
+    const BACKSPACE_REPEAT_DELAY: Duration = Duration::from_millis(200);
+    const BACKSPACE_REPEAT_INTERVAL: Duration = Duration::from_millis(100);
     loop {
         tokio::select! {
             biased;
             _ = btn_custom.wait_for_falling_edge() => {
-                tokio::time::sleep(Duration::from_millis(30)).await;
+                tokio::time::sleep(KEY_DEBOUNCE).await;
                 if !btn_custom.is_low() {
                     continue
                 }
                 let _ = tx.send(Event::Custom).await;
             }
             _ = btn_next.wait_for_falling_edge() => {
-                tokio::time::sleep(Duration::from_millis(30)).await;
+                tokio::time::sleep(KEY_DEBOUNCE).await;
                 if !btn_next.is_low() {
                     continue
                 }
                 let _ = tx.send(Event::NEXT).await;
             }
             _ = btn_switch.wait_for_falling_edge() => {
-                tokio::time::sleep(Duration::from_millis(30)).await;
+                tokio::time::sleep(KEY_DEBOUNCE).await;
                 if !btn_switch.is_low() {
                     continue
                 }
                 let _ = tx.send(Event::SwitchMode).await;
             }
             _ = btn_esc.wait_for_falling_edge() => {
-                tokio::time::sleep(Duration::from_millis(30)).await;
+                tokio::time::sleep(KEY_DEBOUNCE).await;
                 if !btn_esc.is_low() {
                     continue
                 }
                 let _ = tx.send(Event::Esc).await;
             }
             _ = btn_accept.wait_for_falling_edge() => {
-                tokio::time::sleep(Duration::from_millis(30)).await;
+                tokio::time::sleep(KEY_DEBOUNCE).await;
                 if !btn_accept.is_low() {
                     continue
                 }
                 let _ = tx.send(Event::Accept).await;
             }
             _ = rot_push.wait_for_falling_edge() => {
-                tokio::time::sleep(Duration::from_millis(30)).await;
+                tokio::time::sleep(KEY_DEBOUNCE).await;
                 if !rot_push.is_low() {
                     continue
                 }
                 let _ = tx.send(Event::RotatePush).await;
             }
-            // Backspace:首次 + 长按连发(每 200ms 一次,直到松开)。
+            // Backspace:首次 + 长按连发(每 BACKSPACE_REPEAT_INTERVAL 一次,直到松开)。
             _ = btn_backspace.wait_for_falling_edge() => {
-                tokio::time::sleep(Duration::from_millis(30)).await;
+                tokio::time::sleep(KEY_DEBOUNCE).await;
                 if !btn_backspace.is_low() {
                     continue
                 }
                 let _ = tx.send(Event::Backspace).await;
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::sleep(BACKSPACE_REPEAT_DELAY).await;
                 while btn_backspace.is_low() {
                     let _ = tx.send(Event::Backspace).await;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::sleep(BACKSPACE_REPEAT_INTERVAL).await;
                 }
             }
             // 旋钮 A 任一边沿:正交解码。A 高→B 高=Up/B 低=Down;A 低→B 低=Up/B 高=Down。
             _ = rot_a.wait_for_any_edge() => {
                 let up = if rot_a.is_high() { rot_b.is_high() } else { rot_b.is_low() };
                 let _ = tx.send(if up { Event::RotateUp } else { Event::RotateDown }).await;
+                tokio::time::sleep(ROTATE_DEBOUNCE).await;
             }
         }
     }

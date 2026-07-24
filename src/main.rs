@@ -550,7 +550,8 @@ fn main() -> anyhow::Result<()> {
                     .expect("key-thread runtime");
                 rt.block_on(app::listen_all_keys(
                     btn2, btn4, btn5, btn6, btn3, btn7, pin16, pin17, pin18, key_tx,
-                )).unwrap();
+                ))
+                .unwrap();
             })?;
     }
 

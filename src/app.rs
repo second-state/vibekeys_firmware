@@ -501,9 +501,13 @@ pub async fn run(
                 crate::mqtt::MqttEvent::Presence { prefix, online } => {
                     if online {
                         log::info!("Session registered: {prefix}");
-                    } else {
-                        log::info!("Session went offline: {prefix}");
-                        let _ = popup.show(ui.display_mut(), "session offline");
+                    } else if !server.has_active() {
+                        // 活跃会话下线(LWT),active 已被 mqtt 层置 None。回 session list 重新选。
+                        log::info!("Active session went offline: {prefix}");
+                        let _ = popup.hide(ui.display_mut());
+                        ui.clear_terminal();
+                        let _ =
+                            open_session_picker(&mut server, ui, &mut rx, &mut popup, false).await;
                     }
                 }
                 crate::mqtt::MqttEvent::Disconnected => {

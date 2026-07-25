@@ -430,10 +430,10 @@ impl MqttServer {
     /// 走 `{P}/control` 的 JSON(serde 邻接标签 `{"type":..,"data":..}` 已与服务端对齐)。
     /// 目标 = 用户选定的活跃会话(与 screen 订阅是否已落实无关)。
     pub async fn send(&mut self, msg: ClientMessage) -> anyhow::Result<()> {
-        let prefix = self
-            .active
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("No active vibetty session"))?;
+        let Some(prefix) = self.active.clone() else {
+            log::debug!("send: no active session, dropping message");
+            return Ok(());
+        };
 
         match msg {
             ClientMessage::PtyInput(bytes) => {
@@ -463,6 +463,11 @@ impl MqttServer {
     }
 
     /// 活跃会话是否走 text 模式(`/screen_text`)。无活跃会话返回 false。
+    /// 当前是否有活跃会话。
+    pub fn has_active(&self) -> bool {
+        self.active.is_some()
+    }
+
     pub fn active_uses_text_screen(&self) -> bool {
         self.active
             .as_ref()

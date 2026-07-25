@@ -682,6 +682,12 @@ impl UI {
             parser.process(bytes);
         }
 
+        // 全屏基线:如果可见窗口全是空行(内容不足画布高),往上翻到有内容的位置。
+        // 避免 offset=bottom 对着全空行显示黑屏。
+        if full_frame {
+            self.align_offset_to_content();
+        }
+
         if full_frame {
             // 全屏基线:清掉 cell 外的底部留白,整窗重画,整屏 flush(基线不频繁)。
             self.display.clear(ColorFormat::CSS_BLACK)?;
@@ -734,16 +740,83 @@ impl UI {
         Ok(dirty)
     }
 
+    /// 如果当前可见窗口 `[offset, offset+visible)` 全是空行,往上翻一屏再查,
+    /// 直到找到有内容的窗口或到画布顶(offset=0)。
+    /// 用于 sync 后画布内容不足(底部全空):避免对着黑屏。
+    fn align_offset_to_content(&mut self) {
+        let new_offset = {
+            let Some(parser) = self.terminal_parser.as_ref() else {
+                return;
+            };
+            let visible = terminal_visible_rows();
+            let cols = terminal_text_cells().0;
+            let canvas_rows = terminal_text_cells().1;
+            let screen = parser.screen();
+            let mut offset = self.terminal_offset;
+            loop {
+                let end = (offset + visible).min(canvas_rows);
+                let mut has_content = false;
+                'outer: for row in offset..end {
+                    for col in 0..cols {
+                        if let Some(cell) = screen.cell(row, col) {
+                            if !cell.contents().trim().is_empty() {
+                                has_content = true;
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+                if has_content || offset == 0 {
+                    break;
+                }
+                offset = offset.saturating_sub(visible);
+            }
+            offset
+        };
+        if new_offset != self.terminal_offset {
+            log::info!(
+                "align_offset_to_content: {} -> {}",
+                self.terminal_offset,
+                new_offset
+            );
+            self.terminal_offset = new_offset;
+        }
+    }
+
+    /// 返回向下滚动的最大 offset(内容末行对齐到窗口底),防止旋钮转入空白区。
+    /// 从画布底部往上找最后一个有内容的行,据此算 max offset。
+    fn terminal_content_bottom_offset(&self) -> u16 {
+        let Some(parser) = self.terminal_parser.as_ref() else {
+            return 0;
+        };
+        let cols = terminal_text_cells().0;
+        let canvas_rows = terminal_text_cells().1;
+        let visible = terminal_visible_rows();
+        let canvas_bottom = canvas_rows.saturating_sub(visible);
+        let screen = parser.screen();
+        // 从底部往上找最后一个有内容的行。
+        for row in (0..canvas_rows).rev() {
+            for col in 0..cols {
+                if let Some(cell) = screen.cell(row, col) {
+                    if !cell.contents().trim().is_empty() {
+                        return (row + 1).saturating_sub(visible).min(canvas_bottom);
+                    }
+                }
+            }
+        }
+        0 // 整个画布全空
+    }
+
     /// 本地平移 text 终端窗口(改 `terminal_offset`,在 3 屏画布内上下移动可见窗)。
-    /// 成功移动返回 true;已在画布顶/底(偏移未变)返回 false——调用方据此回退到 MQTT
+    /// 成功移动返回 true;已在内容顶/底(偏移未变)返回 false——调用方据此回退到 MQTT
     /// 翻页(到顶发 scroll_up 向服务端要更早的历史)。
+    /// 向下的上限不是画布底,而是内容末行(terminal_content_bottom_offset),防止转入空白区。
     pub fn scroll_terminal_text(&mut self, direction: TerminalScroll) -> anyhow::Result<bool> {
         if self.terminal_parser.is_none() {
             return Ok(false);
         }
         let visible = terminal_visible_rows();
-        let canvas_rows = terminal_text_cells().1;
-        let bottom = canvas_rows.saturating_sub(visible);
+        let content_bottom = self.terminal_content_bottom_offset();
         let before = self.terminal_offset;
         // 每格滚半屏(行对齐)。
         let step = (visible / 2).max(1);
@@ -751,9 +824,9 @@ impl UI {
             TerminalScroll::Up => before.saturating_sub(step), // 看更老 → 窗口上移
             TerminalScroll::Down => before.saturating_add(step), // 看更新 → 窗口下移
         }
-        .min(bottom);
+        .min(content_bottom);
         if next == before {
-            return Ok(false); // 已到画布顶/底
+            return Ok(false); // 已到内容顶/底
         }
 
         log::info!("local text pan: offset {before} -> {next}");

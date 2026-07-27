@@ -380,7 +380,44 @@ impl AsrResult {
     }
 }
 
-pub struct Driver(I2sDriver<'static, I2sRx>);
+pub struct Driver {
+    i2s: I2sDriver<'static, I2sRx>,
+    /// 缓存的 Whisper HTTP 客户端(keep-alive),跨多次 ASR 调用复用,避免每次重新 TLS 握手。
+    whisper: Option<WhisperHttpClient>,
+}
+
+/// 带 keep-alive 的 Whisper HTTP 客户端,缓存在 Driver 里复用。
+type HttpClient = embedded_svc::http::client::Client<esp_idf_svc::http::client::EspHttpConnection>;
+
+struct WhisperHttpClient {
+    uri: String,
+    api_key: String,
+    client: HttpClient,
+}
+
+// EspHttpConnection 内部含 raw pointer(*mut esp_http_client),不是 Send。
+// 但 ASR worker 是单线程独占使用,实际安全。
+unsafe impl Send for WhisperHttpClient {}
+
+struct WhisperAttemptError {
+    error: anyhow::Error,
+    can_retry: bool,
+}
+
+impl WhisperAttemptError {
+    fn retryable(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            error: error.into(),
+            can_retry: true,
+        }
+    }
+    fn fatal(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            error: error.into(),
+            can_retry: false,
+        }
+    }
+}
 
 impl Driver {
     pub fn new(worker: AudioWorker) -> anyhow::Result<Self> {
@@ -408,15 +445,169 @@ impl Driver {
         .map_err(|e| anyhow::anyhow!("Error create RX: {:?}", e))?;
         rx_driver.rx_enable()?;
 
-        Ok(Self(rx_driver))
+        Ok(Self {
+            i2s: rx_driver,
+            whisper: None,
+        })
     }
 
     pub fn read(&mut self, buffer: &mut [u8]) -> anyhow::Result<usize> {
         let len = self
-            .0
+            .i2s
             .read(buffer, esp_idf_svc::hal::delay::TickType::new_millis(100).0)?;
 
         Ok(len)
+    }
+
+    fn new_whisper_client(uri: &str, api_key: &str) -> anyhow::Result<WhisperHttpClient> {
+        #[inline]
+        unsafe extern "C" fn wrap_esp_crt_bundle_attach(conf: *mut ::core::ffi::c_void) -> i32 {
+            esp_idf_svc::sys::esp_crt_bundle_attach(conf)
+        }
+
+        let config = esp_idf_svc::http::client::Configuration {
+            crt_bundle_attach: Some(wrap_esp_crt_bundle_attach),
+            keep_alive_enable: true,
+            ..Default::default()
+        };
+        let conn = esp_idf_svc::http::client::EspHttpConnection::new(&config)?;
+        let client = embedded_svc::http::client::Client::wrap(conn);
+        log::info!("Created ASR HTTP keep-alive client for {uri}");
+
+        Ok(WhisperHttpClient {
+            uri: uri.to_string(),
+            api_key: api_key.to_string(),
+            client,
+        })
+    }
+
+    fn ensure_whisper_client(&mut self, uri: &str, api_key: &str) -> anyhow::Result<()> {
+        let reuse = self
+            .whisper
+            .as_ref()
+            .is_some_and(|c| c.uri == uri && c.api_key == api_key);
+        if !reuse {
+            self.whisper = Some(Self::new_whisper_client(uri, api_key)?);
+        }
+        Ok(())
+    }
+
+    fn start_whisper_once(
+        &mut self,
+        uri: &str,
+        api_key: &str,
+        model: &str,
+        on_start_listen: &mut impl FnMut(),
+        is_stop: &mut impl FnMut() -> bool,
+    ) -> Result<String, WhisperAttemptError> {
+        self.ensure_whisper_client(uri, api_key)
+            .map_err(WhisperAttemptError::retryable)?;
+        let mut whisper = self
+            .whisper
+            .take()
+            .ok_or_else(|| WhisperAttemptError::retryable(anyhow::anyhow!("ASR client missing")))?;
+
+        let result = self.start_whisper_with_client(
+            &mut whisper.client,
+            uri,
+            api_key,
+            model,
+            on_start_listen,
+            is_stop,
+        );
+        if result.is_ok() {
+            self.whisper = Some(whisper);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_whisper_with_client(
+        &mut self,
+        client: &mut HttpClient,
+        uri: &str,
+        api_key: &str,
+        model: &str,
+        on_start_listen: &mut impl FnMut(),
+        is_stop: &mut impl FnMut() -> bool,
+    ) -> Result<String, WhisperAttemptError> {
+        let boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        let authorization = format!("Bearer {api_key}");
+        let headers_with_auth = [
+            ("Content-Type", content_type.as_str()),
+            ("Authorization", authorization.as_str()),
+            ("Connection", "keep-alive"),
+        ];
+        let headers_without_auth = [
+            ("Content-Type", content_type.as_str()),
+            ("Connection", "keep-alive"),
+        ];
+        let headers = if api_key.is_empty() {
+            &headers_without_auth[..]
+        } else {
+            &headers_with_auth[..]
+        };
+
+        let mut req = client
+            .post(uri, headers)
+            .map_err(WhisperAttemptError::retryable)?;
+
+        let header = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
+        );
+        req.write(header.as_bytes())
+            .map_err(WhisperAttemptError::retryable)?;
+
+        let wav_header = crate::util::create_unlimited_wav_header(&crate::util::WavConfig {
+            sample_rate: SAMPLE_RATE,
+            channels: 1,
+            bits_per_sample: 16,
+        });
+        req.write(&wav_header)
+            .map_err(WhisperAttemptError::retryable)?;
+
+        on_start_listen();
+
+        let mut buffer = vec![0u8; 2 * SAMPLE_RATE as usize / 10];
+        let max_chunks = 10 * 30; // 30s
+        for _ in 0..max_chunks {
+            if is_stop() {
+                break;
+            }
+            let len = self.read(&mut buffer).map_err(WhisperAttemptError::fatal)?;
+            if len > 0 {
+                req.write(&buffer[..len])
+                    .map_err(WhisperAttemptError::fatal)?;
+            }
+        }
+
+        let model_field = format!(
+            "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n"
+        );
+        req.write(model_field.as_bytes())
+            .map_err(WhisperAttemptError::fatal)?;
+        let footer = format!("--{boundary}--");
+        req.write(footer.as_bytes())
+            .map_err(WhisperAttemptError::fatal)?;
+        req.flush().map_err(WhisperAttemptError::fatal)?;
+
+        let mut resp = req.submit().map_err(WhisperAttemptError::fatal)?;
+        log::info!("ASR response status: {}", resp.status());
+        let bytes_read = embedded_svc::utils::io::try_read_full(&mut resp, &mut buffer)
+            .map_err(|e| WhisperAttemptError::fatal(e.0))?;
+        let resp_body = std::str::from_utf8(&buffer[..bytes_read])
+            .map_err(|e| WhisperAttemptError::fatal(e))?;
+        let asr_result: AsrResult =
+            serde_json::from_str(resp_body).map_err(|e| WhisperAttemptError::fatal(e))?;
+        if let Some(ref e) = asr_result.error {
+            log::error!(
+                "ASR error: {}",
+                serde_json::to_string(e).unwrap_or_default()
+            );
+        }
+
+        Ok(asr_result.parse_text())
     }
 
     pub fn start_whisper(
@@ -427,91 +618,24 @@ impl Driver {
         mut on_start_listen: impl FnMut(),
         mut is_stop: impl FnMut() -> bool,
     ) -> anyhow::Result<String> {
-        let config = esp_idf_svc::http::client::Configuration {
-            crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
-            ..Default::default()
-        };
-        let conn = esp_idf_svc::http::client::EspHttpConnection::new(&config)?;
-        let mut client = embedded_svc::http::client::Client::wrap(conn);
-
-        // 手动构造 multipart
-        let boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
-        let content_type = format!("multipart/form-data; boundary={}", boundary);
-
-        let header_value = format!("Bearer {}", api_key);
-
-        let headers = [
-            ("Content-Type", content_type.as_str()),
-            ("Authorization", header_value.as_str()),
-        ];
-        let mut req: esp_idf_svc::http::client::Request<
-            &mut esp_idf_svc::http::client::EspHttpConnection,
-        > = client.post(
-            uri,
-            if api_key.is_empty() {
-                &headers[..1]
-            } else {
-                &headers
-            },
-        )?;
-
-        // 写 multipart 头部
-        let header = format!(
-            "--{}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n",
-            boundary
-        );
-        req.write(header.as_bytes())?;
-
-        let wav_header = crate::util::create_unlimited_wav_header(&crate::util::WavConfig {
-            sample_rate: SAMPLE_RATE,
-            channels: 1,
-            bits_per_sample: 16,
-        });
-        req.write(&wav_header)?;
-
-        on_start_listen();
-
-        // 边录边写音频数据
-        let mut buffer = vec![0u8; 2 * SAMPLE_RATE as usize / 10];
-        let max_chunks = 10 * 30; // 30s
-
-        for _ in 0..max_chunks {
-            if is_stop() {
-                break;
+        let had_cached_client = self.whisper.is_some();
+        match self.start_whisper_once(uri, api_key, model, &mut on_start_listen, &mut is_stop) {
+            Ok(text) => Ok(text),
+            Err(e) if e.can_retry && had_cached_client => {
+                // keep-alive 连接可能已断(长时间未用),丢弃缓存,重建后重试一次。
+                log::warn!(
+                    "ASR keep-alive connection failed; reconnecting: {:?}",
+                    e.error
+                );
+                self.whisper = None;
+                self.start_whisper_once(uri, api_key, model, &mut on_start_listen, &mut is_stop)
+                    .map_err(|e| e.error)
             }
-            let len = self.read(&mut buffer)?;
-            if len > 0 {
-                let n = req.write(&buffer[..len])?;
-                log::debug!("Wrote {} bytes of audio data", n);
+            Err(e) => {
+                self.whisper = None;
+                Err(e.error)
             }
         }
-
-        // 写 model 字段
-        let model_field = format!(
-            "\r\n--{}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{}\r\n",
-            boundary, model
-        );
-        req.write(model_field.as_bytes())?;
-
-        // 写结束标记
-        let footer = format!("--{}--", boundary);
-        req.write(footer.as_bytes())?;
-        req.flush()?;
-        let mut resp = req.submit()?;
-        // buffer.clear();
-        log::info!("resp code: {}", resp.status());
-        let bytes_read =
-            embedded_svc::utils::io::try_read_full(&mut resp, &mut buffer).map_err(|e| e.0)?;
-        let resp_body = std::str::from_utf8(&buffer[0..bytes_read])?;
-        let asr_result: AsrResult = serde_json::from_str(resp_body)?;
-        log::info!("{asr_result:?}");
-        if let Some(ref e) = asr_result.error {
-            log::error!("error: {}", serde_json::to_string(e).unwrap())
-        }
-
-        // let v = serde_json::from_str::<serde_json::Value>(resp_body)?;
-
-        Ok(asr_result.parse_text())
     }
 
     pub fn start_asr<F: FnMut() -> bool, F2: FnMut()>(

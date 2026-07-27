@@ -97,6 +97,17 @@ pub fn run(
 
     let ip = wifi.sta_netif().get_ip_info()?.ip;
     log::info!("OTA: WiFi connected, IP {}", ip);
+
+    // 同步时间:OTA download-latest 走 HTTPS(TLS),证书校验依赖正确时间。
+    // WiFi 已连上,可以 NTP。失败不阻塞——HTTP 上传不需要 TLS,download-latest 才需要。
+    crate::lcd::display_text(target, "OTA Mode\n Syncing time...", 0)?;
+    if let Err(e) = crate::sync_time(target) {
+        log::warn!(
+            "OTA: time sync failed (download-latest may fail TLS): {:?}",
+            e
+        );
+    }
+
     crate::lcd::display_text(
         target,
         &format!(

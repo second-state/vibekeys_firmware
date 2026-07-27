@@ -47,7 +47,7 @@ enum TimeSyncFailureAction {
     Exit,
 }
 
-pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
+pub fn sync_time(display_target: &mut crate::lcd::FrameBuffer) -> anyhow::Result<()> {
     use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode, SyncStatus};
 
     log_heap();

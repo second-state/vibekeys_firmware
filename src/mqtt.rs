@@ -130,6 +130,14 @@ impl ScreenFormat {
             Self::High | Self::Medium | Self::Low => "screen",
         }
     }
+
+    /// text 模式用 QoS1(至少一次,丢帧会导致终端状态不一致);JPEG 用 QoS0(丢帧无所谓)。
+    fn screen_qos(self) -> QoS {
+        match self {
+            Self::Text => QoS::AtLeastOnce,
+            Self::High | Self::Medium | Self::Low => QoS::AtMostOnce,
+        }
+    }
 }
 
 /// session 列表单行字符上限。取 15:最坏全角中文 15×12px=180px,默认屏(284)/max2(320)都单行不溢出。
@@ -261,11 +269,17 @@ impl MqttServer {
             self.reassembly.clear();
         }
 
-        // 再订阅新活跃会话的 screen/screen_text
+        // 再订阅新活跃会话的 screen/screen_text(QoS 按格式:text→1, JPEG→0)。
         if let Some(new_topic) = next_topic {
-            log::info!("Subscribing session screen topic: {new_topic}");
+            let qos = self
+                .active
+                .as_ref()
+                .and_then(|p| self.sessions.get(p))
+                .map(|s| s.format.screen_qos())
+                .unwrap_or(QoS::AtMostOnce);
+            log::info!("Subscribing session screen topic: {new_topic} (QoS {qos:?})");
             self.client
-                .subscribe(&new_topic, QoS::AtMostOnce)
+                .subscribe(&new_topic, qos)
                 .map_err(|e| anyhow::anyhow!("subscribe screen failed: {e:?}"))?;
             self.subscribed_screen_topic = Some(new_topic);
         }

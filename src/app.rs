@@ -153,6 +153,8 @@ pub async fn run(
     loop {
         // 把 desired_prefix 落实为 subscribe(必须在 select 之外,不可被取消)。
         server.flush_pending().await?;
+        // 兜底补刷节流积攒的终端内容(防止 burst 尾帧丢失)。
+        ui.maybe_flush_pending_terminal()?;
 
         // 事件获取带轮询超时:无事件时每 POLL_INTERVAL 醒来一次,检查 pending 是否超时
         // (vibetty 到顶/到底不发图 → 翻页请求永远等不到响应,超时清掉才能恢复滚动)。
@@ -752,7 +754,9 @@ async fn open_session_picker(
                 // 切了活跃会话:丢弃旧 text 终端状态(若是 text→JPEG 或换会话),
                 // 新会话若是 text 会在首帧 ActiveText 重建。
                 ui.clear_terminal();
-                // 让新活跃会话立刻推一帧,免得干等下一帧。text 模式发 sync_cells,JPEG 发像素 sync。
+                // 先落实订阅(退订旧 screen topic + 订新的),再发 sync 要首帧——
+                // 否则 sync 响应可能在订阅建立前到达,被漏掉。
+                server.flush_pending().await?;
                 let _ = send_active_sync(server, false).await;
                 let label = labels
                     .iter()

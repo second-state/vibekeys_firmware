@@ -519,6 +519,9 @@ pub struct UI {
     /// 上次 delta 帧实际渲染的时刻。delta 节流用:距上次渲染不足 TERMINAL_RENDER_MIN_INTERVAL
     /// 时只把文本喂进 vt100、不 render(PTY 高频输出时减少渲染/flush 次数)。
     terminal_last_render: Option<std::time::Instant>,
+    /// delta 帧被节流(process 了但没 render)时置 true,主循环兜底补刷。
+    /// 防止 burst 最后几帧被吞:输出停了之后没有新 delta 触发渲染,这些变更永远不显示。
+    terminal_render_pending: bool,
 }
 
 /// 终端画布是物理屏高的几倍。renderer/parser/sync 都按这个高度,本地用 render_rows 只显示
@@ -598,6 +601,7 @@ impl UI {
             terminal_renderer: None,
             terminal_offset: 0,
             terminal_last_render: None,
+            terminal_render_pending: false,
         }
     }
 
@@ -609,6 +613,7 @@ impl UI {
             terminal_renderer: None,
             terminal_offset: 0,
             terminal_last_render: None,
+            terminal_render_pending: false,
         }
     }
 
@@ -704,13 +709,39 @@ impl UI {
                 .unwrap_or(false);
             if throttle {
                 log::debug!("screen_text delta throttled (only processed into vt100)");
+                // 标记有待刷新的内容,主循环兜底补刷(防止 burst 尾帧丢失)。
+                self.terminal_render_pending = true;
             } else {
                 if let Some(rect) = self.render_terminal_window_diff(false)? {
                     self.display.flush_rect(rect)?;
                 }
                 self.terminal_last_render = Some(now);
+                self.terminal_render_pending = false;
             }
         }
+        Ok(())
+    }
+
+    /// 主循环兜底补刷:如果有节流时积攒的未渲染内容(terminal_render_pending)且距上次
+    /// 渲染已 ≥100ms,就补刷一次。防止 burst 最后几帧 delta 被吞(输出停了没有新 delta
+    /// 触发渲染,那些变更永远不显示)。主循环每轮(事件或 500ms 超时)调一次。
+    pub fn maybe_flush_pending_terminal(&mut self) -> anyhow::Result<()> {
+        if !self.terminal_render_pending {
+            return Ok(());
+        }
+        let now = std::time::Instant::now();
+        let still_throttled = self
+            .terminal_last_render
+            .map(|t| now.duration_since(t) < TERMINAL_RENDER_MIN_INTERVAL)
+            .unwrap_or(false);
+        if still_throttled {
+            return Ok(());
+        }
+        if let Some(rect) = self.render_terminal_window_diff(false)? {
+            self.display.flush_rect(rect)?;
+        }
+        self.terminal_last_render = Some(now);
+        self.terminal_render_pending = false;
         Ok(())
     }
 
@@ -855,7 +886,7 @@ impl UI {
         self.terminal_parser = None;
         self.terminal_offset = 0;
         self.terminal_last_render = None;
-        // renderer 保留复用(字形缓存);若担心内存可一并清空,这里保守保留。
+        self.terminal_render_pending = false;
     }
 
     // ========== 辅助方法 ==========

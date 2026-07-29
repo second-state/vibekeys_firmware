@@ -1,12 +1,6 @@
 name: GitHub Pages
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "docs/pages/**"
-      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 # Pages 部署需要这个 token。
@@ -30,6 +24,9 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
+      - name: Set up homepage
+        run: cp assets/setup.html docs/pages/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

@@ -20,7 +20,7 @@ VibeKeys 是一套运行在 **ESP32-S3** 上的 Rust 固件,把一块带屏幕�
 - **ASR(语音输入)**:PTT(按住说话)/ Toggle(点按开关)两种触发方式;识别走 HTTP Whisper 服务(在 `setup.html` 配 `asr_config`:`uri` / `api_key` / `model`),可在设置里开关「优先内置 ASR」。
 - **双格式远程屏幕**:JPEG 模式(整帧图片,长缓冲本地滚屏)与 text 模式(vt100 终端模拟,含 ANSI 颜色,增量脏区渲染)。固件根据 vibetty 的 presence 公告自动检测格式。
 - **LCD UI**:SPI 屏渲染键盘视图 / 远程视图 / 终端 / 状态提示;可选 I2C OLED(`i2c_oled`)。
-- **Web 配网**:AP/OTA 模式下访问 `setup.html`,配置 WiFi、MQTT broker、ASR、MIC 模式等,参数存 NVS。
+- **Web 配网**:设备处于 **Keyboard 模式**时,访问 `setup.html` 通过 Web Bluetooth 配置 WiFi、MQTT broker、ASR、MIC 模式等,参数存 NVS。
 - **双分区 OTA**:固件把新镜像写到非活跃 OTA 分区,重启进入。两种更新来源:浏览器上传(HTTP PUT),或直接从 GitHub release **download-latest**。
 - **SNTP**:并发查询多个 NTP 服务器(用于 HTTPS 证书校验)。
 
@@ -99,6 +99,22 @@ VibeKeys 是一套运行在 **ESP32-S3** 上的 Rust 固件,把一块带屏幕�
 - 列表顺序 = 优先级:扫描结果里出现的、排在最前的 SSID 胜出。
 - NVS 中最多存 **8** 组凭据(`MAX_WIFI_CREDS`)。
 - 所有模式都共用同一份列表、同一套优先级逻辑——所以 OTA 升级时也能从你当前所在的位置联网。
+
+## 配网(Web 配置)
+
+固件的配置(WiFi 列表、MQTT broker URL、ASR 服务、MIC 模式等)存在 NVS,开机时读取。所有配置都通过一个网页 —— **`setup.html`** —— 来设置,现已托管上线:
+
+> 🌐 **打开配网页面:** <https://second-state.github.io/vibekeys_firmware/>
+
+这个页面给本硬件配置 **WiFi** 和 **MQTT broker URL**(以及其余设置)。它通过 **Web Bluetooth(BLE)** 跟设备通信,不用线、不用装 App:
+
+1. 把设备开机进入 **Keyboard 模式**(开机菜单里选)。此模式下设备会广播一个 BLE GATT 服务,暴露其配置。
+2. 在支持 Web Bluetooth 的浏览器(Chrome / Edge,需 HTTPS)打开上面的配网页面,点 **Connect to VibeKeys**。
+3. 选到设备,填入你的 WiFi 列表、MQTT broker URL、ASR / MIC 等设置并保存 —— 页面会通过 BLE 把配置写进设备,设备存入 NVS。
+
+> 💡 **在列表里找不到设备?** 设备一旦被主机(你的 PC / 手机)作为键盘连上,就会停止 BLE 广播。在设备上按一下 **ACCEPT** 键重新开启 BLE 广播,然后再试一次连接。
+
+设置有变动时随时可以再来配。
 
 ## 硬件
 

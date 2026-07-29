@@ -20,7 +20,7 @@ VibeKeys is a Rust firmware for the **ESP32-S3** that turns a piece of custom ha
 - **ASR (voice input)**: two trigger styles — PTT (push-to-talk) and Toggle (tap to toggle); recognition is done by an HTTP Whisper service (set `asr_config` in `setup.html`: `uri` / `api_key` / `model`); "prefer built-in ASR" can be toggled in settings.
 - **Dual-format remote screen**: JPEG mode (full-frame images, long buffer for local scroll-back) and text mode (vt100 terminal emulation with ANSI colors, incremental dirty-rect rendering). The firmware auto-detects the format from vibetty's presence announcement.
 - **LCD UI**: the SPI display renders the keyboard view / remote view / terminal / status; optional I2C OLED (`i2c_oled`).
-- **Web provisioning**: in AP/OTA mode, open `setup.html` to configure WiFi, MQTT broker, ASR, MIC mode, etc.; stored in NVS.
+- **Web provisioning**: with the device in **Keyboard mode**, open `setup.html` to configure WiFi, MQTT broker, ASR, MIC mode, etc. over Web Bluetooth; stored in NVS.
 - **Dual-partition OTA**: the firmware writes the new image to the inactive OTA partition and reboots into it. Two update sources: browser upload (HTTP PUT), or **download-latest** directly from GitHub releases.
 - **SNTP**: queries multiple NTP servers in parallel (for HTTPS certificate validation).
 
@@ -99,6 +99,22 @@ The point of a list is **mobility**: so the device can follow you between places
 - List order = priority: the first entry whose SSID is visible in the scan wins.
 - Up to **8** credentials are stored in NVS (`MAX_WIFI_CREDS`).
 - Every mode and the OTA rescue firmware share the same list and the same priority logic, so an over-the-air update also connects from wherever you are.
+
+## Setup (web provisioning)
+
+The firmware stores its configuration (WiFi networks, MQTT broker URL, ASR service, MIC mode, etc.) in NVS and reads it on boot. You configure all of it through a single web page — **`setup.html`** — which is now hosted online:
+
+> 🌐 **Open the provisioning page:** <https://second-state.github.io/vibekeys_firmware/>
+
+This page configures **WiFi** and the **MQTT broker URL** (and the rest of the settings) for this hardware. It talks to the device over **Web Bluetooth (BLE)** — no cable, no app:
+
+1. Boot the device into **Keyboard mode** (from the boot menu). In this mode the device advertises a BLE GATT service that exposes its configuration.
+2. Open the provisioning page above in a Web-Bluetooth-capable browser (Chrome / Edge, over HTTPS), and click **Connect to VibeKeys**.
+3. Pick the device, fill in your WiFi networks, MQTT broker URL, ASR / MIC settings, etc., and save — the page writes the config to the device over BLE, and the device stores it in NVS.
+
+> 💡 **Can't find the device in the picker?** The device stops BLE advertising once a host (your PC/phone) is already connected to it as a keyboard. Press the **ACCEPT** key on the device to re-start BLE advertising, then try connecting again.
+
+You can re-run this any time settings change.
 
 ## Hardware
 

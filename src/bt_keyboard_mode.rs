@@ -1023,6 +1023,14 @@ impl ControllerService {
 #[derive(Debug)]
 pub enum ControllerCommand {
     DisplayKeyboard(String),
+    /// 多会话状态事件(vibekeys_app 0.3.0):DISPLAY 特性收到
+    /// {"type":"session","sid":"...","proj":"...","st":"..."} 单行 JSON。
+    /// 见 docs/multi-session-ble-protocol.md。
+    SessionEvent {
+        sid: String,
+        proj: String,
+        st: String,
+    },
     KeyboardPress(u8),
     KeyboardRelease(u8),
     RotateDown,
@@ -1046,7 +1054,30 @@ pub fn new_controller_service(
         log::info!("Received data: {:?}", data);
         let s = String::from_utf8_lossy(&data).to_string();
 
-        let _ = tx_.blocking_send(ControllerCommand::DisplayKeyboard(s));
+        // 尝试按会话事件解析(docs/multi-session-ble-protocol.md);任何失败都退回
+        // 纯文本旧逻辑:裸文本(vibekeys send/notify)、非 session JSON、字段缺失/非字符串
+        // 都走 DisplayKeyboard,行为与 0.2.0 一致。高频路径,解析失败不 log error。
+        let session = serde_json::from_str::<serde_json::Value>(&s)
+            .ok()
+            .and_then(|v| {
+                if v.get("type").and_then(|t| t.as_str()) == Some("session") {
+                    Some((
+                        v.get("sid").and_then(|x| x.as_str())?.to_string(),
+                        v.get("proj").and_then(|x| x.as_str())?.to_string(),
+                        v.get("st").and_then(|x| x.as_str())?.to_string(),
+                    ))
+                } else {
+                    None
+                }
+            });
+
+        let result = match session {
+            Some((sid, proj, st)) => {
+                tx_.blocking_send(ControllerCommand::SessionEvent { sid, proj, st })
+            }
+            None => tx_.blocking_send(ControllerCommand::DisplayKeyboard(s)),
+        };
+        let _ = result;
     });
 
     let paster_characteristic = service.create_characteristic(

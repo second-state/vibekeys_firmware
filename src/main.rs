@@ -17,6 +17,7 @@ mod mqtt;
 mod new_jpg;
 mod ota;
 mod protocol;
+mod sessions;
 mod ui;
 mod util;
 mod wifi;
@@ -752,6 +753,8 @@ async fn keyboard_mode_main(
         &format!("Keyboard\n {ble_mac}"),
     );
     let mut popup = ui::popup_centered(display.bounding_box());
+    // 多会话状态表(vibekeys_app 0.3.0 会话事件,docs/multi-session-ble-protocol.md)。
+    let mut sessions = sessions::SessionTable::new();
     loop {
         let event = tokio::select! {
             // Handle setting events (e.g., reset)
@@ -770,6 +773,29 @@ async fn keyboard_mode_main(
                             keymap,
                         );
                         let _ = ui::render_keyboard_view(display, false, false, "keymap updated!");
+                        continue;
+                    }
+                    bt_keyboard_mode::ControllerCommand::SessionEvent { sid, proj, st } => {
+                        // 无效 st 静默丢弃(协议文档:别上屏一坨 JSON)。
+                        match sessions::SessionStatus::parse(&st) {
+                            Some(st) => {
+                                if st == sessions::SessionStatus::End {
+                                    // 协议保留路径:客户端当前不发;发了就显式移除。
+                                    sessions.remove(&sid);
+                                } else {
+                                    sessions.upsert(&sid, &proj, st);
+                                    sessions.remove_expired();
+                                }
+                                let ble_on = ble_device.get_server().connected_count() > 0;
+                                let _ = ui::render_session_view(
+                                    display,
+                                    wifi_on,
+                                    ble_on,
+                                    sessions.list(),
+                                );
+                            }
+                            None => log::warn!("session event with unknown st={st:?}, dropped"),
+                        }
                         continue;
                     }
                     controller_evt => controller_evt,
@@ -985,6 +1011,9 @@ pub async fn handle_key_event(
         }
         bt_keyboard_mode::ControllerCommand::KeymapConfig(_) => {
             // KeymapConfig is handled separately in keyboard_mode_main
+        }
+        bt_keyboard_mode::ControllerCommand::SessionEvent { .. } => {
+            // SessionEvent is handled separately in keyboard_mode_main
         }
     }
 

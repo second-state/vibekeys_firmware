@@ -854,6 +854,74 @@ pub fn render_session_list(
     flush(target)
 }
 
+/// Keyboard 模式的会话列表(样式参考 remote 的 render_session_list:文泉驿字体、
+/// 整行底色表状态)。无选择焦点 —— 键盘模式只展示,不做切换。底色沿用 remote
+/// 视图的配色语言:深绿 = agent 干活中(work/tool/post);深黄 = 等授权(perm,
+/// 高亮提醒);深蓝 = 空闲(note/done);深红 = 失败(err)。文字统一白色。
+/// 排序:非 active(done/note/perm/err,需要用户关注/已结束)排在前面,active
+/// 的往后放 —— 屏幕小,列表可能被截断,要关注的会话必须始终可见。
+pub fn render_session_view(
+    target: &mut FrameBuffer,
+    wifi_on: bool,
+    ble_on: bool,
+    items: &[crate::sessions::SessionEntry],
+) -> anyhow::Result<()> {
+    let bb = target.bounding_box();
+    let width = bb.size.width;
+    let height = bb.size.height;
+    clear(target, ColorFormat::CSS_BLACK)?;
+    draw_status_bar(target, wifi_on, Some(ble_on))?;
+
+    let item_h = LINE_H + 2;
+    let start_y: i32 = STATUS_H as i32 + 2;
+    let visible = (((height as i32) - start_y) / (item_h as i32)).max(1) as usize;
+
+    if items.is_empty() {
+        draw_text(
+            target,
+            "No sessions",
+            Rectangle::new(Point::new(4, start_y), Size::new(width - 4, LINE_H + 2)),
+            ColorFormat::CSS_DARK_GRAY,
+            None,
+            HorizontalAlignment::Left,
+        )?;
+    }
+
+    // 稳定分区:非 active 优先,各组内保持 upsert 先后顺序。
+    let (attention, active): (Vec<&_>, Vec<&_>) = items.iter().partition(|e| !e.st.is_active());
+
+    for (i, e) in attention
+        .iter()
+        .chain(active.iter())
+        .enumerate()
+        .take(visible)
+    {
+        let rect = Rectangle::new(
+            Point::new(0, start_y + (i as i32) * (item_h as i32)),
+            Size::new(width, item_h),
+        );
+        let bg = if e.st.is_perm() {
+            ColorFormat::CSS_DARK_GOLDENROD
+        } else if e.st.is_active() {
+            ColorFormat::CSS_DARK_GREEN
+        } else if e.st == crate::sessions::SessionStatus::Err {
+            ColorFormat::CSS_DARK_RED
+        } else {
+            ColorFormat::CSS_DARK_BLUE
+        };
+        // proj 可含中文(路径末段);后缀 sid 短码用于区分同项目多会话。
+        draw_text_cjk(
+            target,
+            &format!("{} ({})", e.proj, e.sid),
+            rect,
+            ColorFormat::CSS_WHITE,
+            Some(bg),
+            HorizontalAlignment::Left,
+        )?;
+    }
+    flush(target)
+}
+
 fn render_password(
     target: &mut FrameBuffer,
     header: &str,

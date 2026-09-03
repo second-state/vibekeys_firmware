@@ -46,6 +46,19 @@ The custom keys act as a Bluetooth keyboard. Default keymap (overridable via key
 
 **Voice input (MIC)**: when "prefer built-in ASR" is on and an ASR service is configured, MIC triggers recognition. Two trigger styles (set MIC mode in `setup.html`): **PTT** — hold to record, release to send; **Toggle** — tap to start/stop. The recognized text is typed through the Bluetooth keyboard.
 
+#### Multi-session status view
+
+With [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0, the CLI's hooks report agent session states to the device over the BLE display channel (see `docs/multi-session-ble-protocol.md`). Keyboard mode maintains a session table and shows one row per session — `project (sid)` — with the **row background color** marking its status:
+
+| Background | Statuses | Meaning |
+|---|---|---|
+| dark green | `work` / `tool` / `post` | agent is working |
+| dark goldenrod | `perm` | **waiting for your permission** (needs attention) |
+| dark blue | `note` / `done` | idle / finished |
+| dark red | `err` | failed |
+
+Rows are sorted with the attention states (`perm`/`err`/`done`/`note`) on top and actively-working sessions below, so what needs your eyes stays visible on the small screen. Sessions time out and disappear after 30 minutes without any event (the client sends no session-end message).
+
 ### Remote mode (MQTT → vibetty)
 
 Remote mode connects to the vibetty bridge over MQTT. It does **not** bind to a single session — it subscribes to presence for **all of your sessions at once** (`{user}/+/+/vibetty`, retained), so every vibetty terminal you have running shows up, and you can **switch between them on the fly** without reconnecting.

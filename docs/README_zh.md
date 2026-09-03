@@ -46,6 +46,19 @@ VibeKeys 是一套运行在 **ESP32-S3** 上的 Rust 固件,把一块带屏幕�
 
 **语音输入(MIC)**:开启「优先内置 ASR」并配置好 ASR 服务后,MIC 触发识别,两种触发风格(在 `setup.html` 设 MIC 模式):**PTT**——按住录音、松开发送;**Toggle**——点按开始 / 再点停止。识别出的文字通过蓝牙键盘打出。
 
+#### 多会话状态视图
+
+配合 [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0,CLI 的 hooks 会把 agent 会话状态经 BLE DISPLAY 通道上报给设备(协议见 `docs/multi-session-ble-protocol.md`)。键盘模式维护一张会话表,每个会话显示一行 —— `项目 (sid)` —— **整行底色**标记状态:
+
+| 底色 | 状态 | 含义 |
+|---|---|---|
+| 深绿 | `work` / `tool` / `post` | agent 干活中 |
+| 深金 | `perm` | **等你授权**(需要关注) |
+| 深蓝 | `note` / `done` | 空闲 / 已结束 |
+| 深红 | `err` | 失败 |
+
+排序上,需要关注的状态(`perm` / `err` / `done` / `note`)排在前面,干活中的靠后——小屏列表被截断时,要看的会话始终可见。会话超过 30 分钟没有任何事件就自动消失(客户端不发会话结束消息)。
+
 ### 远程模式(MQTT → vibetty)
 
 远程模式经 MQTT 连接 vibetty 桥接。它**不绑定单个会话**——而是一次性订阅**你所有会话**的 presence(`{user}/+/+/vibetty`,retained),所以你每个在跑的 vibetty 终端都会出现,可以**随时在它们之间切换**,无需重连。

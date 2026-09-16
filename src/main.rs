@@ -753,7 +753,7 @@ async fn keyboard_mode_main(
         &format!("Keyboard\n {ble_mac}"),
     );
     let mut popup = ui::popup_centered(display.bounding_box());
-    // 多会话状态表(vibekeys_app 0.3.0 会话事件,vibekeys_app 仓库 docs/session-events.md)。
+    // 多会话状态表(vibekeys_app 0.3.0 会话事件,vibekeys_app 仓库 SessionEvent(src/main.rs))。
     let mut sessions = sessions::SessionTable::new();
     loop {
         let event = tokio::select! {

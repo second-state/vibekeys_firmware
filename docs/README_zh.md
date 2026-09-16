@@ -48,7 +48,7 @@ VibeKeys 是一套运行在 **ESP32-S3** 上的 Rust 固件,把一块带屏幕�
 
 #### 多会话状态视图
 
-配合 [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0,CLI 的 hooks 会把 agent 会话状态经 BLE DISPLAY 通道上报给设备(协议见 [vibekeys_app/docs/session-events.md](https://github.com/second-state/vibekeys_app/blob/main/docs/session-events.md))。键盘模式维护一张会话表,每个会话显示一行 —— `项目 (sid)` —— **整行底色**标记状态:
+配合 [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0,CLI 的 hooks 会把 agent 会话状态经 BLE DISPLAY 通道上报给设备(协议定义见 [vibekeys_app/src/main.rs 的 SessionEvent](https://github.com/second-state/vibekeys_app/blob/main/src/main.rs))。键盘模式维护一张会话表,每个会话显示一行 —— `项目 (sid)` —— **整行底色**标记状态:
 
 | 底色 | 状态 | 含义 |
 |---|---|---|

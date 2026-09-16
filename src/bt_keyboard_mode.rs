@@ -1025,7 +1025,7 @@ pub enum ControllerCommand {
     DisplayKeyboard(String),
     /// 多会话状态事件(vibekeys_app 0.3.0):DISPLAY 特性收到
     /// {"type":"session","sid":"...","proj":"...","st":"...","win_id":"...","os":"..."}
-    /// 单行 JSON;win_id / os 可选。见 vibekeys_app 仓库 docs/session-events.md。
+    /// 单行 JSON;win_id / os 可选。线格式见 vibekeys_app 仓库 SessionEvent(src/main.rs)。
     SessionEvent {
         sid: String,
         proj: String,
@@ -1056,7 +1056,7 @@ pub fn new_controller_service(
         log::info!("Received data: {:?}", data);
         let s = String::from_utf8_lossy(&data).to_string();
 
-        // 尝试按会话事件解析(vibekeys_app 仓库 docs/session-events.md);任何失败都退回
+        // 尝试按会话事件解析(vibekeys_app 仓库 SessionEvent);任何失败都退回
         // 纯文本旧逻辑:裸文本(vibekeys send/notify)、非 session JSON、字段缺失/非字符串
         // 都走 DisplayKeyboard,行为与 0.2.0 一致。高频路径,解析失败不 log error。
         // win_id / os 是可选扩展字段,旧客户端不带不影响解析。

@@ -1,5 +1,5 @@
 //! Keyboard 模式的多会话状态表(对接 vibekeys_app 0.3.0 会话事件协议)。
-//! 协议见 vibekeys_app 仓库的 docs/session-events.md:DISPLAY 特性收到
+//! 协议定义见 vibekeys_app 仓库 src/main.rs 的 SessionEvent:DISPLAY 特性收到
 //! `{"type":"session","ver":1,"sid":"...","proj":"...","st":"..."}` 单行 JSON。
 //!
 //! 客户端 hooks 不订阅 SessionEnd,没有可靠的删除消息 → 由本表按

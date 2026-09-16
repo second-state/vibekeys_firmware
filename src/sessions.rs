@@ -64,6 +64,10 @@ pub struct SessionEntry {
     pub sid: String,
     /// workspace 路径最后一段(项目名)
     pub proj: String,
+    /// 所在窗口 id(tmux/iTerm 等,可选,客户端不给则 None)
+    pub win_id: Option<String>,
+    /// 宿主机操作系统(可选)
+    pub os: Option<String>,
     pub st: SessionStatus,
     last_active: Instant,
 }
@@ -80,9 +84,18 @@ impl SessionTable {
 
     /// 相同 sid upsert(刷新 last_active + 状态);新 sid 追加到尾部。
     /// 容量满时移除最久未活跃的条目。
-    pub fn upsert(&mut self, sid: &str, proj: &str, st: SessionStatus) {
+    pub fn upsert(
+        &mut self,
+        sid: &str,
+        proj: &str,
+        win_id: Option<String>,
+        os: Option<String>,
+        st: SessionStatus,
+    ) {
         if let Some(e) = self.entries.iter_mut().find(|e| e.sid == sid) {
             e.proj = proj.to_string();
+            e.win_id = win_id;
+            e.os = os;
             e.st = st;
             e.last_active = Instant::now();
             return;
@@ -90,6 +103,8 @@ impl SessionTable {
         self.entries.push(SessionEntry {
             sid: sid.to_string(),
             proj: proj.to_string(),
+            win_id,
+            os,
             st,
             last_active: Instant::now(),
         });

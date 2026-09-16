@@ -1024,12 +1024,14 @@ impl ControllerService {
 pub enum ControllerCommand {
     DisplayKeyboard(String),
     /// 多会话状态事件(vibekeys_app 0.3.0):DISPLAY 特性收到
-    /// {"type":"session","sid":"...","proj":"...","st":"..."} 单行 JSON。
-    /// 见 docs/multi-session-ble-protocol.md。
+    /// {"type":"session","sid":"...","proj":"...","st":"...","win_id":"...","os":"..."}
+    /// 单行 JSON;win_id / os 可选。见 docs/multi-session-ble-protocol.md。
     SessionEvent {
         sid: String,
         proj: String,
         st: String,
+        win_id: Option<String>,
+        os: Option<String>,
     },
     KeyboardPress(u8),
     KeyboardRelease(u8),
@@ -1057,6 +1059,7 @@ pub fn new_controller_service(
         // 尝试按会话事件解析(docs/multi-session-ble-protocol.md);任何失败都退回
         // 纯文本旧逻辑:裸文本(vibekeys send/notify)、非 session JSON、字段缺失/非字符串
         // 都走 DisplayKeyboard,行为与 0.2.0 一致。高频路径,解析失败不 log error。
+        // win_id / os 是可选扩展字段,旧客户端不带不影响解析。
         let session = serde_json::from_str::<serde_json::Value>(&s)
             .ok()
             .and_then(|v| {
@@ -1065,6 +1068,10 @@ pub fn new_controller_service(
                         v.get("sid").and_then(|x| x.as_str())?.to_string(),
                         v.get("proj").and_then(|x| x.as_str())?.to_string(),
                         v.get("st").and_then(|x| x.as_str())?.to_string(),
+                        v.get("win_id")
+                            .and_then(|x| x.as_str())
+                            .map(|s| s.to_string()),
+                        v.get("os").and_then(|x| x.as_str()).map(|s| s.to_string()),
                     ))
                 } else {
                     None
@@ -1072,8 +1079,14 @@ pub fn new_controller_service(
             });
 
         let result = match session {
-            Some((sid, proj, st)) => {
-                tx_.blocking_send(ControllerCommand::SessionEvent { sid, proj, st })
+            Some((sid, proj, st, win_id, os)) => {
+                tx_.blocking_send(ControllerCommand::SessionEvent {
+                    sid,
+                    proj,
+                    st,
+                    win_id,
+                    os,
+                })
             }
             None => tx_.blocking_send(ControllerCommand::DisplayKeyboard(s)),
         };

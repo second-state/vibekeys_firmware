@@ -909,10 +909,17 @@ pub fn render_session_view(
         } else {
             ColorFormat::CSS_DARK_BLUE
         };
-        // proj 可含中文(路径末段);后缀 sid 短码用于区分同项目多会话。
+        // proj 可含中文(路径末段);后缀 sid 短码区分同项目多会话,win_id / os 有则带上。
+        let mut label = format!("{} ({})", e.proj, e.sid);
+        if let Some(w) = &e.win_id {
+            label.push_str(&format!(" w{w}"));
+        }
+        if let Some(o) = &e.os {
+            label.push_str(&format!(" {o}"));
+        }
         draw_text_cjk(
             target,
-            &format!("{} ({})", e.proj, e.sid),
+            &label,
             rect,
             ColorFormat::CSS_WHITE,
             Some(bg),

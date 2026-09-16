@@ -775,7 +775,13 @@ async fn keyboard_mode_main(
                         let _ = ui::render_keyboard_view(display, false, false, "keymap updated!");
                         continue;
                     }
-                    bt_keyboard_mode::ControllerCommand::SessionEvent { sid, proj, st } => {
+                    bt_keyboard_mode::ControllerCommand::SessionEvent {
+                        sid,
+                        proj,
+                        st,
+                        win_id,
+                        os,
+                    } => {
                         // 无效 st 静默丢弃(协议文档:别上屏一坨 JSON)。
                         match sessions::SessionStatus::parse(&st) {
                             Some(st) => {
@@ -783,7 +789,7 @@ async fn keyboard_mode_main(
                                     // 协议保留路径:客户端当前不发;发了就显式移除。
                                     sessions.remove(&sid);
                                 } else {
-                                    sessions.upsert(&sid, &proj, st);
+                                    sessions.upsert(&sid, &proj, win_id, os, st);
                                     sessions.remove_expired();
                                 }
                                 let ble_on = ble_device.get_server().connected_count() > 0;

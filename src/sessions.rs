@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 /// 超时阈值:超过该时长没有任何事件的会话自动移除(协议文档建议 30 分钟)。
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// 容量上限,满了移除最久未活跃的(与 MAX_WIFI_CREDS 同风格)。
-const MAX_SESSIONS: usize = 8;
+const MAX_SESSIONS: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SessionStatus {

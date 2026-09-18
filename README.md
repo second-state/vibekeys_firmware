@@ -41,8 +41,8 @@ The custom keys act as a Bluetooth keyboard. Default keymap (overridable via key
 | SWITCH (YOLO) | Shift + Tab |
 | CUSTOM | types `/compact` + Enter |
 | MIC | Ctrl + Option (trigger host dictation), **or** voice input when built-in ASR is on |
-| Rotary push | types `/` |
-| Rotary up / down | mouse wheel up / down |
+| Rotary push | hold to open the omarchy session picker (see below); otherwise types `/` |
+| Rotary up / down | mouse wheel up / down — switches the picker selection while it is open |
 
 **Voice input (MIC)**: when "prefer built-in ASR" is on and an ASR service is configured, MIC triggers recognition. Two trigger styles (set MIC mode in `setup.html`): **PTT** — hold to record, release to send; **Toggle** — tap to start/stop. The recognized text is typed through the Bluetooth keyboard.
 
@@ -54,10 +54,12 @@ With [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0, the
 |---|---|---|
 | dark green | `work` / `tool` / `post` | agent is working |
 | dark goldenrod | `perm` | **waiting for your permission** (needs attention) |
-| dark blue | `note` / `done` | idle / finished |
+| dark orange | `note` / `done` | idle / finished |
 | dark red | `err` | failed |
 
 Rows are sorted with the attention states (`perm`/`err`/`done`/`note`) on top and actively-working sessions below, so what needs your eyes stays visible on the small screen. Sessions time out and disappear after 30 minutes without any event (the client sends no session-end message).
+
+**Knob session picker (omarchy)**: when at least one session reports `os: "omarchy"`, **holding the rotary knob** overlays a session picker on the screen — the selected row is wrapped in `》 《` (the first session by default), rotating the knob moves the selection, and **releasing** the knob sends `{"focus": "<win_id>"}` to the host on the `d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f` notify characteristic (subscribe to it in vibekeys_app) so the host can focus that window. Releasing on a session without a `win_id` just closes the picker; with no omarchy session present the knob keeps its default `/` behavior.
 
 ### Remote mode (MQTT → vibetty)
 

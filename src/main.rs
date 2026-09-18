@@ -755,6 +755,8 @@ async fn keyboard_mode_main(
     let mut popup = ui::popup_centered(display.bounding_box());
     // 多会话状态表(vibekeys_app 0.3.0 会话事件,vibekeys_app 仓库 SessionEvent(src/main.rs))。
     let mut sessions = sessions::SessionTable::new();
+    // 当前屏幕视图留档:旋钮选择器退出后按它恢复按下前的界面。
+    let mut cur_view = KbView::Keyboard(format!("Keyboard\n {ble_mac}"));
     loop {
         let event = tokio::select! {
             // Handle setting events (e.g., reset)
@@ -782,25 +784,15 @@ async fn keyboard_mode_main(
                         win_id,
                         os,
                     } => {
-                        // 无效 st 静默丢弃(协议文档:别上屏一坨 JSON)。
-                        match sessions::SessionStatus::parse(&st) {
-                            Some(st) => {
-                                if st == sessions::SessionStatus::End {
-                                    // 协议保留路径:客户端当前不发;发了就显式移除。
-                                    sessions.remove(&sid);
-                                } else {
-                                    sessions.upsert(&sid, &proj, win_id, os, st);
-                                    sessions.remove_expired();
-                                }
-                                let ble_on = ble_device.get_server().connected_count() > 0;
-                                let _ = ui::render_session_view(
-                                    display,
-                                    wifi_on,
-                                    ble_on,
-                                    sessions.list(),
-                                );
-                            }
-                            None => log::warn!("session event with unknown st={st:?}, dropped"),
+                        if apply_session_event(&mut sessions, &sid, &proj, &st, win_id, os) {
+                            let ble_on = ble_device.get_server().connected_count() > 0;
+                            let _ = ui::render_session_view(
+                                display,
+                                wifi_on,
+                                ble_on,
+                                sessions.list(),
+                            );
+                            cur_view = KbView::Session;
                         }
                         continue;
                     }
@@ -895,10 +887,166 @@ async fn keyboard_mode_main(
             _ => {}
         }
 
+        // 主机写的纯文本经 handle_key_event 渲染;留档一份,供旋钮选择器退出后恢复。
+        if let bt_keyboard_mode::ControllerCommand::DisplayKeyboard(text) = &event {
+            cur_view = KbView::Keyboard(text.clone());
+        }
+
+        // 有 omarchy 会话时,按住旋钮打开会话选择器:旋转切换选中,松开把选中会话的
+        // win_id 发给主机(KEYBOARD_NOTIFY_ID)。无 omarchy 会话则保持原行为(输入 "/")。
+        if matches!(
+            event,
+            bt_keyboard_mode::ControllerCommand::KeyboardPress(
+                bt_keyboard_mode::KeysPin::ROTATE_BUTTON
+            )
+        ) && sessions
+            .list()
+            .iter()
+            .any(|e| e
+                .os
+                .as_deref()
+                .is_some_and(|o| o.eq_ignore_ascii_case("omarchy")))
+        {
+            let ble_on = ble_device.get_server().connected_count() > 0;
+            if let Some(win_id) = knob_session_picker(
+                display,
+                &mut sessions,
+                key_pins,
+                &mut rx,
+                wifi_on,
+                ble_on,
+            )
+            .await
+            {
+                controller.notify_focus(&win_id);
+            }
+            // 恢复按下前的界面。
+            match &cur_view {
+                KbView::Keyboard(text) => {
+                    let _ = ui::render_keyboard_view(display, wifi_on, true, text);
+                }
+                KbView::Session => {
+                    let ble_on = ble_device.get_server().connected_count() > 0;
+                    let _ =
+                        ui::render_session_view(display, wifi_on, ble_on, sessions.list());
+                }
+            }
+            continue;
+        }
+
         let _ = handle_key_event(
             display, ble_device, keyboard, event, keymap, key_pins, wifi_on,
         )
         .await;
+    }
+}
+
+/// 键盘模式屏幕视图留档:旋钮选择器退出后按它恢复按下前的界面。
+enum KbView {
+    Keyboard(String),
+    Session,
+}
+
+/// 旋钮选择器子循环的事件来源(与远程模式 open_session_picker 同款:select 里
+/// 只解出事件,处理放在外面的 match,避免借用冲突)。
+enum PickerEvt {
+    Key(bt_keyboard_mode::ControllerCommand),
+    Ble(Option<bt_keyboard_mode::ControllerCommand>),
+}
+
+/// 处理一条会话事件:无效 st 静默丢弃(协议文档:别上屏一坨 JSON)返回 false;
+/// end 显式移除;其余 upsert + 超时清理,返回 true。主循环与旋钮选择器共用。
+fn apply_session_event(
+    sessions: &mut sessions::SessionTable,
+    sid: &str,
+    proj: &str,
+    st: &str,
+    win_id: Option<String>,
+    os: Option<String>,
+) -> bool {
+    match sessions::SessionStatus::parse(st) {
+        Some(st) => {
+            if st == sessions::SessionStatus::End {
+                // 协议保留路径:客户端当前不发;发了就显式移除。
+                sessions.remove(sid);
+            } else {
+                sessions.upsert(sid, proj, win_id, os, st);
+                sessions.remove_expired();
+            }
+            true
+        }
+        None => {
+            log::warn!("session event with unknown st={st:?}, dropped");
+            false
+        }
+    }
+}
+
+/// 键盘模式旋钮会话选择器:进入时旋钮已按下(调用方保证存在 omarchy 会话)。
+/// 屏幕渲染 "》 《" 标记的会话列表,旋转切换选中;松开返回选中会话的 win_id
+/// (无 win_id → None,不聚焦)。按住期间其余物理按键忽略(不产生 HID 输出);
+/// BLE 会话事件照常入表并重绘,其余 BLE 命令不上屏,退出后由调用方按按下前
+/// 的视图恢复界面。
+async fn knob_session_picker(
+    display: &mut lcd::FrameBuffer,
+    sessions: &mut sessions::SessionTable,
+    key_pins: &mut bt_keyboard_mode::KeysPin,
+    rx: &mut tokio::sync::mpsc::Receiver<bt_keyboard_mode::ControllerCommand>,
+    wifi_on: bool,
+    ble_on: bool,
+) -> Option<String> {
+    use bt_keyboard_mode::ControllerCommand as Cmd;
+    use bt_keyboard_mode::KeysPin;
+
+    let mut ordered = sessions.ordered();
+    if ordered.is_empty() {
+        return None;
+    }
+    // 默认选中第一行(sessions::SessionTable::ordered 的顺序 = 常驻会话视图行序)。
+    let mut focus: usize = 0;
+    let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
+
+    loop {
+        let evt = tokio::select! {
+            ke = bt_keyboard_mode::wait_key_event(key_pins) => PickerEvt::Key(ke),
+            se = rx.recv() => PickerEvt::Ble(se),
+        };
+        match evt {
+            // 松开旋钮 → 结束,把选中会话的 win_id 交给调用方发送。
+            PickerEvt::Key(Cmd::KeyboardRelease(KeysPin::ROTATE_BUTTON)) => {
+                return ordered.get(focus).and_then(|e| e.win_id.clone());
+            }
+            // 旋转切换选中(列表可能被会话事件清空,此时忽略旋转,避免除零)。
+            PickerEvt::Key(Cmd::RotateDown) if !ordered.is_empty() => {
+                focus = (focus + 1) % ordered.len();
+                let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
+            }
+            PickerEvt::Key(Cmd::RotateUp) if !ordered.is_empty() => {
+                focus = (focus + ordered.len() - 1) % ordered.len();
+                let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
+            }
+            // 会话事件照常入表并重绘;列表增删后选中索引相应收缩。无论事件有效与否
+            // 都无条件重建 ordered —— 否则旧借用会跨过 apply_session_event 的 &mut,
+            // 借用检查不通过(NLL 按路径分析,条件重建堵不住)。
+            PickerEvt::Ble(Some(Cmd::SessionEvent {
+                sid,
+                proj,
+                st,
+                win_id,
+                os,
+            })) => {
+                let valid = apply_session_event(sessions, &sid, &proj, &st, win_id, os);
+                ordered = sessions.ordered();
+                focus = focus.min(ordered.len().saturating_sub(1));
+                if valid {
+                    let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
+                }
+            }
+            // 其余物理按键忽略;其余 BLE 命令(纯文本/键位/paste)不上屏。
+            PickerEvt::Key(_) | PickerEvt::Ble(Some(_)) => {}
+            // BLE 通道关闭(理论上不会):直接退出,不聚焦。
+            PickerEvt::Ble(None) => return None,
+        }
     }
 }
 

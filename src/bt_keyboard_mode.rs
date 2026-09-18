@@ -1018,6 +1018,16 @@ impl ControllerService {
             .set_value(message.as_bytes())
             .notify();
     }
+
+    /// 旋钮会话选择器松开时,把选中会话的 win_id 发给主机(KEYBOARD_NOTIFY_ID)。
+    /// 主机端需订阅该特征值(CCCD)才能收到。
+    pub fn notify_focus(&self, win_id: &str) {
+        let json = serde_json::json!({ "focus": win_id }).to_string();
+        self.notify_characteristic
+            .lock()
+            .set_value(json.as_bytes())
+            .notify();
+    }
 }
 
 #[derive(Debug)]

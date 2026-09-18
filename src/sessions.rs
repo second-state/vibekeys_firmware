@@ -135,4 +135,12 @@ impl SessionTable {
     pub fn list(&self) -> &[SessionEntry] {
         &self.entries
     }
+
+    /// 选择器的显示顺序:非活跃(需关注)在前、活跃在后 —— 与 render_session_view
+    /// 的稳定分区一致,保证选择器行序和常驻会话视图行序相同。
+    pub fn ordered(&self) -> Vec<&SessionEntry> {
+        let (attention, active): (Vec<&_>, Vec<&_>) =
+            self.entries.iter().partition(|e| !e.st.is_active());
+        attention.into_iter().chain(active).collect()
+    }
 }

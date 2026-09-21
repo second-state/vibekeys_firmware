@@ -17,6 +17,7 @@ VibeKeys 是一套运行在 **ESP32-S3** 上的 Rust 固件,把一块带屏幕�
 ## 主要特性
 
 - **两种工作模式**:`Keyboard`(蓝牙键盘 + ASR)与 `Remote`(MQTT 远程)。
+- **omarchy 会话速切**:屏幕兼任 agent 会话监视器;按一下旋钮、旋转选中会话,再按一下即让 omarchy 主机聚焦对应窗口。
 - **ASR(语音输入)**:PTT(按住说话)/ Toggle(点按开关)两种触发方式;识别走 HTTP Whisper 服务(在 `setup.html` 配 `asr_config`:`uri` / `api_key` / `model`),可在设置里开关「优先内置 ASR」。
 - **双格式远程屏幕**:JPEG 模式(整帧图片,长缓冲本地滚屏)与 text 模式(vt100 终端模拟,含 ANSI 颜色,增量脏区渲染)。固件根据 vibetty 的 presence 公告自动检测格式。
 - **LCD UI**:SPI 屏渲染键盘视图 / 远程视图 / 终端 / 状态提示;可选 I2C OLED(`i2c_oled`)。
@@ -41,14 +42,14 @@ VibeKeys 是一套运行在 **ESP32-S3** 上的 Rust 固件,把一块带屏幕�
 | SWITCH(YOLO) | Shift + Tab |
 | CUSTOM | 输入 `/compact` + 回车 |
 | MIC | Ctrl + Option(触发主机听写);开启内置 ASR 时为语音输入 |
-| 旋钮按下 | 按住打开 omarchy 会话选择器(见下);否则输入 `/` |
+| 旋钮按下 | 按一下打开 omarchy 会话选择器(见下);否则输入 `/` |
 | 旋钮上转 / 下转 | 鼠标滚轮上 / 下;选择器打开时切换选中项 |
 
 **语音输入(MIC)**:开启「优先内置 ASR」并配置好 ASR 服务后,MIC 触发识别,两种触发风格(在 `setup.html` 设 MIC 模式):**PTT**——按住录音、松开发送;**Toggle**——点按开始 / 再点停止。识别出的文字通过蓝牙键盘打出。
 
 #### 多会话状态视图
 
-配合 [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0,CLI 的 hooks 会把 agent 会话状态经 BLE DISPLAY 通道上报给设备(协议定义见 [vibekeys_app/src/main.rs 的 SessionEvent](https://github.com/second-state/vibekeys_app/blob/main/src/main.rs))。键盘模式维护一张会话表,每个会话显示一行 —— `项目 (sid)` —— **整行底色**标记状态:
+配合 [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0,CLI 的 hooks 会把 agent 会话状态经 BLE DISPLAY 通道上报给设备(协议定义见 [vibekeys_app/src/main.rs 的 SessionEvent](https://github.com/second-state/vibekeys_app/blob/main/src/main.rs))。键盘模式维护一张会话表(上限 16 条,满了淘汰最久未活跃的),每个会话显示一行 —— `项目 (sid)` —— **整行底色**标记状态:
 
 | 底色 | 状态 | 含义 |
 |---|---|---|
@@ -59,7 +60,18 @@ VibeKeys 是一套运行在 **ESP32-S3** 上的 Rust 固件,把一块带屏幕�
 
 排序上,需要关注的状态(`perm` / `err` / `done` / `note`)排在前面,干活中的靠后——小屏列表被截断时,要看的会话始终可见。会话超过 30 分钟没有任何事件就自动消失(客户端不发会话结束消息)。
 
-**旋钮会话选择器(omarchy)**:只要有会话上报 `os: "omarchy"`,**按住旋钮**即在屏幕上覆盖一层会话选择器——选中行用 `》 《` 括起(默认选第一个),旋转旋钮切换选中,**松开**时向主机在 `d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f` notify 特征值上发送 `{"focus": "<win_id>"}`(vibekeys_app 需订阅该特征值),由主机聚焦对应窗口。选中的会话没有 `win_id` 时松开仅关闭选择器、不发送;没有任何 omarchy 会话时旋钮保持默认的输入 `/` 行为。
+#### omarchy 速切(按一下旋钮)
+
+只要有会话上报 `os: "omarchy"`,设备就兼任该主机的会话切换器——**按一下旋钮**即切换到覆盖在当前视图上的会话选择器:
+
+| 输入 | 动作 |
+|---|---|
+| 按下旋钮 | 切换到选择器,默认选中第一个会话,用 `》 《` 括起 |
+| 旋钮上转 / 下转 | 切换选中项(超出屏幕时列表跟随滚动) |
+| 再按一下旋钮 | 切换窗口:向主机发送 `{"focus": "<win_id>"}`,随后恢复之前的视图 |
+| ESC | 关闭选择器,不发送 |
+
+focus JSON 通过 `d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f` 特征值 notify 发出,vibekeys_app 订阅它并聚焦对应窗口。边界情况:确认时选中的会话没有 `win_id` 仅关闭选择器、不发送;没有任何 omarchy 会话时,旋钮保持默认的输入 `/` 行为。
 
 ### 远程模式(MQTT → vibetty)
 

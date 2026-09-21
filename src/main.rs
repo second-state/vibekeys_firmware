@@ -892,8 +892,8 @@ async fn keyboard_mode_main(
             cur_view = KbView::Keyboard(text.clone());
         }
 
-        // 有 omarchy 会话时,按住旋钮打开会话选择器:旋转切换选中,松开把选中会话的
-        // win_id 发给主机(KEYBOARD_NOTIFY_ID)。无 omarchy 会话则保持原行为(输入 "/")。
+        // 有 omarchy 会话时,按一下旋钮打开会话选择器:旋转切换选中,再按一下把选中
+        // 会话的 win_id 发给主机(KEYBOARD_NOTIFY_ID)。无 omarchy 会话则保持原行为(输入 "/")。
         if matches!(
             event,
             bt_keyboard_mode::ControllerCommand::KeyboardPress(
@@ -982,11 +982,11 @@ fn apply_session_event(
     }
 }
 
-/// 键盘模式旋钮会话选择器:进入时旋钮已按下(调用方保证存在 omarchy 会话)。
-/// 屏幕渲染 "》 《" 标记的会话列表,旋转切换选中;松开返回选中会话的 win_id
-/// (无 win_id → None,不聚焦)。按住期间其余物理按键忽略(不产生 HID 输出);
-/// BLE 会话事件照常入表并重绘,其余 BLE 命令不上屏,退出后由调用方按按下前
-/// 的视图恢复界面。
+/// 键盘模式旋钮会话选择器(点按式):按一下打开(调用方保证存在 omarchy 会话),
+/// 屏幕渲染 "》 《" 标记的会话列表,旋转切换选中,再按一下旋钮确认 —— 返回选中
+/// 会话的 win_id(无 win_id → None,不聚焦);ESC 取消。打开期间其余物理按键忽略
+/// (不产生 HID 输出);BLE 会话事件照常入表并重绘,其余 BLE 命令不上屏,退出后
+/// 由调用方按打开前的视图恢复界面。
 async fn knob_session_picker(
     display: &mut lcd::FrameBuffer,
     sessions: &mut sessions::SessionTable,
@@ -1012,10 +1012,13 @@ async fn knob_session_picker(
             se = rx.recv() => PickerEvt::Ble(se),
         };
         match evt {
-            // 松开旋钮 → 结束,把选中会话的 win_id 交给调用方发送。
-            PickerEvt::Key(Cmd::KeyboardRelease(KeysPin::ROTATE_BUTTON)) => {
+            // 再按一下旋钮 → 确认,把选中会话的 win_id 交给调用方发送。
+            // 打开选择器那次点击的 release 走下方兜底分支被忽略,这里只认新的 press。
+            PickerEvt::Key(Cmd::KeyboardPress(KeysPin::ROTATE_BUTTON)) => {
                 return ordered.get(focus).and_then(|e| e.win_id.clone());
             }
+            // ESC 取消,不发送。
+            PickerEvt::Key(Cmd::KeyboardPress(KeysPin::ESC)) => return None,
             // 旋转切换选中(列表可能被会话事件清空,此时忽略旋转,避免除零)。
             PickerEvt::Key(Cmd::RotateDown) if !ordered.is_empty() => {
                 focus = (focus + 1) % ordered.len();

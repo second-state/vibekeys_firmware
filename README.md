@@ -17,6 +17,7 @@ VibeKeys is a Rust firmware for the **ESP32-S3** that turns a piece of custom ha
 ## Key features
 
 - **Two modes**: `Keyboard` (Bluetooth keyboard + ASR) and `Remote` (MQTT remote).
+- **Omarchy session quick-focus**: the screen doubles as an agent-session monitor; press the knob, rotate to pick a session, press again to focus its window on the omarchy host.
 - **ASR (voice input)**: two trigger styles — PTT (push-to-talk) and Toggle (tap to toggle); recognition is done by an HTTP Whisper service (set `asr_config` in `setup.html`: `uri` / `api_key` / `model`); "prefer built-in ASR" can be toggled in settings.
 - **Dual-format remote screen**: JPEG mode (full-frame images, long buffer for local scroll-back) and text mode (vt100 terminal emulation with ANSI colors, incremental dirty-rect rendering). The firmware auto-detects the format from vibetty's presence announcement.
 - **LCD UI**: the SPI display renders the keyboard view / remote view / terminal / status; optional I2C OLED (`i2c_oled`).
@@ -41,14 +42,14 @@ The custom keys act as a Bluetooth keyboard. Default keymap (overridable via key
 | SWITCH (YOLO) | Shift + Tab |
 | CUSTOM | types `/compact` + Enter |
 | MIC | Ctrl + Option (trigger host dictation), **or** voice input when built-in ASR is on |
-| Rotary push | hold to open the omarchy session picker (see below); otherwise types `/` |
+| Rotary push | press to open the omarchy session picker (see below); otherwise types `/` |
 | Rotary up / down | mouse wheel up / down — switches the picker selection while it is open |
 
 **Voice input (MIC)**: when "prefer built-in ASR" is on and an ASR service is configured, MIC triggers recognition. Two trigger styles (set MIC mode in `setup.html`): **PTT** — hold to record, release to send; **Toggle** — tap to start/stop. The recognized text is typed through the Bluetooth keyboard.
 
 #### Multi-session status view
 
-With [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0, the CLI's hooks report agent session states to the device over the BLE display channel (see `docs/multi-session-ble-protocol.md`). Keyboard mode maintains a session table and shows one row per session — `project (sid)` — with the **row background color** marking its status:
+With [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0, the CLI's hooks report agent session states to the device over the BLE display channel (wire format: `SessionEvent` in vibekeys_app's `src/main.rs`). Keyboard mode maintains a session table (up to 16 entries, evicting the least recently active) and shows one row per session — `project (sid)` — with the **row background color** marking its status:
 
 | Background | Statuses | Meaning |
 |---|---|---|
@@ -59,7 +60,18 @@ With [vibekeys_app](https://github.com/second-state/vibekeys_app) ≥ 0.3.0, the
 
 Rows are sorted with the attention states (`perm`/`err`/`done`/`note`) on top and actively-working sessions below, so what needs your eyes stays visible on the small screen. Sessions time out and disappear after 30 minutes without any event (the client sends no session-end message).
 
-**Knob session picker (omarchy)**: when at least one session reports `os: "omarchy"`, **holding the rotary knob** overlays a session picker on the screen — the selected row is wrapped in `》 《` (the first session by default), rotating the knob moves the selection, and **releasing** the knob sends `{"focus": "<win_id>"}` to the host on the `d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f` notify characteristic (subscribe to it in vibekeys_app) so the host can focus that window. Releasing on a session without a `win_id` just closes the picker; with no omarchy session present the knob keeps its default `/` behavior.
+#### Omarchy quick focus (press the knob)
+
+When at least one reported session carries `os: "omarchy"`, the device doubles as a session switcher for that host — **pressing the rotary knob** switches the screen to a session picker overlaid on the current view:
+
+| Input | Action |
+|---|---|
+| press rotary push | switch to the picker; the first session is pre-selected, wrapped in `》 《` |
+| rotary up / down | move the selection (scrolls when the list exceeds the screen) |
+| press rotary push again | focus that window: send `{"focus": "<win_id>"}` to the host, then restore the previous view |
+| ESC | close the picker without sending |
+
+The focus JSON is sent as a notification on the `d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f` characteristic; vibekeys_app subscribes to it and focuses the corresponding window. Edge cases: confirming on a session without a `win_id` just closes the picker without sending; with no omarchy session present, the knob keeps its default behavior of typing `/`.
 
 ### Remote mode (MQTT → vibetty)
 

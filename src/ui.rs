@@ -925,10 +925,11 @@ pub fn render_session_view(
     flush(target)
 }
 
-/// 旋钮会话选择器(键盘模式,按住旋钮临时覆盖屏幕):行样式与 render_session_view
+/// 旋钮会话选择器(键盘模式,按一下旋钮临时覆盖屏幕):行样式与 render_session_view
 /// 一致(文泉驿字体、整行底色表状态),行序由调用方给出(sessions::SessionTable::ordered,
 /// 与常驻会话视图相同)。选中行不加高亮,用 "》 《" 括起标记(wqy12 gb2312 含此标点),
-/// 松开旋钮即向主机聚焦该会话。items 非空由调用方保证;focus 超出可视区时滚动窗口跟随。
+/// 再按一下旋钮确认即向主机聚焦该会话。items 非空由调用方保证;focus 超出可视区时
+/// 滚动窗口跟随。
 pub fn render_knob_picker(
     target: &mut FrameBuffer,
     wifi_on: bool,

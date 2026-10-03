@@ -892,20 +892,14 @@ async fn keyboard_mode_main(
             cur_view = KbView::Keyboard(text.clone());
         }
 
-        // 有 omarchy 会话时,按一下旋钮打开会话选择器:旋转切换选中,再按一下把选中
-        // 会话的 win_id 发给主机(KEYBOARD_NOTIFY_ID)。无 omarchy 会话则保持原行为(输入 "/")。
+        // 有可聚焦会话时,按一下旋钮打开会话选择器:旋转切换选中,再按一下把选中
+        // 会话的 win_id 发给主机(KEYBOARD_NOTIFY_ID)。没有则保持原行为(输入 "/")。
         if matches!(
             event,
             bt_keyboard_mode::ControllerCommand::KeyboardPress(
                 bt_keyboard_mode::KeysPin::ROTATE_BUTTON
             )
-        ) && sessions
-            .list()
-            .iter()
-            .any(|e| e
-                .os
-                .as_deref()
-                .is_some_and(|o| o.eq_ignore_ascii_case("omarchy")))
+        ) && sessions.list().iter().any(|e| e.is_focusable())
         {
             let ble_on = ble_device.get_server().connected_count() > 0;
             if let Some(win_id) = knob_session_picker(
@@ -982,9 +976,30 @@ fn apply_session_event(
     }
 }
 
-/// 键盘模式旋钮会话选择器(点按式):按一下打开(调用方保证存在 omarchy 会话),
-/// 屏幕渲染 "》 《" 标记的会话列表,旋转切换选中,再按一下旋钮确认 —— 返回选中
-/// 会话的 win_id(无 win_id → None,不聚焦);ESC 取消。打开期间其余物理按键忽略
+/// 从 focus 出发按 dir(+1/-1)环形找下一个可聚焦行;全表都不可聚焦时返回 None。
+fn next_focusable(
+    ordered: &[&sessions::SessionEntry],
+    focus: usize,
+    dir: i32,
+) -> Option<usize> {
+    let n = ordered.len();
+    if n == 0 {
+        return None;
+    }
+    for step in 1..=n {
+        let i = (focus as i32 + dir * step as i32).rem_euclid(n as i32) as usize;
+        if ordered[i].is_focusable() {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// 键盘模式旋钮会话选择器(点按式):按一下打开(调用方保证存在可聚焦会话,
+/// 见 SessionEntry::is_focusable),
+/// 屏幕渲染 "> <" 标记的会话列表,旋转在可聚焦行之间切换选中(灰显行跳过),
+/// 再按一下旋钮确认 —— 返回选中会话的 win_id(灰显行或无 win_id → None,不聚焦);
+/// ESC 取消。打开期间其余物理按键忽略
 /// (不产生 HID 输出);BLE 会话事件照常入表并重绘,其余 BLE 命令不上屏,退出后
 /// 由调用方按打开前的视图恢复界面。
 async fn knob_session_picker(
@@ -1002,8 +1017,11 @@ async fn knob_session_picker(
     if ordered.is_empty() {
         return None;
     }
-    // 默认选中第一行(sessions::SessionTable::ordered 的顺序 = 常驻会话视图行序)。
-    let mut focus: usize = 0;
+    // 默认选中第一个可聚焦行(顺序 = 常驻会话视图行序;灰显行不可选中)。
+    let mut focus = ordered
+        .iter()
+        .position(|e| e.is_focusable())
+        .unwrap_or(0);
     let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
 
     loop {
@@ -1014,23 +1032,31 @@ async fn knob_session_picker(
         match evt {
             // 再按一下旋钮 → 确认,把选中会话的 win_id 交给调用方发送。
             // 打开选择器那次点击的 release 走下方兜底分支被忽略,这里只认新的 press。
+            // 灰显行(不可聚焦)不发送,视为关闭。
             PickerEvt::Key(Cmd::KeyboardPress(KeysPin::ROTATE_BUTTON)) => {
-                return ordered.get(focus).and_then(|e| e.win_id.clone());
+                return ordered
+                    .get(focus)
+                    .filter(|e| e.is_focusable())
+                    .and_then(|e| e.win_id.clone());
             }
             // ESC 取消,不发送。
             PickerEvt::Key(Cmd::KeyboardPress(KeysPin::ESC)) => return None,
-            // 旋转切换选中(列表可能被会话事件清空,此时忽略旋转,避免除零)。
+            // 旋转切换选中,灰显行直接跳过(列表可能被会话事件清空,此时忽略旋转)。
             PickerEvt::Key(Cmd::RotateDown) if !ordered.is_empty() => {
-                focus = (focus + 1) % ordered.len();
-                let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
+                if let Some(i) = next_focusable(&ordered, focus, 1) {
+                    focus = i;
+                    let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
+                }
             }
             PickerEvt::Key(Cmd::RotateUp) if !ordered.is_empty() => {
-                focus = (focus + ordered.len() - 1) % ordered.len();
-                let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
+                if let Some(i) = next_focusable(&ordered, focus, -1) {
+                    focus = i;
+                    let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
+                }
             }
-            // 会话事件照常入表并重绘;列表增删后选中索引相应收缩。无论事件有效与否
-            // 都无条件重建 ordered —— 否则旧借用会跨过 apply_session_event 的 &mut,
-            // 借用检查不通过(NLL 按路径分析,条件重建堵不住)。
+            // 会话事件照常入表并重绘;列表增删后选中索引相应收缩,落点灰显则就近吸附。
+            // 无论事件有效与否都无条件重建 ordered —— 否则旧借用会跨过
+            // apply_session_event 的 &mut,借用检查不通过(NLL 按路径分析,条件重建堵不住)。
             PickerEvt::Ble(Some(Cmd::SessionEvent {
                 sid,
                 proj,
@@ -1041,6 +1067,13 @@ async fn knob_session_picker(
                 let valid = apply_session_event(sessions, &sid, &proj, &st, win_id, os);
                 ordered = sessions.ordered();
                 focus = focus.min(ordered.len().saturating_sub(1));
+                if !ordered.is_empty() && !ordered[focus].is_focusable() {
+                    if let Some(i) = next_focusable(&ordered, focus, 1)
+                        .or_else(|| next_focusable(&ordered, focus, -1))
+                    {
+                        focus = i;
+                    }
+                }
                 if valid {
                     let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
                 }

@@ -26,6 +26,9 @@ use crate::lcd::{ColorFormat, DisplayTargetDrive, FrameBuffer};
 type Btn<'a> = &'a mut crate::AnyBtn;
 
 const LINE_H: u32 = 14;
+/// 列表文本左缩进:一个全角字符宽(wqy12 下 ≈ 12px),文本不顶着屏幕左缘,
+/// 也与选择器选中行的 "> <" 标记量级相当。
+const LIST_INDENT: i32 = 12;
 
 // ========== 绘制工具 ==========
 
@@ -35,6 +38,14 @@ fn clear(target: &mut FrameBuffer, color: ColorFormat) -> anyhow::Result<()> {
 
 fn fill_rect(target: &mut FrameBuffer, rect: Rectangle, color: ColorFormat) -> anyhow::Result<()> {
     Ok(rect.draw_styled(&PrimitiveStyle::with_fill(color), target)?)
+}
+
+/// 列表行文本矩形:相对整行左缩进 LIST_INDENT(行底色另行铺满整行)。
+fn list_text_rect(row_y: i32, width: u32, item_h: u32) -> Rectangle {
+    Rectangle::new(
+        Point::new(LIST_INDENT, row_y),
+        Size::new(width - LIST_INDENT as u32, item_h),
+    )
 }
 
 /// 在 `rect` 内画文本(**仅 ASCII**,菜单/标签用)。`bg=Some` 时给文本填背景(用于焦点高亮)。
@@ -913,12 +924,14 @@ pub fn render_session_view(
         };
         // proj 可含中文(路径末段);后缀 sid 短码区分同项目多会话。
         let label = format!("{} ({})", e.proj, e.sid);
+        // 底色铺满整行,文本缩进一个全角宽,不顶着屏幕左缘。
+        fill_rect(target, rect, bg)?;
         draw_text_cjk(
             target,
             &label,
-            rect,
+            list_text_rect(rect.top_left.y, width, item_h),
             ColorFormat::CSS_WHITE,
-            Some(bg),
+            None,
             HorizontalAlignment::Left,
         )?;
     }
@@ -927,7 +940,7 @@ pub fn render_session_view(
 
 /// 旋钮会话选择器(键盘模式,按一下旋钮临时覆盖屏幕):行样式与 render_session_view
 /// 一致(文泉驿字体、整行底色表状态),行序由调用方给出(sessions::SessionTable::ordered,
-/// 与常驻会话视图相同)。选中行不加高亮,用 "》 《" 括起标记(wqy12 gb2312 含此标点),
+/// 与常驻会话视图相同)。选中行不加高亮,用 "> <" 尖括号括起标记,
 /// 再按一下旋钮确认即向主机聚焦该会话。items 非空由调用方保证;focus 超出可视区时
 /// 滚动窗口跟随。
 pub fn render_knob_picker(
@@ -965,6 +978,25 @@ pub fn render_knob_picker(
             Point::new(0, start_y + (i as i32) * (item_h as i32)),
             Size::new(width, item_h),
         );
+        // proj 可含中文(路径末段);后缀 sid 短码区分同项目多会话。
+        let mut label = format!("{} ({})", e.proj, e.sid);
+        if i == focus {
+            label = format!(">{label}<");
+        }
+        // 不可聚焦的会话(os 非 omarchy 且 win_id 非 herdr 前缀)灰显不可选:
+        // 旋转跳过、确认不发送,只作展示。文本一律缩进一个全角宽。
+        let text_rect = list_text_rect(rect.top_left.y, width, item_h);
+        if !e.is_focusable() {
+            draw_text_cjk(
+                target,
+                &label,
+                text_rect,
+                ColorFormat::CSS_DARK_GRAY,
+                None,
+                HorizontalAlignment::Left,
+            )?;
+            continue;
+        }
         let bg = if e.st.is_perm() {
             ColorFormat::CSS_DARK_GOLDENROD
         } else if e.st.is_active() {
@@ -975,17 +1007,14 @@ pub fn render_knob_picker(
             // 空闲/结束(note/done)用橙,与 remote 会话列表的 stopped 同色。
             ColorFormat::CSS_DARK_ORANGE
         };
-        // proj 可含中文(路径末段);后缀 sid 短码区分同项目多会话。
-        let mut label = format!("{} ({})", e.proj, e.sid);
-        if i == focus {
-            label = format!("》{label}《");
-        }
+        // 底色铺满整行,文本缩进一个全角宽,不顶着屏幕左缘。
+        fill_rect(target, rect, bg)?;
         draw_text_cjk(
             target,
             &label,
-            rect,
+            text_rect,
             ColorFormat::CSS_WHITE,
-            Some(bg),
+            None,
             HorizontalAlignment::Left,
         )?;
     }

@@ -62,16 +62,16 @@ Rows are sorted with the attention states (`perm`/`err`/`done`/`note`) on top an
 
 #### Omarchy quick focus (press the knob)
 
-When at least one reported session carries `os: "omarchy"`, the device doubles as a session switcher for that host — **pressing the rotary knob** switches the screen to a session picker overlaid on the current view:
+When at least one reported session carries `os: "omarchy"` (or a `win_id` starting with `herdr`), the device doubles as a session switcher for that host — **pressing the rotary knob** switches the screen to a session picker overlaid on the current view:
 
 | Input | Action |
 |---|---|
-| press rotary push | switch to the picker; the first session is pre-selected, wrapped in `》 《` |
+| press rotary push | switch to the picker; the first selectable session is pre-selected, wrapped in `> <` |
 | rotary up / down | move the selection (scrolls when the list exceeds the screen) |
 | press rotary push again | focus that window: send `{"focus": "<win_id>"}` to the host, then restore the previous view |
 | ESC | close the picker without sending |
 
-The focus JSON is sent as a notification on the `d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f` characteristic; vibekeys_app subscribes to it and focuses the corresponding window. Edge cases: confirming on a session without a `win_id` just closes the picker without sending; with no omarchy session present, the knob keeps its default behavior of typing `/`.
+Sessions that are neither `omarchy` nor `herdr`-prefixed are shown **grayed out and cannot be selected** — rotation skips them, and confirming on one just closes the picker. The focus JSON is sent as a notification on the `d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f` characteristic; vibekeys_app subscribes to it and focuses the corresponding window. Edge case: with no omarchy/herdr session present, the knob keeps its default behavior of typing `/`.
 
 ### Remote mode (MQTT → vibetty)
 

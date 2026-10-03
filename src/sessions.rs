@@ -72,6 +72,21 @@ pub struct SessionEntry {
     last_active: Instant,
 }
 
+impl SessionEntry {
+    /// 会话是否可作为旋钮选择器的目标:omarchy 主机的会话,或 win_id 以 "herdr"
+    /// 开头的会话 —— 确认后把 win_id 原样发给主机聚焦。其余会话在选择器里灰显,
+    /// 旋转跳过、确认不发送。
+    pub fn is_focusable(&self) -> bool {
+        self.os
+            .as_deref()
+            .is_some_and(|o| o.eq_ignore_ascii_case("omarchy"))
+            || self
+                .win_id
+                .as_deref()
+                .is_some_and(|w| w.starts_with("herdr"))
+    }
+}
+
 #[derive(Default)]
 pub struct SessionTable {
     entries: Vec<SessionEntry>,

@@ -17,6 +17,19 @@ CONFIG_MBEDTLS_TLS_VERSION_1_3=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
+# microlink(Noise 协议)需要 ChaCha20-Poly1305;不开 mbedtls 会缺
+# mbedtls_chachapoly_* 符号,最终链接失败(cargo check 不链接,发现不了)。
+CONFIG_MBEDTLS_CHACHA20_C=y
+CONFIG_MBEDTLS_POLY1305_C=y
+CONFIG_MBEDTLS_CHACHAPOLY_C=y
+
+# microlink(Tailscale)组件 Kconfig:与 vibewatch 对齐。
+CONFIG_ML_DERP_REGION=3
+CONFIG_ML_H2_BUFFER_SIZE_KB=64
+CONFIG_ML_JSON_BUFFER_SIZE_KB=64
+# 隧道 IPv4 分片重组:WG 隧道上的大包分片后能重组,断连/丢包场景更健壮。
+CONFIG_LWIP_IP4_REASSEMBLY=y
+
 
 CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y
 
@@ -37,6 +50,9 @@ CONFIG_BT_BLE_ENABLED=y
 CONFIG_BT_BLUEDROID_ENABLED=n
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
+# NimBLE host 内存(buffers / GATT 池)从 PSRAM 分配,省内部 RAM——
+# microlink + WiFi + BLE 同开时内部 RAM 紧张,低内部 RAM 会让广播/连接直接失败。
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
 # CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
 
 # SNTP:允许同时配置多个 server。sync_time 一次配 4 个,ESP-IDF 并发查询、谁先回就用谁,

@@ -64,6 +64,22 @@
 
                     <div class="card bg-base-100 border border-base-300">
                         <div class="card-body">
+                            <h3 class="card-title text-lg" id="tailscaleTitle">Tailscale</h3>
+                            <p class="text-xs opacity-70">Auth key (tskey-auth-...) to join your tailnet. Used when
+                                the MQTT broker lives inside it (100.x address). The stored key is never read back —
+                                paste a new one to replace it; leave empty to keep it.</p>
+                            <label class="form-control">
+                                <div class="label">
+                                    <span class="label-text">Auth key</span>
+                                </div>
+                                <input type="text" id="tailscaleKeyInput" placeholder="tskey-auth-..."
+                                    class="input input-bordered w-full">
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="card bg-base-100 border border-base-300">
+                        <div class="card-body">
                             <h3 class="card-title text-lg" id="asrTitle">ASR (Speech Recognition)</h3>
                             <p class="text-xs opacity-70">Whisper-compatible endpoint. Sent on save, applied after
                                 device reset.</p>
@@ -233,6 +249,8 @@
         const micModePTT = document.getElementById('micModePTT');
         const micModeToggle = document.getElementById('micModeToggle');
         const preferBuiltinAsr = document.getElementById('preferBuiltinAsr');
+        const tailscaleKeyInput = document.getElementById('tailscaleKeyInput');
+        const tailscaleTitle = document.getElementById('tailscaleTitle');
 
         // Track modified fields
         const modifiedFields = {
@@ -240,7 +258,8 @@
             url: false,
             micMode: false,
             preferBuiltin: false,
-            asr: false
+            asr: false,
+            tailscale: false
         };
 
         // Mark the whole wifi list as modified
@@ -573,6 +592,9 @@
                 if (include(modifiedFields.asr)) patch.asr_config = buildAsrConfig();
                 if (include(modifiedFields.micMode)) patch.mic_model = micModePTT.checked ? 0 : 1;
                 if (include(modifiedFields.preferBuiltin)) patch.prefer_builtin_asr = !!preferBuiltinAsr.checked;
+                // Tailscale:只在填了内容时才写(设备不回读 key,空值 = 保持现状)。
+                const tailscaleKey = tailscaleKeyInput.value.trim();
+                if (tailscaleKey !== '') patch.tailscale_key = tailscaleKey;
 
                 const fieldCount = Object.keys(patch).length;
                 if (fieldCount > 0) {
@@ -583,8 +605,11 @@
                 clearWifiModification();
                 clearFieldModification('url', urlTitle);
                 clearFieldModification('asr', asrTitle);
+                clearFieldModification('tailscale', tailscaleTitle);
                 modifiedFields.micMode = false;
                 modifiedFields.preferBuiltin = false;
+                modifiedFields.tailscale = false;
+                tailscaleKeyInput.value = '';
 
                 showNotification('Success', `Saved ${fieldCount} field(s) in 1 write`);
 
@@ -747,6 +772,10 @@
         // Listen for input changes
         serverUrlInput.addEventListener('input', () => {
             markFieldAsModified('url', urlTitle);
+        });
+
+        tailscaleKeyInput.addEventListener('input', () => {
+            markFieldAsModified('tailscale', tailscaleTitle);
         });
 
         // ASR fields: any edit marks the whole ASR card modified

@@ -31,6 +31,9 @@ struct ConfigSaveSnapshot {
     asr_config: Option<serde_json::Value>,
     mic_model: Option<u8>,
     prefer_builtin_asr: Option<bool>,
+    /// Tailscale auth key(tskey-auth-...),remote 模式 broker 在 tailnet 内时用。
+    /// 只写不读回快照;空字符串忽略。
+    tailscale_key: Option<String>,
 }
 
 /// 统一配置特征值的读取快照:整份 wifi_list + server_url + asr_config + mic_model + prefer_builtin_asr。
@@ -94,6 +97,8 @@ impl Setting {
         // ASR 配置(uri/api_key/model)存在独立 NVS 键 audio::AsrConfig 管理,
         // 不归 Setting 管,但 Clear Config 应一并清除,否则残留导致下次开机仍读回旧 ASR。
         nvs.remove("asr_config")?;
+        // Tailscale auth key 同理:独立键,一并在 Clear Config 里清除。
+        nvs.remove(crate::tailscale::NVS_KEY)?;
         Ok(())
     }
 
@@ -300,6 +305,17 @@ pub fn new_setting_service(
                 setting.0.prefer_builtin_asr = b;
                 if let Err(e) = setting.1.set_u8(PREFER_BUILTIN_ASR_KEY, b as u8) {
                     log::error!("Failed to save prefer_builtin_asr: {:?}", e);
+                }
+            }
+
+            if let Some(key) = save.tailscale_key {
+                // 空串忽略(页面上未填就保存其它项时,不该把已绑定的 key 冲掉)。
+                if !key.trim().is_empty() {
+                    if let Err(e) = setting.1.set_str(crate::tailscale::NVS_KEY, key.trim()) {
+                        log::error!("Failed to save tailscale_key: {:?}", e);
+                    } else {
+                        log::info!("tailscale_key saved ({} chars)", key.trim().len());
+                    }
                 }
             }
         });

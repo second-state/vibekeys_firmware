@@ -1,6 +1,6 @@
 dependencies:
   espressif/dl_fft:
-    component_hash: 7dadbd644c0d7ba4733cc3726ec4cff6edf27b043725e1115861dec1609a3d28
+    component_hash: 965be7152132b365061abf5fc5fc7b85e525f73b94a204cdda61cfe9572c0d77
     dependencies:
     - name: idf
       require: private
@@ -8,7 +8,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.3.1
+    version: 0.8.0
   espressif/esp-dsp:
     component_hash: 42dce32d46ac93dc11f60d368e29a830e9661c7345d794b8a45c343479cae636
     dependencies:
@@ -57,9 +57,27 @@ dependencies:
     source:
       type: idf
     version: 5.4.1
+  microlink:
+    component_hash: 6fb15803405849518a164787bdf0831aced72fda685cf66f3ad521f9fd4a2707
+    dependencies: []
+    source:
+      git: https://github.com/L-jasmine/microlink
+      path: components/microlink
+      type: git
+    version: 3a170101c2ef50d63cc21b1754b3350ea135b094
+  wireguard_lwip:
+    component_hash: eab700cc84222f8aa9bc36dd510304e014d431d037225ec57aa63b7401ca6210
+    dependencies: []
+    source:
+      git: https://github.com/L-jasmine/microlink
+      path: components/microlink/components/wireguard_lwip
+      type: git
+    version: 3a170101c2ef50d63cc21b1754b3350ea135b094
 direct_dependencies:
 - espressif/esp-sr
 - espressif/esp_new_jpeg
-manifest_hash: 1faf3ba12053ac8c70fd3574b63896030ba5489133e6c91e37e6c1339f556bc9
+- microlink
+- wireguard_lwip
+manifest_hash: 6399b63b712235e25b463bb90e007a02d36e768e18c3101605098397a88a0877
 target: esp32s3
 version: 2.0.0

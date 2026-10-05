@@ -82,3 +82,14 @@ bindings_module = "esp_sr"
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/esp_new_jpeg", version = "^1.0.0" }
 bindings_header = "components/esp_new_jpeg/bindgen.h"
+
+# microlink:C 语言的 Tailscale 客户端组件(remote 模式 broker 在 tailnet 内时使用)。
+# 使用 L-jasmine 的 fork:任务栈从 PSRAM 分配。wireguard_lwip 嵌在 microlink 仓库
+# components/microlink/components/ 里,所以要两条 remote_component 分别指向两个子路径。
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "microlink", version = "main", git = "https://github.com/L-jasmine/microlink", path = "components/microlink" }
+bindings_header = "components/microlink/bindgen.h"
+bindings_module = "microlink"
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "wireguard_lwip", version = "main", git = "https://github.com/L-jasmine/microlink", path = "components/microlink/components/wireguard_lwip" }

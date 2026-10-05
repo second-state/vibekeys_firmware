@@ -166,9 +166,16 @@ async fn wait_first_connected(rx: &mut mpsc::UnboundedReceiver<RawEvent>) {
 impl MqttServer {
     /// `uri` 形如 `mqtt://user:pass@host:port` 或 `mqtts://user:pass@host:port`。
     /// `client_id` 需在 broker 内唯一(调用方用 MAC 等稳定来源生成)。
-    pub async fn new(uri: &str, client_id: &str) -> anyhow::Result<Self> {
+    /// `first_connect_timeout` = 等首个 Connected 的超时:普通 broker 30s 快速失败;
+    /// tailnet broker(经 DERP 中继 + WG 握手,全链路可能 >30s)调用方给 90s。
+    pub async fn new(
+        uri: &str,
+        client_id: &str,
+        first_connect_timeout: Duration,
+    ) -> anyhow::Result<Self> {
         let BrokerInfo {
             broker_url,
+            host: _,
             username,
             password,
             use_tls,
@@ -218,11 +225,14 @@ impl MqttServer {
         })
         .map_err(|e| anyhow::anyhow!("EspMqttClient::new_cb failed: {e:?}"))?;
 
-        // 等首个 Connected(超时 30s,保留「broker 连不上快速失败」的反馈;连不上 app 会重启)。
+        // 等首个 Connected(超时由调用方按链路给:普通 30s / tailnet 90s;连不上 app 会重启)。
         let connected =
-            tokio::time::timeout(Duration::from_secs(30), wait_first_connected(&mut rx)).await;
+            tokio::time::timeout(first_connect_timeout, wait_first_connected(&mut rx)).await;
         if connected.is_err() {
-            return Err(anyhow::anyhow!("MQTT connect timeout (30s)"));
+            return Err(anyhow::anyhow!(
+                "MQTT connect timeout ({}s)",
+                first_connect_timeout.as_secs()
+            ));
         }
 
         // Discovery:订阅 `{user}/+/+/vibetty`(user = username,匿名时回退 `root`)。
@@ -566,6 +576,7 @@ fn detect_format(data: &[u8]) -> ImageFormat {
 
 struct BrokerInfo {
     broker_url: String,
+    host: String,
     username: Option<String>,
     password: Option<String>,
     use_tls: bool,
@@ -620,10 +631,16 @@ fn parse_broker_uri(uri: &str) -> anyhow::Result<BrokerInfo> {
     let scheme_str = if use_tls { "mqtts" } else { "mqtt" };
     Ok(BrokerInfo {
         broker_url: format!("{scheme_str}://{host}:{port}"),
+        host: host.to_string(),
         username,
         password,
         use_tls,
     })
+}
+
+/// 提取 broker URL 的 host(remote 入口做 tailnet 检测:CGNAT 100.64/10 网段)。
+pub fn broker_host(uri: &str) -> Option<String> {
+    parse_broker_uri(uri).ok().map(|b| b.host)
 }
 
 #[cfg(test)]

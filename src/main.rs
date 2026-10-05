@@ -13,11 +13,13 @@ mod bt_wifi_mode;
 #[cfg(feature = "i2c_oled")]
 mod i2c;
 mod lcd;
+mod microlink;
 mod mqtt;
 mod new_jpg;
 mod ota;
 mod protocol;
 mod sessions;
+mod tailscale;
 mod ui;
 mod util;
 mod wifi;
@@ -248,6 +250,8 @@ fn main() -> anyhow::Result<()> {
     let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
     log::info!("Loaded keymap config with {} keys", keymap.keys.len());
     let asr_config = audio::AsrConfig::load_from_nvs(&nvs);
+    // Tailscale auth key(setup.html 写入)。在 mode loop 前(nvs 被键盘分支 move 前)读取。
+    let tailscale_key = tailscale::stored_auth_key(&nvs);
 
     let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
     let mac = wifi.sta_netif().get_mac().unwrap();
@@ -563,8 +567,18 @@ fn main() -> anyhow::Result<()> {
         esp_idf_svc::hal::reset::restart();
     }
 
+    // broker host 在 tailnet 网段(CGNAT 保留段 100.64/10)→ 需要先拉起 microlink 隧道。
+    let broker_in_tailnet = mqtt::broker_host(&setting.server_url).and_then(|h| {
+        h.parse::<std::net::Ipv4Addr>()
+            .ok()
+            .filter(|ip| ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
+            .map(|_| h)
+    });
+
     if setting.server_url.starts_with("mqtts")
         || asr_config.as_ref().map_or(false, |c| c.requires_tls())
+        || broker_in_tailnet.is_some()
+    // DERP 中继走 TLS,隧道拉起前必须对时
     {
         let _ = ui::render_keyboard_view(&mut target, false, false, "Syncing time...");
         if !sync_time_with_retry(&mut target, &btn7, &btn3) {
@@ -572,6 +586,66 @@ fn main() -> anyhow::Result<()> {
             esp_idf_svc::hal::reset::restart();
         }
     }
+
+    // broker 在 tailnet 内时,先拉起 microlink 隧道再连 MQTT;否则完全跳过
+    //(隧道是透明 TUN 网口,连上后 MQTT 代码零改动)。guard 必须持有到 main 结束
+    //(app::run 返回后即 restart)——提前 drop 会拆掉 MQTT 正乘着的隧道。
+    let _microlink_guard: Option<microlink::MicrolinkGuard> = if let Some(host) = &broker_in_tailnet
+    {
+        match tailscale_key.as_deref() {
+            Some(auth_key) => {
+                let _ = ui::render_keyboard_view(
+                    &mut target,
+                    false,
+                    false,
+                    "Tailscale\n Connecting...",
+                );
+                let guard = microlink::start_and_wait(
+                    auth_key,
+                    std::time::Duration::from_secs(90),
+                    |label| {
+                        let _ = ui::render_keyboard_view(
+                            &mut target,
+                            false,
+                            false,
+                            &format!("Tailscale\n Connecting...\n{label}"),
+                        );
+                    },
+                );
+                if let Some(ml) = guard.as_ref() {
+                    // 中继包只走自己的 mailbox:broker 在别的 DERP region 时先搬家,再握手。
+                    if let Some(region) = ml.rehome_to_peer(host) {
+                        log::info!("DERP mailbox rehomed to broker home region {region}");
+                        let _ = ui::render_keyboard_view(
+                            &mut target,
+                            false,
+                            false,
+                            &format!("Tailscale\n Mailbox -> region {region}"),
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                    }
+                    ml.trigger_handshake(host);
+                    log::info!("WG handshake kicked toward broker {host}");
+                } else {
+                    log::warn!("tailnet bring-up failed; MQTT may be unreachable");
+                }
+                guard
+            }
+            None => {
+                log::warn!("broker in tailnet but no tailscale_key provisioned (setup.html)");
+                let _ = ui::render_keyboard_view(
+                    &mut target,
+                    false,
+                    false,
+                    "Tailscale key missing\nProvision via setup.html",
+                );
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     {
         // 所有非 MIC 按钮合并成一个 select! 循环,跑在专用 4k 线程上
@@ -652,6 +726,12 @@ fn main() -> anyhow::Result<()> {
         asr_config.as_ref(),
         app::key_task::MicMode::from(setting.mic_model),
         &mut btn0,
+        // tailnet broker: DERP 中继 + WG 握手全链路可能 >30s(vibewatch 经验),放宽到 90s。
+        if broker_in_tailnet.is_some() {
+            std::time::Duration::from_secs(90)
+        } else {
+            std::time::Duration::from_secs(30)
+        },
     );
     let r = runtime.block_on(app_fut);
     if let Err(e) = r {

@@ -90,9 +90,10 @@ pub async fn run(
     asr_config: Option<&crate::audio::AsrConfig>,
     mic_mode: key_task::MicMode,
     mic_btn: &mut crate::AnyBtn,
+    first_connect_timeout: std::time::Duration,
 ) -> anyhow::Result<()> {
     log::info!("Connecting to MQTT broker at {uri} with client_id {client_id}");
-    let server = crate::mqtt::MqttServer::new(&uri, client_id).await;
+    let server = crate::mqtt::MqttServer::new(&uri, client_id, first_connect_timeout).await;
     if let Err(e) = &server {
         log::error!("MQTT broker connection failed:\n{e:?}");
         ui.show_notification(ColorFormat::CSS_DARK_RED, "Failed to connect to MQTT")?;

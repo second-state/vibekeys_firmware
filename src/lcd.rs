@@ -31,6 +31,11 @@ pub const DISPLAY_WIDTH: usize = 284;
 pub const DISPLAY_HEIGHT: usize = 78;
 
 static mut ESP_LCD_PANEL_HANDLE: esp_idf_svc::sys::esp_lcd_panel_handle_t = std::ptr::null_mut();
+static mut ESP_LCD_PANEL_IO_HANDLE: esp_idf_svc::sys::esp_lcd_panel_io_handle_t =
+    std::ptr::null_mut();
+/// 每笔颜色传输 DMA 完成的信号量(带式 flush 等它,防止下一带 memcpy 覆写还在
+/// 传输中的缓冲)。
+static mut LCD_TRANS_DONE_SEM: esp_idf_svc::sys::SemaphoreHandle_t = std::ptr::null_mut();
 pub type ColorFormat = Rgb565;
 
 pub fn init_spi(_spi: SPI3, mosi: Gpio21, clk: Gpio47) -> Result<(), EspError> {
@@ -44,7 +49,9 @@ pub fn init_spi(_spi: SPI3, mosi: Gpio21, clk: Gpio47) -> Result<(), EspError> {
     buscfg.sclk_io_num = clk.pin() as _;
     buscfg.__bindgen_anon_3.quadwp_io_num = GPIO_NUM_NC;
     buscfg.__bindgen_anon_4.quadhd_io_num = GPIO_NUM_NC;
-    buscfg.max_transfer_sz = 1024 * 4;
+    // 与 flush DMA 缓冲同尺寸:每带一次事务,窗口命令间隙从 29 次降到 7 次,
+    // 写吞吐拉回接近旧单窗口连续流的水平(撕裂主要来源就是带间间隙)。
+    buscfg.max_transfer_sz = 1024 * 16;
     esp!(unsafe { spi_bus_initialize(SPI3::device(), &buscfg, spi_common_dma_t_SPI_DMA_CH_AUTO,) })
 }
 
@@ -63,6 +70,21 @@ pub fn init_lcd(cs: Gpio12, dc: Gpio13, rst: Gpio14) -> Result<(), EspError> {
     io_config.lcd_param_bits = 8;
     esp!(unsafe {
         esp_lcd_new_panel_io_spi(spi_host_device_t_SPI3_HOST as _, &io_config, &mut panel_io)
+    })?;
+
+    // 记录 panel_io 并注册传输完成回调:带式 flush 要等每带 DMA 真正完成,
+    // 才能复用常驻 DMA 缓冲拷下一带(否则在传缓冲被覆写,画面错位)。
+    // 二值信号量:xSemaphoreCreateBinary 是 C 宏(bindgen 不导出),按 esp-idf-hal
+    // 的做法用 xQueueGenericCreate(1, 0, queueQUEUE_TYPE_BINARY_SEMAPHORE=3)。
+    unsafe {
+        ESP_LCD_PANEL_IO_HANDLE = panel_io;
+        LCD_TRANS_DONE_SEM = xQueueGenericCreate(1, 0, 3);
+    }
+    let io_callbacks = esp_lcd_panel_io_callbacks_t {
+        on_color_trans_done: Some(color_trans_done_isr),
+    };
+    esp!(unsafe {
+        esp_lcd_panel_io_register_event_callbacks(panel_io, &io_callbacks, std::ptr::null_mut())
     })?;
 
     ::log::info!("Install LCD driver");
@@ -126,6 +148,119 @@ pub fn flush_display(color_data: &[u8], x_start: i32, y_start: i32, x_end: i32, 
         }
         e
     }
+}
+
+/// `on_color_trans_done` ISR 回调:一笔颜色传输 DMA 完成时给信号量。
+/// 返回 false = 不需要 portYIELD(等待方有超时,晚一拍调度无妨)。
+unsafe extern "C" fn color_trans_done_isr(
+    _panel_io: esp_idf_svc::sys::esp_lcd_panel_io_handle_t,
+    _edata: *mut esp_idf_svc::sys::esp_lcd_panel_io_event_data_t,
+    _user_ctx: *mut core::ffi::c_void,
+) -> bool {
+    unsafe {
+        if !LCD_TRANS_DONE_SEM.is_null() {
+            let mut higher_prio_woken: esp_idf_svc::sys::BaseType_t = 0;
+            esp_idf_svc::sys::xQueueGiveFromISR(LCD_TRANS_DONE_SEM, &mut higher_prio_woken);
+        }
+    }
+    false
+}
+
+/// 等一笔颜色传输 DMA 完成。timeout 单位 tick(CONFIG_FREERTOS_HZ=1000 → 1 tick = 1ms)。
+/// 返回 false = 超时(传输可能仍在进行,复用 DMA 缓冲前必须重试等待)。
+fn wait_color_trans_done(timeout: u32) -> bool {
+    unsafe {
+        if LCD_TRANS_DONE_SEM.is_null() {
+            return true; // 未初始化(理论不应发生),不阻塞
+        }
+        esp_idf_svc::sys::xQueueReceive(LCD_TRANS_DONE_SEM, std::ptr::null_mut(), timeout) != 0
+    }
+}
+
+/// 丢弃可能残留的完成信号(上一轮超时后才真正完成的传输)。
+fn drain_color_trans_done() {
+    unsafe {
+        if !LCD_TRANS_DONE_SEM.is_null() {
+            while esp_idf_svc::sys::xQueueReceive(LCD_TRANS_DONE_SEM, std::ptr::null_mut(), 0) != 0
+            {
+            }
+        }
+    }
+}
+
+/// flush 用的常驻内部 DMA 缓冲。SPI 驱动对 PSRAM 里的 tx 缓冲,每个传输 chunk 都要
+/// `heap_caps_aligned_alloc(MALLOC_CAP_DMA)` 临时拷一块内部内存;内部 RAM 紧张 +
+/// 碎片化时分配失败,表现为 flush 257(ESP_ERR_NO_MEM)。改为 FrameBuffer 创建时
+/// (开机最早、内部充裕)一次性分配,存成 static,flush 按带流过它——
+/// SPI 直接 DMA 内部缓冲,运行期零临时内部分配。故意不释放(常驻)。
+const FLUSH_DMA_BUF_SIZE: usize = 1024 * 16; // 与 SPI bus max_transfer_sz 对齐;16KB = 25 行/带,全屏 7 带
+
+static mut FLUSH_DMA_BUF: *mut u8 = std::ptr::null_mut();
+
+/// 首次调用时分配;失败保持 null(此后 flush 走 Vec 回退路径)。
+fn init_flush_dma_buf() {
+    unsafe {
+        if !FLUSH_DMA_BUF.is_null() {
+            return;
+        }
+        FLUSH_DMA_BUF = esp_idf_svc::sys::heap_caps_aligned_alloc(
+            4,
+            FLUSH_DMA_BUF_SIZE,
+            esp_idf_svc::sys::MALLOC_CAP_DMA
+                | esp_idf_svc::sys::MALLOC_CAP_INTERNAL
+                | esp_idf_svc::sys::MALLOC_CAP_8BIT,
+        ) as *mut u8;
+        if FLUSH_DMA_BUF.is_null() {
+            log::error!(
+                "Failed to allocate flush DMA buffer ({}B)",
+                FLUSH_DMA_BUF_SIZE
+            );
+        }
+    }
+}
+
+/// 常驻 DMA 缓冲;init 失败时返回空 slice(调用方回退 Vec 路径)。
+/// SAFETY:flush 只发生在单一 UI 线程上下文(与 ESP_LCD_PANEL_HANDLE 同款约束)。
+fn flush_dma_buf() -> &'static mut [u8] {
+    unsafe {
+        if FLUSH_DMA_BUF.is_null() {
+            &mut []
+        } else {
+            std::slice::from_raw_parts_mut(FLUSH_DMA_BUF, FLUSH_DMA_BUF_SIZE)
+        }
+    }
+}
+
+/// 单次 flush_display + 重试(最多 5 次,间隔 100ms)。
+/// draw_bitmap 是异步排队的——成功返回后必须等 trans-done,DMA 真正完成才能
+/// 复用 DMA 缓冲(拷下一带),否则在传缓冲被覆写 → 画面错位/丢带。
+fn flush_display_with_retry(
+    data: &[u8],
+    x_start: i32,
+    y_start: i32,
+    x_end: i32,
+    y_end: i32,
+    what: &str,
+) -> anyhow::Result<()> {
+    for i in 0..5 {
+        drain_color_trans_done();
+        let code = flush_display(data, x_start, y_start, x_end, y_end);
+        if code == 0 {
+            if wait_color_trans_done(100) {
+                return Ok(());
+            }
+            log::warn!("{what} trans-done wait timeout (attempt {})", i + 1);
+            // 传输可能仍会迟到完成;下一轮顶部 drain 兜底,重新画这一带。
+            continue;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if i < 4 {
+            log::warn!("{what} retry {} (error code {})", i + 1, code);
+        } else {
+            log::error!("{what} failed after retries, code={code}");
+        }
+    }
+    anyhow::bail!("{what} failed after retries")
 }
 
 /*
@@ -315,7 +450,8 @@ impl FrameBuffer {
     }
 
     /// 只把指定矩形区域推送到 LCD(增量重绘用),不刷新整屏。
-    /// `rect` 会被裁剪到屏幕范围内。
+    /// `rect` 会被裁剪到屏幕范围内。按带(≤ DMA 缓冲大小)流过常驻内部 DMA 缓冲,
+    /// 每带一次 SPI 事务,运行期零临时内部 DMA 分配。
     pub fn flush_rect(&mut self, rect: Rectangle) -> anyhow::Result<()> {
         let bb = self.bounding_box();
         let r = rect.intersection(&bb);
@@ -328,32 +464,58 @@ impl FrameBuffer {
         let x1 = x0 + r.size.width as usize;
         let y1 = y0 + r.size.height as usize;
         let w = DISPLAY_WIDTH;
-        let mut sub: Vec<u8> = Vec::with_capacity((x1 - x0) * (y1 - y0) * 2);
-        for y in y0..y1 {
-            let s = (y * w + x0) * 2;
-            let e = (y * w + x1) * 2;
-            sub.extend_from_slice(&data[s..e]);
-        }
+        let row_bytes = (x1 - x0) * 2;
         let xe = r.top_left.x + r.size.width as i32;
-        let ye = r.top_left.y + r.size.height as i32;
-        for i in 0..5 {
-            let code = flush_display(&sub, r.top_left.x, r.top_left.y, xe, ye);
-            if code == 0 {
-                return Ok(());
+
+        let buf = flush_dma_buf();
+        if buf.is_empty() {
+            // DMA 缓冲初始化失败(理论不应发生)→ 回退整块 Vec 路径。
+            let mut sub: Vec<u8> = Vec::with_capacity((x1 - x0) * (y1 - y0) * 2);
+            for y in y0..y1 {
+                let s = (y * w + x0) * 2;
+                let e = (y * w + x1) * 2;
+                sub.extend_from_slice(&data[s..e]);
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if i < 4 {
-                log::warn!("flush_rect retry {}", i + 1);
-            } else {
-                log::error!("flush_rect failed after retries, code={}", code);
-            }
+            return flush_display_with_retry(
+                &sub,
+                r.top_left.x,
+                r.top_left.y,
+                xe,
+                r.top_left.y + r.size.height as i32,
+                "flush_rect(fallback)",
+            );
         }
-        anyhow::bail!("flush_rect failed after retries")
+
+        let rows_per_band = (buf.len() / row_bytes).max(1);
+        for band in (y0..y1).step_by(rows_per_band) {
+            let band_end = (band + rows_per_band).min(y1);
+            let mut off = 0usize;
+            for row in band..band_end {
+                let s = (row * w + x0) * 2;
+                let e = (row * w + x1) * 2;
+                buf[off..off + (e - s)].copy_from_slice(&data[s..e]);
+                off += e - s;
+            }
+            let band_y0 = r.top_left.y + (band - y0) as i32;
+            let band_y1 = r.top_left.y + (band_end - y0) as i32;
+            flush_display_with_retry(
+                &buf[..off],
+                r.top_left.x,
+                band_y0,
+                xe,
+                band_y1,
+                "flush_rect",
+            )?;
+        }
+        Ok(())
     }
 }
 
 impl DisplayTargetDrive for FrameBuffer {
     fn new(color: ColorFormat) -> Self {
+        // 顺带初始化 flush 用常驻 DMA 缓冲:此处是开机最早、内部堆最完整的时刻。
+        init_flush_dma_buf();
+
         let mut s = Self {
             buffers: Box::new(Framebuffer::new()),
             background_buffers: Box::new(Framebuffer::new()),
@@ -372,36 +534,9 @@ impl DisplayTargetDrive for FrameBuffer {
     }
 
     fn flush(&mut self) -> anyhow::Result<()> {
+        // 整屏 flush 走与 flush_rect 相同的 DMA 带式通路(零临时内部 DMA 分配)。
         let bounding_box = self.bounding_box();
-        let x_start = bounding_box.top_left.x as i32;
-        let y_start = bounding_box.top_left.y as i32;
-        let x_end = bounding_box.top_left.x + bounding_box.size.width as i32;
-        let y_end = bounding_box.top_left.y + bounding_box.size.height as i32;
-
-        for i in 0..5 {
-            let e = flush_display(self.buffers.data(), x_start, y_start, x_end, y_end);
-            if e != 0 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                crate::log_heap();
-                if i < 4 {
-                    log::warn!(
-                        "flush_display failed (attempt {}), retrying... error code: {}",
-                        i + 1,
-                        e
-                    );
-                } else {
-                    log::error!(
-                        "flush_display failed after {} attempts. error code: {}",
-                        i + 1,
-                        e
-                    );
-                    anyhow::bail!("Failed to flush display after multiple attempts");
-                }
-                continue;
-            }
-            // 成功就跳出,避免每次 flush 都把整屏发 5 遍(5× SPI 带宽)。
-            break;
-        }
+        self.flush_rect(bounding_box)?;
 
         self.buffers.clone_from(&self.background_buffers);
 

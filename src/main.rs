@@ -771,7 +771,12 @@ unsafe extern "C" fn asr_worker_entry(arg: *mut core::ffi::c_void) {
         };
         let _ = req.respond.send(r);
     }
-    log::info!("ASR worker exited");
+    log::info!("ASR worker channel closed; idling");
+    // 任务函数绝不能返回(返回后 PsramTask::drop 的 vTaskDelete 会打到悬垂句柄):
+    // 挂 idle 循环,任务随 main 结束重启一并消失。
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
 }
 
 fn handle_reset_event(

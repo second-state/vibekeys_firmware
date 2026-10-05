@@ -8,6 +8,38 @@ use esp_idf_svc::sys::microlink as ml;
 /// 上报给 tailnet 的设备名。
 pub const DEVICE_NAME: &str = "vibekeys";
 
+/// 把 microlink C 组件的各 TAG 日志压到 WARN:默认级别下 WG 握手/UDP 包 dump
+/// (ml_wg_mgr 的 ESP_LOGI)每几秒刷一屏。仍保留 WARN/ERROR。
+/// 在 microlink init/start 之后调用(用 esp_log_level_get 回读确认生效)。
+pub fn quiet_logs() {
+    use esp_idf_svc::sys::{esp_log_level_get, esp_log_level_set, esp_log_level_t_ESP_LOG_WARN};
+    for tag in [
+        "ml_wg_mgr",
+        "ml_derp",
+        "ml_net_io",
+        "ml_coord",
+        "ml_h2",
+        "ml_stun",
+        "ml_cell",
+        "ml_at_sock",
+        "ml_config",
+        "ml_peer_nvs",
+        "microlink",
+    ] {
+        // SAFETY: 纯运行时日志级别设置/回读;tag 经 CString 补 NUL——
+        // 直接 tag.as_ptr() 传 &str 是无 NUL 结尾的,会读到内存垃圾导致 TAG 永远匹配不上。
+        let ctag = std::ffi::CString::new(tag).unwrap();
+        unsafe {
+            esp_log_level_set(ctag.as_ptr(), esp_log_level_t_ESP_LOG_WARN);
+            log::info!(
+                "ml log: {tag} level = {} (WARN = {})",
+                esp_log_level_get(ctag.as_ptr()),
+                esp_log_level_t_ESP_LOG_WARN
+            );
+        }
+    }
+}
+
 /// 会话结束时停止并释放 microlink 实例。
 /// CString 保活:`microlink_init` 只浅拷贝 config(指针),auth_key/device_name
 /// 字符串必须活过整个会话,否则每次 Hostinfo 上报都读已释放内存。
@@ -123,6 +155,9 @@ pub fn start_and_wait(
         std::thread::sleep(std::time::Duration::from_secs(2));
         return None;
     }
+
+    // init/start 之后静音组件日志(每次会话重新设一遍,防任何路径重置级别)。
+    quiet_logs();
 
     // 轮询注册状态,变化时上屏。
     let started = std::time::Instant::now();

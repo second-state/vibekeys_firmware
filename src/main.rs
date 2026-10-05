@@ -902,15 +902,9 @@ async fn keyboard_mode_main(
         ) && sessions.list().iter().any(|e| e.is_focusable())
         {
             let ble_on = ble_device.get_server().connected_count() > 0;
-            if let Some(win_id) = knob_session_picker(
-                display,
-                &mut sessions,
-                key_pins,
-                &mut rx,
-                wifi_on,
-                ble_on,
-            )
-            .await
+            if let Some(win_id) =
+                knob_session_picker(display, &mut sessions, key_pins, &mut rx, wifi_on, ble_on)
+                    .await
             {
                 controller.notify_focus(&win_id);
             }
@@ -921,8 +915,7 @@ async fn keyboard_mode_main(
                 }
                 KbView::Session => {
                     let ble_on = ble_device.get_server().connected_count() > 0;
-                    let _ =
-                        ui::render_session_view(display, wifi_on, ble_on, sessions.list());
+                    let _ = ui::render_session_view(display, wifi_on, ble_on, sessions.list());
                 }
             }
             continue;
@@ -977,11 +970,7 @@ fn apply_session_event(
 }
 
 /// 从 focus 出发按 dir(+1/-1)环形找下一个可聚焦行;全表都不可聚焦时返回 None。
-fn next_focusable(
-    ordered: &[&sessions::SessionEntry],
-    focus: usize,
-    dir: i32,
-) -> Option<usize> {
+fn next_focusable(ordered: &[&sessions::SessionEntry], focus: usize, dir: i32) -> Option<usize> {
     let n = ordered.len();
     if n == 0 {
         return None;
@@ -1018,10 +1007,7 @@ async fn knob_session_picker(
         return None;
     }
     // 默认选中第一个可聚焦行(顺序 = 常驻会话视图行序;灰显行不可选中)。
-    let mut focus = ordered
-        .iter()
-        .position(|e| e.is_focusable())
-        .unwrap_or(0);
+    let mut focus = ordered.iter().position(|e| e.is_focusable()).unwrap_or(0);
     let _ = ui::render_knob_picker(display, wifi_on, ble_on, &ordered, focus);
 
     loop {

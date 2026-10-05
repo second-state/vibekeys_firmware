@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use esp_idf_svc::sys;
+
 /// WAV 音频参数结构体
 #[derive(Debug, Clone)]
 pub struct WavConfig {
@@ -51,4 +53,81 @@ pub fn create_unlimited_wav_header(config: &WavConfig) -> Vec<u8> {
     cursor.write_all(&data_size.to_le_bytes()).unwrap(); // Subchunk2Size
 
     wav_data
+}
+
+// --- PSRAM 栈任务封装 --------------------------------------------------------
+
+/// 栈从 PSRAM 分配的 FreeRTOS 任务(TCB 留内部 RAM)。microlink fork 里
+/// ml_create_task_psram() patch 的 Rust 侧对应物。用于 asr-worker 这类
+/// 长命线程:16KB 栈从紧缺的内部 RAM 挪到充裕的 PSRAM。
+/// 前提:sdkconfig 开 CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY。
+pub struct PsramTask {
+    handle: sys::TaskHandle_t,
+    stack: *mut sys::StackType_t,
+    tcb: *mut sys::StaticTask_t,
+}
+
+impl PsramTask {
+    /// 在 `core` 核上跑 `task_fn(arg)`,栈大小 `stack_size` 以**字节**计
+    /// (ESP-IDF 与原版 FreeRTOS 不同,按字节量深度)。
+    ///
+    /// # Safety
+    /// - `task_fn` 与 `arg` 必须在任务整个生命周期内有效。
+    /// - drop 前任务必须已停止(栈由 [`Drop`] 释放)。
+    pub unsafe fn spawn(
+        name: &core::ffi::CStr,
+        task_fn: sys::TaskFunction_t,
+        arg: *mut core::ffi::c_void,
+        stack_size: usize,
+        priority: sys::UBaseType_t,
+        core: sys::BaseType_t,
+    ) -> anyhow::Result<Self> {
+        let tcb = sys::heap_caps_malloc(
+            core::mem::size_of::<sys::StaticTask_t>(),
+            sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT,
+        );
+        if tcb.is_null() {
+            anyhow::bail!("PSRAM task {name:?}: TCB alloc failed");
+        }
+        let stack =
+            sys::heap_caps_malloc(stack_size, sys::MALLOC_CAP_SPIRAM | sys::MALLOC_CAP_8BIT);
+        if stack.is_null() {
+            sys::heap_caps_free(tcb);
+            anyhow::bail!("PSRAM task {name:?}: stack alloc failed");
+        }
+        let handle = sys::xTaskCreateStaticPinnedToCore(
+            task_fn,
+            name.as_ptr(),
+            stack_size as u32,
+            arg,
+            priority,
+            stack.cast(),
+            tcb.cast(),
+            core,
+        );
+        if handle.is_null() {
+            sys::heap_caps_free(stack);
+            sys::heap_caps_free(tcb);
+            anyhow::bail!("PSRAM task {name:?}: xTaskCreateStaticPinnedToCore failed");
+        }
+        log::info!("PSRAM task {name:?} spawned ({} B PSRAM stack)", stack_size);
+        Ok(Self {
+            handle,
+            stack: stack.cast(),
+            tcb: tcb.cast(),
+        })
+    }
+}
+
+impl Drop for PsramTask {
+    fn drop(&mut self) {
+        // SAFETY: 与 spawn 里成功的 heap_caps_malloc 配对。
+        unsafe {
+            if !self.handle.is_null() {
+                sys::vTaskDelete(self.handle);
+            }
+            sys::heap_caps_free(self.stack.cast());
+            sys::heap_caps_free(self.tcb.cast());
+        }
+    }
 }

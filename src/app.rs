@@ -666,6 +666,8 @@ async fn open_session_picker(
     // 还没选定/没在观察任何会话,不该对一个没选过的会话发 close。
     pause_active_push: bool,
 ) -> anyhow::Result<()> {
+    // 打开选择器的内存快照:排查 remote 模式内部 RAM 余量用。
+    crate::log_heap();
     // 入口:retained presence 在 subscribe 后很快到达,但需 poll recv 才会进 sessions 表。
     // 给最多 ENTRY_WAIT 让它们落地(已有 >=2 个会话则立即跳过);期间 ESC 可退出。
     const ENTRY_WAIT_MS: u64 = 1500;

@@ -125,7 +125,7 @@ pub fn run(
     let http_server = ota_http_server(tx)?;
     let ota_worker = std::thread::Builder::new()
         .name("ota-worker".to_string())
-        .stack_size(1024 * 24)
+        .stack_size(1024 * 16)
         .spawn(move || {
             if let Err(e) = ota_task(rx, progress_tx) {
                 log::error!("OTA worker failed: {e:?}");

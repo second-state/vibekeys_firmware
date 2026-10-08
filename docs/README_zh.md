@@ -77,6 +77,8 @@ VibeKeys 是一套运行在 **ESP32-S3** 上的 Rust 固件,把一块带屏幕�
 
 远程模式经 MQTT 连接 vibetty 桥接。它**不绑定单个会话**——而是一次性订阅**你所有会话**的 presence(`{user}/+/+/vibetty`,retained),所以你每个在跑的 vibetty 终端都会出现,可以**随时在它们之间切换**,无需重连。
 
+> 整条链路的工作原理(MQTT、内嵌 broker、Tailscale):见[远程模式详解](remote-mqtt-tailscale_zh.md)。
+
 进入远程模式后**会自动打开会话列表**(会先等一小一会儿让会话到达)。
 
 > **随时按下旋钮,即可(重新)打开会话列表**,切换当前显示的会话。

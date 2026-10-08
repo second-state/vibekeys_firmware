@@ -77,6 +77,8 @@ Sessions that are neither `omarchy` nor `herdr`-prefixed are shown **grayed out 
 
 Remote mode connects to the vibetty bridge over MQTT. It does **not** bind to a single session — it subscribes to presence for **all of your sessions at once** (`{user}/+/+/vibetty`, retained), so every vibetty terminal you have running shows up, and you can **switch between them on the fly** without reconnecting.
 
+> How the whole chain works — MQTT, the embedded broker, Tailscale — is explained in [Remote mode: MQTT and Tailscale](docs/remote-mqtt-tailscale.md).
+
 On entering Remote mode the **session picker opens automatically** (it waits briefly for sessions to arrive).
 
 > **Press the rotary knob at any time to (re)open the picker** and switch which session is displayed.

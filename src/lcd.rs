@@ -752,12 +752,6 @@ impl UI {
         }
     }
 
-    pub fn show_notification(&mut self, color: ColorFormat, message: &str) -> anyhow::Result<()> {
-        self.draw_text_wrapped(message, Point::new(2, 2), color)?;
-        self.display.flush()?;
-        Ok(())
-    }
-
     // ========== text 模式终端渲染 ==========
 
     /// 当前是否持有 text 终端(JPEG 模式 / 未激活会话时为 false)。
@@ -1022,48 +1016,6 @@ impl UI {
         self.terminal_offset = 0;
         self.terminal_last_render = None;
         self.terminal_render_pending = false;
-    }
-
-    // ========== 辅助方法 ==========
-
-    /// 绘制换行文本
-    fn draw_text_wrapped(
-        &mut self,
-        text: &str,
-        position: Point,
-        color: ColorFormat,
-    ) -> anyhow::Result<()> {
-        let bounding_box = self.display.bounding_box();
-        let text_box = Rectangle::new(
-            position,
-            Size::new(
-                bounding_box.size.width.saturating_sub(position.x as u32),
-                bounding_box.size.height.saturating_sub(position.y as u32),
-            ),
-        );
-
-        let textbox_style = embedded_text::style::TextBoxStyleBuilder::new()
-            .height_mode(embedded_text::style::HeightMode::ShrinkToText(
-                embedded_text::style::VerticalOverdraw::FullRowsOnly,
-            ))
-            .alignment(embedded_text::alignment::HorizontalAlignment::Left)
-            .line_height(embedded_graphics::text::LineHeight::Pixels(14))
-            .build();
-
-        embedded_text::TextBox::with_textbox_style(
-            text,
-            text_box,
-            MyTextStyle {
-                font_style: U8g2TextStyle::new(u8g2_fonts::fonts::u8g2_font_wqy12_t_gb2312, color),
-                vertical_offset: 3,
-                bg_color: None,
-            },
-            textbox_style,
-        )
-        .add_plugin(crate::ansi_plugin::MyAnsiPlugin::new())
-        .draw(&mut self.display)?;
-
-        Ok(())
     }
 }
 

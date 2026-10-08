@@ -96,7 +96,9 @@ pub async fn run(
     let server = crate::mqtt::MqttServer::new(&uri, client_id, first_connect_timeout).await;
     if let Err(e) = &server {
         log::error!("MQTT broker connection failed:\n{e:?}");
-        ui.show_notification(ColorFormat::CSS_DARK_RED, "Failed to connect to MQTT")?;
+        // 居中弹窗:红框 + 白字(替代旧的整屏红底文字)。
+        let mut popup = crate::ui::popup_centered(ui.display_mut().bounding_box());
+        let _ = popup.show_transient(ui.display_mut(), "Failed to connect to MQTT");
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         return Err(anyhow::anyhow!("Failed to connect to MQTT broker"));
     }

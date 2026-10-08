@@ -66,8 +66,9 @@
                         <div class="card-body">
                             <h3 class="card-title text-lg" id="tailscaleTitle">Tailscale</h3>
                             <p class="text-xs opacity-70">Auth key (tskey-auth-...) to join your tailnet. Used when
-                                the MQTT broker lives inside it (100.x address). The stored key is never read back —
-                                paste a new one to replace it; leave empty to keep it.</p>
+                                the MQTT broker lives inside it (100.x address). Bind writes the key alone and the
+                                device wipes its old registration and connects right away — the stored key is never
+                                read back; leave empty when saving other settings to keep it.</p>
                             <label class="form-control">
                                 <div class="label">
                                     <span class="label-text">Auth key</span>
@@ -75,6 +76,9 @@
                                 <input type="text" id="tailscaleKeyInput" placeholder="tskey-auth-..."
                                     class="input input-bordered w-full">
                             </label>
+                            <button class="btn btn-outline w-full" id="bindTailscaleButton" disabled>
+                                Bind Tailscale
+                            </button>
                         </div>
                     </div>
 
@@ -251,6 +255,7 @@
         const preferBuiltinAsr = document.getElementById('preferBuiltinAsr');
         const tailscaleKeyInput = document.getElementById('tailscaleKeyInput');
         const tailscaleTitle = document.getElementById('tailscaleTitle');
+        const bindTailscaleButton = document.getElementById('bindTailscaleButton');
 
         // Track modified fields
         const modifiedFields = {
@@ -499,6 +504,7 @@
             asrModelInput.disabled = false;
             backgroundImage.disabled = false;
             clearBgButton.disabled = false;
+            updateBindTailscaleButton();
             controlPanel.classList.remove('opacity-50', 'pointer-events-none');
         }
 
@@ -513,6 +519,7 @@
             backgroundImage.disabled = true;
             writeBgButton.disabled = true;
             clearBgButton.disabled = true;
+            bindTailscaleButton.disabled = true;
             controlPanel.classList.add('opacity-50', 'pointer-events-none');
         }
 
@@ -592,9 +599,8 @@
                 if (include(modifiedFields.asr)) patch.asr_config = buildAsrConfig();
                 if (include(modifiedFields.micMode)) patch.mic_model = micModePTT.checked ? 0 : 1;
                 if (include(modifiedFields.preferBuiltin)) patch.prefer_builtin_asr = !!preferBuiltinAsr.checked;
-                // Tailscale:只在填了内容时才写(设备不回读 key,空值 = 保持现状)。
-                const tailscaleKey = tailscaleKeyInput.value.trim();
-                if (tailscaleKey !== '') patch.tailscale_key = tailscaleKey;
+                // Tailscale key 不走 Save Changes:用下面的 Bind Tailscale 按钮单独立即写入
+                //(设备端收到 tailscale_key 会擦旧注册并直接跳转连接页面)。
 
                 const fieldCount = Object.keys(patch).length;
                 if (fieldCount > 0) {
@@ -608,8 +614,8 @@
                 clearFieldModification('tailscale', tailscaleTitle);
                 modifiedFields.micMode = false;
                 modifiedFields.preferBuiltin = false;
-                modifiedFields.tailscale = false;
                 tailscaleKeyInput.value = '';
+                updateBindTailscaleButton();
 
                 showNotification('Success', `Saved ${fieldCount} field(s) in 1 write`);
 
@@ -774,8 +780,38 @@
             markFieldAsModified('url', urlTitle);
         });
 
-        tailscaleKeyInput.addEventListener('input', () => {
-            markFieldAsModified('tailscale', tailscaleTitle);
+        function updateBindTailscaleButton() {
+            bindTailscaleButton.disabled = !isConnected || tailscaleKeyInput.value.trim() === '';
+        }
+
+        tailscaleKeyInput.addEventListener('input', updateBindTailscaleButton);
+
+        // Bind Tailscale:单独立即写 {"tailscale_key": ...} —— 设备端收到后
+        // 存 key + 擦旧 tailnet 注册 + 直接跳转连接页面,不走 Save Changes。
+        bindTailscaleButton.addEventListener('click', async () => {
+            if (!isConnected || !service) {
+                showNotification('Error', 'VibeKeys is not connected', true);
+                return;
+            }
+            const key = tailscaleKeyInput.value.trim();
+            if (key === '') {
+                showNotification('Error', 'Auth key is empty', true);
+                return;
+            }
+
+            bindTailscaleButton.disabled = true;
+            bindTailscaleButton.textContent = 'Binding...';
+            try {
+                await writeConfigPatch({ tailscale_key: key });
+                tailscaleKeyInput.value = '';
+                showNotification('Success', 'Tailscale key bound — device is connecting');
+            } catch (e) {
+                console.error('Bind tailscale failed:', e);
+                showNotification('Error', 'Failed to bind Tailscale key', true);
+            } finally {
+                bindTailscaleButton.textContent = 'Bind Tailscale';
+                updateBindTailscaleButton();
+            }
         });
 
         // ASR fields: any edit marks the whole ASR card modified

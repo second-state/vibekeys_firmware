@@ -97,6 +97,50 @@ impl MicrolinkGuard {
     }
 }
 
+/// tailnet 上本账号的一个节点(不含自己)。`online` = 当前可达。
+#[derive(Debug, Clone)]
+pub struct TailnetNode {
+    pub hostname: String,
+    #[allow(dead_code)] // 节点数据的一部分;页面暂只显示 hostname/online
+    pub vpn_ip: std::net::Ipv4Addr,
+    pub online: bool,
+}
+
+/// 枚举协调服务器告知的本账号全部节点,在线的排前面(Tailscale 页面列表用)。
+pub fn tailnet_nodes(handle: &MicrolinkGuard) -> Vec<TailnetNode> {
+    // SAFETY: microlink_init 返回的合法 handle。
+    let count = unsafe { ml::microlink_get_peer_count(handle.0) }.max(0);
+    let mut nodes: Vec<TailnetNode> = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let mut info = ml::microlink_peer_info_t {
+            vpn_ip: 0,
+            hostname: [0; 64],
+            public_key: [0; 32],
+            online: false,
+            direct_path: false,
+        };
+        // SAFETY: 合法 handle 且 index 在 peer count 内。
+        if unsafe { ml::microlink_get_peer_info(handle.0, index, &mut info) }
+            == esp_idf_svc::sys::ESP_OK
+        {
+            let hostname = std::ffi::CStr::from_bytes_until_nul(&info.hostname)
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            nodes.push(TailnetNode {
+                hostname,
+                vpn_ip: std::net::Ipv4Addr::from(info.vpn_ip),
+                online: info.online,
+            });
+        }
+    }
+    nodes.sort_by(|a, b| {
+        b.online
+            .cmp(&a.online)
+            .then_with(|| a.hostname.cmp(&b.hostname))
+    });
+    nodes
+}
+
 /// 轮询 microlink 状态机的间隔。
 const STATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 

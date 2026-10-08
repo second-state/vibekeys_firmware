@@ -860,9 +860,27 @@ async fn keyboard_mode_main(
     let mut cur_view = KbView::Keyboard(format!("Keyboard\n {ble_mac}"));
     loop {
         let event = tokio::select! {
-            // Handle setting events (e.g., reset)
-            Some(bt_wifi_mode::BTevent::Reset) = setting_rx.recv() => {
-                handle_reset_event(setting_arc);
+            // Handle setting events (reset / tailscale page jump)
+            Some(evt) = setting_rx.recv() => {
+                match evt {
+                    bt_wifi_mode::BTevent::Reset => handle_reset_event(setting_arc),
+                    // 配网页写入了 tailscale_key → 跳 Tailscale 页面(连接 + 节点列表)。
+                    bt_wifi_mode::BTevent::Tailscale => {
+                        let auth_key =
+                            tailscale::stored_auth_key(&setting_arc.lock().unwrap().1);
+                        let ble_on = ble_device.get_server().connected_count() > 0;
+                        ui::tailscale_page(display, auth_key, wifi_on, ble_on, key_pins).await;
+                        // 恢复 keyboard 常驻视图。
+                        let ble_on = ble_device.get_server().connected_count() > 0;
+                        let _ = ui::render_keyboard_view(
+                            display,
+                            wifi_on,
+                            ble_on,
+                            &format!("Keyboard\n {ble_mac}"),
+                        );
+                        continue;
+                    }
+                }
             }
             // Handle physical key events
             key_evt = bt_keyboard_mode::wait_key_event(key_pins) => key_evt,

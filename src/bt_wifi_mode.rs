@@ -187,6 +187,8 @@ impl Setting {
 
 pub enum BTevent {
     Reset,
+    /// 配网页写入了 tailscale_key:已存 NVS + 清旧 tailnet 注册,跳 Tailscale 页面。
+    Tailscale,
 }
 
 pub fn new_setting_service(
@@ -224,97 +226,114 @@ pub fn new_setting_service(
                 Err(e) => log::error!("Failed to serialize config snapshot: {:?}", e),
             }
         })
-        .on_write(move |args| {
-            // 写入载荷:部分配置对象,如 {"server_url":"...","prefer_builtin_asr":false}。
-            // 只出现(非 None)的字段才更新,缺失字段保持原状 —— 一次写可携带任意多项。
-            log::info!("Config write: {:?}", args.recv_data());
-            let payload = match std::str::from_utf8(args.recv_data()) {
-                Ok(s) => s,
-                Err(_) => {
-                    log::error!("Config write: payload not UTF-8");
-                    return;
-                }
-            };
-            log::info!("Config write payload: {}", payload);
-            let save = match serde_json::from_str::<ConfigSaveSnapshot>(payload) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::error!("Config write: invalid JSON ({}): {}", e, payload);
-                    return;
-                }
-            };
-            log::info!("Config write: {:?}", save);
-            let mut setting = config_w.lock().unwrap();
+        .on_write({
+            let evt_tx = evt_tx.clone();
+            move |args| {
+                // 写入载荷:部分配置对象,如 {"server_url":"...","prefer_builtin_asr":false}。
+                // 只出现(非 None)的字段才更新,缺失字段保持原状 —— 一次写可携带任意多项。
+                log::info!("Config write: {:?}", args.recv_data());
+                let payload = match std::str::from_utf8(args.recv_data()) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        log::error!("Config write: payload not UTF-8");
+                        return;
+                    }
+                };
+                log::info!("Config write payload: {}", payload);
+                let save = match serde_json::from_str::<ConfigSaveSnapshot>(payload) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("Config write: invalid JSON ({}): {}", e, payload);
+                        return;
+                    }
+                };
+                log::info!("Config write: {:?}", save);
+                let mut setting = config_w.lock().unwrap();
 
-            if let Some(mut list) = save.wifi_list {
-                if list.len() > MAX_WIFI_CREDS {
-                    log::warn!(
-                        "wifi_list has {} entries, truncating to {}",
-                        list.len(),
-                        MAX_WIFI_CREDS
-                    );
-                    list.truncate(MAX_WIFI_CREDS);
+                if let Some(mut list) = save.wifi_list {
+                    if list.len() > MAX_WIFI_CREDS {
+                        log::warn!(
+                            "wifi_list has {} entries, truncating to {}",
+                            list.len(),
+                            MAX_WIFI_CREDS
+                        );
+                        list.truncate(MAX_WIFI_CREDS);
+                    }
+                    setting.0.wifi_list = list;
+                    // 经 MutexGuard 的 Deref,先 clone 再写 NVS,避免同时借 guard。
+                    let l = setting.0.wifi_list.clone();
+                    if let Err(e) = Setting::save_wifi_list(&mut setting.1, &l) {
+                        log::error!("Failed to save wifi_list: {:?}", e);
+                    }
                 }
-                setting.0.wifi_list = list;
-                // 经 MutexGuard 的 Deref,先 clone 再写 NVS,避免同时借 guard。
-                let l = setting.0.wifi_list.clone();
-                if let Err(e) = Setting::save_wifi_list(&mut setting.1, &l) {
-                    log::error!("Failed to save wifi_list: {:?}", e);
-                }
-            }
 
-            if let Some(url) = save.server_url {
-                setting.0.server_url = url.clone();
-                if let Err(e) = setting.1.set_str("server_url", &url) {
-                    log::error!("Failed to save server_url: {:?}", e);
+                if let Some(url) = save.server_url {
+                    setting.0.server_url = url.clone();
+                    if let Err(e) = setting.1.set_str("server_url", &url) {
+                        log::error!("Failed to save server_url: {:?}", e);
+                    }
                 }
-            }
 
-            if let Some(asr) = save.asr_config {
-                // 合并写(默认值 < 现有 NVS < 本次传入):只覆盖传入里出现的 key,
-                // 缺失的 key 保持原状 —— 不完整的 JSON 也能增量更新。
-                // asr_config 走独立 NVS 键,重启后由 main.rs 重新加载。
-                let mut base = AsrConfig::load_from_nvs(&setting.1)
+                if let Some(asr) = save.asr_config {
+                    // 合并写(默认值 < 现有 NVS < 本次传入):只覆盖传入里出现的 key,
+                    // 缺失的 key 保持原状 —— 不完整的 JSON 也能增量更新。
+                    // asr_config 走独立 NVS 键,重启后由 main.rs 重新加载。
+                    let mut base = AsrConfig::load_from_nvs(&setting.1)
                     .and_then(|c| serde_json::to_value(&c).ok())
                     .unwrap_or_else(|| {
                         serde_json::json!({"platform":"whisper","uri":"","api_key":"","model":""})
                     });
-                if let (Some(base_obj), Some(in_obj)) = (base.as_object_mut(), asr.as_object()) {
-                    for (k, v) in in_obj {
-                        base_obj.insert(k.clone(), v.clone());
-                    }
-                }
-                match serde_json::from_value::<AsrConfig>(base) {
-                    Ok(cfg) => {
-                        if let Err(e) = cfg.save_to_nvs(&mut setting.1) {
-                            log::error!("Failed to save asr_config: {:?}", e);
+                    if let (Some(base_obj), Some(in_obj)) = (base.as_object_mut(), asr.as_object())
+                    {
+                        for (k, v) in in_obj {
+                            base_obj.insert(k.clone(), v.clone());
                         }
                     }
-                    Err(e) => log::error!("asr_config value invalid after merge: {:?}", e),
+                    match serde_json::from_value::<AsrConfig>(base) {
+                        Ok(cfg) => {
+                            if let Err(e) = cfg.save_to_nvs(&mut setting.1) {
+                                log::error!("Failed to save asr_config: {:?}", e);
+                            }
+                        }
+                        Err(e) => log::error!("asr_config value invalid after merge: {:?}", e),
+                    }
                 }
-            }
 
-            if let Some(m) = save.mic_model {
-                setting.0.mic_model = m;
-                if let Err(e) = setting.1.set_u8("mic_model", m) {
-                    log::error!("Failed to save mic_model: {:?}", e);
+                if let Some(m) = save.mic_model {
+                    setting.0.mic_model = m;
+                    if let Err(e) = setting.1.set_u8("mic_model", m) {
+                        log::error!("Failed to save mic_model: {:?}", e);
+                    }
                 }
-            }
 
-            if let Some(b) = save.prefer_builtin_asr {
-                setting.0.prefer_builtin_asr = b;
-                if let Err(e) = setting.1.set_u8(PREFER_BUILTIN_ASR_KEY, b as u8) {
-                    log::error!("Failed to save prefer_builtin_asr: {:?}", e);
+                if let Some(b) = save.prefer_builtin_asr {
+                    setting.0.prefer_builtin_asr = b;
+                    if let Err(e) = setting.1.set_u8(PREFER_BUILTIN_ASR_KEY, b as u8) {
+                        log::error!("Failed to save prefer_builtin_asr: {:?}", e);
+                    }
                 }
-            }
 
-            if let Some(key) = save.tailscale_key {
-                // 空串忽略(页面上未填就保存其它项时,不该把已绑定的 key 冲掉)。
-                if !key.trim().is_empty() {
-                    if let Err(e) = setting.1.set_str(crate::tailscale::NVS_KEY, key.trim()) {
-                        log::error!("Failed to save tailscale_key: {:?}", e);
-                    } else {
-                        log::info!("tailscale_key saved ({} chars)", key.trim().len());
+                if let Some(key) = save.tailscale_key {
+                    // 空串忽略(页面上未填就保存其它项时,不该把已绑定的 key 冲掉)。
+                    if !key.trim().is_empty() {
+                        // 对齐 vibewatch:写入新 key 时擦掉 microlink 的旧 tailnet 注册
+                        // (机器 key / WG key / 缓存 peers),否则新 key 会被旧注册顶掉。
+                        // 此时没有任何 microlink 实例在跑(factory_reset 要求 init 前调用)。
+                        unsafe {
+                            let rc = esp_idf_svc::sys::microlink::microlink_factory_reset();
+                            if rc != esp_idf_svc::sys::ESP_OK {
+                                log::warn!("microlink factory reset failed: {rc}");
+                            }
+                        }
+                        if let Err(e) = setting.1.set_str(crate::tailscale::NVS_KEY, key.trim()) {
+                            log::error!("Failed to save tailscale_key: {:?}", e);
+                        } else {
+                            log::info!("tailscale_key saved ({} chars)", key.trim().len());
+                        }
+                        // 通知 keyboard 主循环跳 Tailscale 页面(连接 + 节点列表)。
+                        if let Some(tx) = &evt_tx {
+                            let _ = tx.blocking_send(BTevent::Tailscale);
+                        }
                     }
                 }
             }

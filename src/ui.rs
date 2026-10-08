@@ -1021,6 +1021,75 @@ pub fn render_knob_picker(
     flush(target)
 }
 
+/// Tailscale 页面(BLE 配网页写入 tailscale_key 后由 keyboard 主循环跳入):
+/// 连接进度 + tailnet 节点列表。keys UI 风格(render_list 列表 + 状态栏),
+/// 输入复用 keyboard 的 wait_key_event:旋钮滚动选中、ESC 退出。
+/// microlink guard 的生命周期 = 页面(退出即拆隧道;remote 模式会按需重建)。
+pub async fn tailscale_page(
+    target: &mut FrameBuffer,
+    auth_key: Option<String>,
+    wifi_on: bool,
+    ble_on: bool,
+    key_pins: &mut crate::bt_keyboard_mode::KeysPin,
+) {
+    use crate::bt_keyboard_mode::ControllerCommand as Cmd;
+    use crate::bt_keyboard_mode::KeysPin;
+
+    if !wifi_on {
+        let _ = crate::lcd::display_text(target, "Tailscale\n WiFi not connected", 0);
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        return;
+    }
+    let Some(auth_key) = auth_key else {
+        let _ = crate::lcd::display_text(target, "Tailscale\n No key provisioned", 0);
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        return;
+    };
+
+    let _ = crate::lcd::display_text(target, "Tailscale\n Connecting...", 0);
+    let guard =
+        crate::microlink::start_and_wait(&auth_key, std::time::Duration::from_secs(90), |label| {
+            let _ =
+                crate::lcd::display_text(target, &format!("Tailscale\n Connecting...\n{label}"), 0);
+        });
+    let Some(guard) = guard else {
+        let _ = crate::lcd::display_text(target, "Tailscale\n Connection failed", 0);
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        return;
+    };
+
+    // 节点列表:在线优先(sessions::同款排序),旋钮滚动、ESC 退出。
+    let mut focus = 0usize;
+    loop {
+        let nodes = crate::microlink::tailnet_nodes(&guard);
+        let items: Vec<String> = if nodes.is_empty() {
+            vec!["No peers".to_string()]
+        } else {
+            nodes
+                .iter()
+                .map(|n| {
+                    format!(
+                        "{} {}",
+                        n.hostname,
+                        if n.online { "[online]" } else { "[offline]" }
+                    )
+                })
+                .collect()
+        };
+        let count = items.len().max(1);
+        focus = focus.min(count - 1);
+        let _ = render_list(target, "Tailnet nodes", &items, focus);
+
+        match crate::bt_keyboard_mode::wait_key_event(key_pins).await {
+            Cmd::RotateDown => focus = (focus + 1) % count,
+            Cmd::RotateUp => focus = (focus + count - 1) % count,
+            Cmd::KeyboardPress(KeysPin::ESC) => return,
+            // 其余按键忽略(不产生 HID 输出)。
+            _ => {}
+        }
+    }
+}
+
 fn render_password(
     target: &mut FrameBuffer,
     header: &str,

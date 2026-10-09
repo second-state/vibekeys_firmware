@@ -135,12 +135,14 @@ fn sync_time_with_retry(
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    crate::atlas::init()?;
+    let partition = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
+    // nvs 提前创建:atlas 主题(setup.html 上传,存 NVS)要先于首帧加载
+    let mut nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
+    crate::atlas::init(&nvs)?;
     crate::ui2::load_palette();
     let peripherals = esp_idf_svc::hal::peripherals::Peripherals::take().unwrap();
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
     let _fs = esp_idf_svc::io::vfs::MountedEventfs::mount(20)?;
-    let partition = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
 
     let mut bl = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio11)?;
     if cfg!(feature = "max2") {
@@ -244,8 +246,6 @@ fn main() -> anyhow::Result<()> {
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
-
-    let mut nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
 
     let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
     // Load keymap config before moving nvs
@@ -547,22 +547,8 @@ fn main() -> anyhow::Result<()> {
         ));
     }
 
-    log::info!("Displaying PNG image on LCD...");
-
-    if setting.background_png.0.is_empty() {
-        log::info!("No background PNG found in settings, using default.");
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    } else {
-        log::info!(
-            "Background PNG found in settings, size: {} bytes",
-            setting.background_png.0.len()
-        );
-        lcd::display_png(
-            &mut target,
-            setting.background_png.0.as_slice(),
-            std::time::Duration::from_secs(2),
-        )?;
-    }
+    // 旧版开机 splash(背景图 2 秒)已移除:图片上传功能改为上传主题 atlas,
+    // boot 菜单本身即带主题字标,直接进菜单。
 
     let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
 
@@ -791,15 +777,15 @@ fn handle_reset_event(
     setting_arc: &mut Arc<Mutex<(bt_wifi_mode::Setting, esp_idf_svc::nvs::EspDefaultNvs)>>,
 ) -> ! {
     let lock = setting_arc.lock().unwrap();
-    let png_to_save = if lock.0.background_png.1 {
-        Some(lock.0.background_png.0.clone())
+    let png_to_save = if lock.0.atlas_png.1 {
+        Some(lock.0.atlas_png.0.clone())
     } else {
         None
     };
 
     if let Some(png) = png_to_save {
-        if lock.1.set_blob("background_png", &png).is_err() {
-            log::error!("Failed to save background PNG");
+        if lock.1.set_blob("atlas_png", &png).is_err() {
+            log::error!("Failed to save atlas theme PNG");
         }
     }
 

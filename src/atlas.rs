@@ -38,17 +38,68 @@ pub mod sprite {
     pub const FOCUS_BR: (u32, u32, u32, u32) = (57, 31, 6, 6);
 }
 
-/// 启动时调用一次:解码嵌入的 PNG 到 RAM(202×54 RGBA ≈ 11KB)
-pub fn init() -> Result<()> {
+/// 启动时调用一次:优先用 NVS 里的主题(setup.html 上传的 "atlas_png" blob,
+/// 202×54 由网页侧校验,设备侧不检查),没有或解码失败回退内置绿色主题。
+pub fn init(nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> Result<()> {
+    let custom = read_nvs_atlas(nvs);
+    let (bytes, source) = match custom {
+        Some(b) => (b, "nvs"),
+        None => (ATLAS_PNG.to_vec(), "built-in"),
+    };
+    match image::load_from_memory(&bytes) {
+        Ok(img) => {
+            let img = img.to_rgba8();
+            log::info!(
+                "atlas decoded ({}): {}x{} ({} bytes png)",
+                source,
+                img.width(),
+                img.height(),
+                bytes.len()
+            );
+            *ATLAS.lock().unwrap() = Some(img);
+            Ok(())
+        }
+        Err(e) => {
+            if source == "nvs" {
+                log::error!("NVS atlas decode failed ({e:?}), falling back to built-in theme");
+                return init_fallback();
+            }
+            Err(e.into())
+        }
+    }
+}
+
+fn init_fallback() -> Result<()> {
     let img = image::load_from_memory(ATLAS_PNG)?.to_rgba8();
     log::info!(
-        "atlas decoded: {}x{} ({} bytes png)",
+        "atlas decoded (built-in): {}x{} ({} bytes png)",
         img.width(),
         img.height(),
         ATLAS_PNG.len()
     );
     *ATLAS.lock().unwrap() = Some(img);
     Ok(())
+}
+
+/// 读 NVS "atlas_png" blob;不存在/为空返回 None
+fn read_nvs_atlas(nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> Option<Vec<u8>> {
+    let size = nvs
+        .blob_len("atlas_png")
+        .map_err(|e| log::error!("atlas_png blob_len: {e:?}"))
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    if size == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    match nvs.get_blob("atlas_png", &mut buf) {
+        Ok(Some(data)) => Some(data.to_vec()),
+        other => {
+            log::error!("atlas_png read failed: {other:?}");
+            None
+        }
+    }
 }
 
 /// 调色板:色板条取图区 (1,49) 起 16 槽 × 4×4,取各槽中心像素。

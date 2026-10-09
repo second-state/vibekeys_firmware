@@ -4,7 +4,6 @@ use esp32_nimble::{utilities::BleUuid, uuid128, BLEService, NimbleProperties};
 use serde::{Deserialize, Serialize};
 
 use crate::audio::AsrConfig;
-use crate::lcd;
 
 pub const SERVICE_ID: BleUuid = uuid128!("623fa3e2-631b-4f8f-a6e7-a7b09c03e7e0");
 /// 统一配置特征值:承载 ssid / pass / server_url(JSON {type,value} 复用)。
@@ -69,7 +68,7 @@ pub struct Setting {
     /// 多个已配置 WiFi;连接时与扫描结果匹配,顺序即优先级。
     pub wifi_list: Vec<WifiCred>,
     pub server_url: String,
-    pub background_png: (Vec<u8>, bool), // (data, ended)
+    pub atlas_png: (Vec<u8>, bool), // 主题 atlas(setup.html 上传);(data, ended)
     pub mic_model: u8,
     /// 键盘模式下是否优先用内置 ASR(Whisper);false 时 MIC 透传给主机(触发主机自带听写)。
     pub prefer_builtin_asr: bool,
@@ -90,7 +89,8 @@ impl Setting {
     pub fn clear_nvs(nvs: &mut esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<()> {
         nvs.remove(WIFI_LIST_KEY)?;
         nvs.remove("server_url")?;
-        nvs.remove("background_png")?;
+        nvs.remove("atlas_png")?;
+        nvs.remove("background_png")?; // 旧版背景图键,顺手清理
         nvs.remove("mic_model")?;
         nvs.remove(PREFER_BUILTIN_ASR_KEY)?;
         nvs.remove("state")?;
@@ -134,34 +134,25 @@ impl Setting {
             .unwrap_or_default()
             .to_string();
 
-        let background_png_size = nvs
-            .blob_len("background_png")
-            .map_err(|e| log::error!("Failed to get background_png size: {:?}", e))
+        // 主题 atlas(setup.html 上传,202×54 由网页侧校验;设备侧不校验,
+        // 解码失败由 atlas::init 回退内置主题)。键不存在则为空。
+        let atlas_png_size = nvs
+            .blob_len("atlas_png")
+            .map_err(|e| log::error!("Failed to get atlas_png size: {:?}", e))
             .ok()
             .flatten()
             .unwrap_or(0);
 
-        let background_png = if background_png_size != 0 {
-            log::info!("Background PNG size in NVS: {} bytes", background_png_size);
-
-            let mut png_buf = vec![0; background_png_size];
-            let png_buf_ = nvs
-                .get_blob("background_png", &mut png_buf)?
-                .unwrap_or(lcd::DEFAULT_BACKGROUND);
-
-            if png_buf_.len() != background_png_size {
-                log::warn!(
-                    "Background PNG size mismatch: expected {}, got {}",
-                    background_png_size,
-                    png_buf_.len()
-                );
-                png_buf_.to_vec()
-            } else {
-                png_buf
+        let atlas_png = if atlas_png_size != 0 {
+            log::info!("Atlas PNG size in NVS: {} bytes", atlas_png_size);
+            let mut buf = vec![0; atlas_png_size];
+            match nvs.get_blob("atlas_png", &mut buf)? {
+                Some(data) => data.to_vec(),
+                None => Vec::new(),
             }
         } else {
-            log::info!("No background PNG found in NVS, using default.");
-            lcd::DEFAULT_BACKGROUND.to_vec()
+            log::info!("No atlas PNG in NVS, using built-in theme.");
+            Vec::new()
         };
 
         let state = nvs.get_u8("state")?.unwrap_or(0);
@@ -173,7 +164,7 @@ impl Setting {
         Ok(Setting {
             wifi_list,
             server_url,
-            background_png: (background_png, false),
+            atlas_png: (atlas_png, false),
             mic_model,
             prefer_builtin_asr,
             state,
@@ -347,20 +338,25 @@ pub fn new_setting_service(
         let gif_chunk = args.recv_data();
 
         if gif_chunk.len() <= 1024 * 1024 && gif_chunk.len() > 0 {
-            log::info!("New background GIF received, size: {}", gif_chunk.len());
+            log::info!("New atlas theme chunk received, size: {}", gif_chunk.len());
             let mut setting = setting_gif.lock().unwrap();
-            setting.0.background_png.0.extend_from_slice(gif_chunk);
-            if gif_chunk.len() < 512 {
-                setting.0.background_png.1 = true; // Mark as valid
+            // 上一次传输已结束(或 Clear 的 1 字节占位)再写 → 开新一轮,清掉旧累积
+            if setting.0.atlas_png.1 {
+                setting.0.atlas_png.0.clear();
+                setting.0.atlas_png.1 = false;
             }
-            if setting.0.background_png.0.len() > 1024 * 1024 {
-                log::warn!("Background GIF size exceeds 1024KB, resetting to default.");
-                setting.0.background_png.0.clear();
-                setting.0.background_png.1 = false;
+            setting.0.atlas_png.0.extend_from_slice(gif_chunk);
+            if gif_chunk.len() < 512 {
+                setting.0.atlas_png.1 = true; // Mark as valid
+            }
+            if setting.0.atlas_png.0.len() > 1024 * 1024 {
+                log::warn!("Atlas theme size exceeds 1024KB, resetting to default.");
+                setting.0.atlas_png.0.clear();
+                setting.0.atlas_png.1 = false;
                 args.reject();
             }
         } else {
-            log::error!("Failed to parse new background GIF from bytes.");
+            log::error!("Failed to parse new atlas theme chunk.");
         }
     });
 

@@ -153,15 +153,15 @@
                                 </label>
 
                                 <div class="border-t border-base-300 pt-6">
-                                    <h3 class="card-title text-lg mb-4">Background Image</h3>
+                                    <h3 class="card-title text-lg mb-4">Theme (Atlas)</h3>
                                     <div class="form-control mb-4">
                                         <label class="label">
-                                            <span class="label-text">Select a background image (PNG)</span>
+                                            <span class="label-text">Select an atlas theme PNG</span>
                                         </label>
                                         <input type="file" class="file-input file-input-bordered w-full"
                                             id="backgroundImage" accept=".png" onchange="validateAndPreviewFile(this)">
                                         <label class="label">
-                                            <span class="label-text-alt">Must be a PNG file, max 1MB</span>
+                                            <span class="label-text-alt">Must be exactly 202×54 PNG (the atlas layout), max 1MB. Cleared = built-in green theme.</span>
                                         </label>
                                         <div id="fileError" class="text-error text-sm"></div>
                                         <div id="bgPreview"
@@ -170,9 +170,9 @@
                                     </div>
                                     <div class="flex gap-2">
                                         <button class="btn btn-primary flex-1" id="writeBgButton" disabled>Set
-                                            Background</button>
+                                            Theme</button>
                                         <button class="btn btn-outline flex-1" id="clearBgButton">Clear
-                                            Background</button>
+                                            Theme</button>
                                     </div>
                                 </div>
                             </div>
@@ -395,22 +395,56 @@
                     return false;
                 }
 
-                // preview image
-                const reader = new FileReader();
-                reader.onload = function (e) {
-                    bgPreview.style.backgroundImage = `url(${e.target.result})`;
-                    bgPreview.classList.remove('hidden');
-                    selectedBackgroundFile = file;
-                    writeBgButton.disabled = false;
+                // check atlas dimensions (must be exactly 202x54)
+                const img = new Image();
+                const objectUrl = URL.createObjectURL(file);
+                img.onload = function () {
+                    URL.revokeObjectURL(objectUrl);
+                    if (img.naturalWidth !== 202 || img.naturalHeight !== 54) {
+                        fileError.textContent =
+                            `Atlas must be exactly 202\u00d754 pixels (got ${img.naturalWidth}\u00d7${img.naturalHeight})`;
+                        input.value = '';
+                        return;
+                    }
+                    // preview image
+                    const reader = new FileReader();
+                    reader.onload = function (e) {
+                        bgPreview.style.backgroundImage = `url(${e.target.result})`;
+                        bgPreview.classList.remove('hidden');
+                        selectedBackgroundFile = file;
+                        writeBgButton.disabled = false;
+                    };
+                    reader.readAsDataURL(file);
                 };
-                reader.readAsDataURL(file);
+                img.onerror = function () {
+                    URL.revokeObjectURL(objectUrl);
+                    fileError.textContent = 'Cannot decode this PNG file';
+                    input.value = '';
+                };
+                img.src = objectUrl;
             }
             return true;
         }
 
-        // clear background image
-        function clearBackgroundImage() {
-            // No longer changes page background
+        // clear theme: write a 1-byte placeholder via the atlas characteristic,
+        // then RESET — the device stores the invalid blob, fails to decode it at
+        // boot and falls back to the built-in green theme.
+        async function clearBackgroundImage() {
+            if (!isConnected || !service) {
+                showNotification('Error', 'VibeKeys is not connected', true);
+                return false;
+            }
+            try {
+                const characteristic = await service.getCharacteristic(BACKGROUND_IMAGE_ID);
+                await characteristic.writeValue(new Uint8Array([0x00]));
+                const rc = await service.getCharacteristic(RESET_ID);
+                await rc.writeValue(new TextEncoder().encode('RESET'));
+                return true;
+            } catch (e) {
+                console.error('Clear theme failed:', e);
+                showNotification('Error', 'Clear theme failed', true);
+                return false;
+            }
         }
 
         // connect
@@ -839,9 +873,13 @@
             writeBackgroundImage();
         });
 
-        clearBgButton.addEventListener('click', () => {
-            clearBackgroundImage();
-            showNotification('Message', 'Background image cleared');
+        clearBgButton.addEventListener('click', async () => {
+            clearBgButton.disabled = true;
+            const ok = await clearBackgroundImage();
+            if (ok) {
+                showNotification('Success', 'Theme cleared; device rebooting with built-in theme');
+            }
+            clearBgButton.disabled = false;
         });
 
         if (!navigator.bluetooth) {

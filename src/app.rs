@@ -729,12 +729,7 @@ async fn open_session_picker(
 
         let sig = (items.clone(), focus_idx);
         if last_sig.as_ref() != Some(&sig) {
-            let _ = crate::ui::render_session_list(
-                ui.display_mut(),
-                "Session (ESC=cancel)",
-                &items,
-                focus_idx,
-            );
+            let _ = crate::ui::render_session_list(ui.display_mut(), "Session", &items, focus_idx);
             last_sig = Some(sig);
         }
 

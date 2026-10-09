@@ -142,15 +142,9 @@ impl ScreenFormat {
 
 /// session 列表单行字符上限。取 15:最坏全角中文 15×12px=180px,默认屏(284)/max2(320)都单行不溢出。
 /// title 可能含 cwd 等很长的内容,截断避免换行叠到下一行。
-const LIST_LABEL_MAX_CHARS: usize = 15;
-fn truncate_for_list(s: &str) -> String {
-    if s.chars().count() <= LIST_LABEL_MAX_CHARS {
-        return s.to_string();
-    }
-    let mut t: String = s.chars().take(LIST_LABEL_MAX_CHARS - 3).collect();
-    t.push_str("...");
-    t
-}
+// 标签不再按字符截断:新 UI(u2::compat::session_list)行宽 282px,超宽部分由
+// embedded-text 折行后按行高裁掉,不影响其他行。按字符截断对中英文宽度差一倍,
+// 且会丢「有省略号」这个信息,故移除。
 
 /// 等首条 `Connected`(带超时)。单独成函数以 `&mut rx` 借用,等完归还 rx 给 `Self`。
 async fn wait_first_connected(rx: &mut mpsc::UnboundedReceiver<RawEvent>) {
@@ -502,7 +496,7 @@ impl MqttServer {
     /// 当前已知会话列表,供选择器渲染。排序:waiting(!is_working) 优先排前(需要关注),
     /// 再按 prefix(topic,唯一不变)定序 —— 不用 ts(每次 presence 刷新都变,会让同状态会话乱跳)。
     /// 返回 (prefix, 显示标签, 是否活跃, 是否 working)。标签优先 title,空则回退 client_id,
-    /// 再空回退 prefix,并截断到 LIST_LABEL_MAX_CHARS 字符避免 render_list 换行叠行。
+    /// 再空回退 prefix(不截断,渲染层自行处理超宽)。
     pub fn session_labels(&self) -> Vec<(String, String, bool, bool)> {
         let mut entries: Vec<(&String, &Session)> = self.sessions.iter().collect();
         // 一步排序:先比 is_working(false=waiting/!is_working 在前,true=working 在后);
@@ -525,7 +519,7 @@ impl MqttServer {
                 };
                 (
                     prefix.clone(),
-                    truncate_for_list(&raw),
+                    raw,
                     self.active.as_deref() == Some(prefix.as_str()),
                     s.is_working,
                 )

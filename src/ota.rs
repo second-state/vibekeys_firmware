@@ -31,6 +31,26 @@ pub const OTA_DOWNLOAD_URL: &str = match option_env!("VIBEKEYS_OTA_URL") {
 
 static OTA_INDEX_HTML: &str = include_str!("../assets/ota_index.html");
 
+/// OTA 流程页统一出口:max2 走 ui2 状态页(标题嵌片 + 居中正文),小屏回退 display_text。
+fn show(target: &mut crate::lcd::FrameBuffer, title: &str, body: &str) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::status(target, title, body, crate::ui2::Ink::Text);
+    }
+    #[allow(unreachable_code)]
+    crate::lcd::display_text(target, &format!("{title}\n {body}"), 0)
+}
+
+/// 同 show,正文用错误色
+fn show_err(target: &mut crate::lcd::FrameBuffer, title: &str, body: &str) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::status(target, title, body, crate::ui2::Ink::Err);
+    }
+    #[allow(unreachable_code)]
+    crate::lcd::display_text(target, &format!("{title}\n {body}"), 0)
+}
+
 enum OtaEvent {
     DataChunk(Vec<u8>),
     Complete,
@@ -63,7 +83,7 @@ pub fn run(
     let scan_list = data.scan_list;
     let setting = data.setting;
 
-    crate::lcd::display_text(target, "OTA Mode\n Connecting wifi", 0)?;
+    show(target, "OTA", "Connecting wifi")?;
 
     // 合并后 OTA 复用主固件的 wifi 实例:若刚从 remote 过来,wifi 可能已经连上了,
     // 这时再调 wifi::connect 的 connect() 会因「已连接」报错。所以已连接就直接复用,
@@ -91,7 +111,7 @@ pub fn run(
         }
     }
     if !wifi.is_connected().unwrap_or(false) {
-        crate::lcd::display_text(target, "OTA Mode\n Connect wifi Failed\n ESC to back", 0)?;
+        show_err(target, "OTA", "Connect wifi Failed\n ESC to back")?;
         wait_button_release(esc_btn);
         return Ok(());
     }
@@ -101,7 +121,7 @@ pub fn run(
 
     // 同步时间:OTA download-latest 走 HTTPS(TLS),证书校验依赖正确时间。
     // WiFi 已连上,可以 NTP。失败不阻塞——HTTP 上传不需要 TLS,download-latest 才需要。
-    crate::lcd::display_text(target, "OTA Mode\n Syncing time...", 0)?;
+    show(target, "OTA", "Syncing time...")?;
     if let Err(e) = crate::sync_time(target) {
         log::warn!(
             "OTA: time sync failed (download-latest may fail TLS): {:?}",
@@ -109,12 +129,10 @@ pub fn run(
         );
     }
 
-    crate::lcd::display_text(
+    show(
         target,
-        &format!(
-            "OTA: http://{ip}\n Accept: download latest\n ESC: exit\n (or upload via browser)"
-        ),
-        0,
+        "OTA",
+        &format!("http://{ip}\n Accept: download latest\n ESC: exit\n (or upload via browser)"),
     )?;
 
     let (tx, rx) = std::sync::mpsc::channel::<OtaEvent>();
@@ -139,12 +157,13 @@ pub fn run(
             log::info!("OTA: accept pressed, downloading latest from release");
             let render_progress = |target: &mut crate::lcd::FrameBuffer, pct: u8| {
                 // display_text 只画字模不清背景,连续刷进度帧会叠在上一帧上,
-                // 数字叠成一团——先清屏再画。
+                // 数字叠成一团——先清屏再画。(ui2 的 status 自带整屏铺底,clear 只是
+                // 给小屏的 classic 回退路径用。)
                 target.clear(crate::lcd::ColorFormat::CSS_BLACK)?;
-                crate::lcd::display_text(
+                show(
                     target,
-                    &format!("OTA Mode\n Downloading latest... {pct}%\n Device will reboot"),
-                    0,
+                    "OTA",
+                    &format!("Downloading latest... {pct}%\n Device will reboot"),
                 )
             };
             render_progress(target, 0)?;

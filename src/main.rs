@@ -7,6 +7,7 @@ use crate::lcd::DisplayTargetDrive;
 
 mod ansi_plugin;
 mod app;
+mod atlas;
 mod audio;
 mod bt_keyboard_mode;
 mod bt_wifi_mode;
@@ -21,6 +22,7 @@ mod protocol;
 mod sessions;
 mod tailscale;
 mod ui;
+mod ui2;
 mod util;
 mod wifi;
 
@@ -69,14 +71,12 @@ pub fn sync_time(display_target: &mut crate::lcd::FrameBuffer) -> anyhow::Result
 
     for i in 0..SNTP_SYNC_TIMEOUT_SECS {
         let p = ".".repeat(i % 4);
-        let _ =
-            ui::render_keyboard_view(display_target, false, false, &format!("Syncing time{}", p));
+        let _ = ui2::sync_time_view(display_target, &format!("Syncing time{}", p));
         let status = ntp_client.get_sync_status();
         log::info!("sntp sync status {:?}", status);
         log_heap();
         if status == SyncStatus::Completed {
-            let _ =
-                ui::render_keyboard_view(display_target, false, false, "Syncing time Completed");
+            let _ = ui2::sync_time_view(display_target, "Syncing time Completed");
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -99,7 +99,7 @@ fn wait_time_sync_failure_action(
     accept: &AnyBtn,
     esc: &AnyBtn,
 ) -> TimeSyncFailureAction {
-    let _ = ui::render_keyboard_view(display_target, false, false, TIME_SYNC_FAILED_PROMPT);
+    let _ = ui2::sync_time_view(display_target, TIME_SYNC_FAILED_PROMPT);
     loop {
         if accept.is_low() {
             wait_button_release(accept);
@@ -135,6 +135,8 @@ fn sync_time_with_retry(
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    crate::atlas::init()?;
+    crate::ui2::load_palette();
     let peripherals = esp_idf_svc::hal::peripherals::Peripherals::take().unwrap();
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
     let _fs = esp_idf_svc::io::vfs::MountedEventfs::mount(20)?;
@@ -303,7 +305,7 @@ fn main() -> anyhow::Result<()> {
     });
 
     let mode = loop {
-        let choice = runtime.block_on(ui::boot_menu(&mut target, &mut btn7, &mut btn3, &mut btn4));
+        let choice = runtime.block_on(ui2::boot_menu(&mut target, &mut btn7, &mut btn3, &mut btn4));
         match choice {
             ui::BootChoice::Keyboard => break 3,
             ui::BootChoice::Remote => break 1,
@@ -338,9 +340,26 @@ fn main() -> anyhow::Result<()> {
                         continue;
                     }
                     ui::SettingOutcome::ClearConfig => {
+                        // 确认弹窗:焦点在这项上一按 ACC 就会清空全部配置,先要二次确认。
+                        let mut popup = ui::popup_centered(target.bounding_box());
+                        let _ = popup.show(&mut target, "Clear all config?\n ACC=确认  ESC=取消");
+                        let confirmed = loop {
+                            if btn7.is_low() {
+                                wait_button_release(&btn7);
+                                break true;
+                            }
+                            if btn3.is_low() {
+                                wait_button_release(&btn3);
+                                break false;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        };
+                        if !confirmed {
+                            let _ = popup.hide(&mut target);
+                            continue;
+                        }
                         bt_wifi_mode::Setting::clear_nvs(&mut nvs)?;
                         bt_keyboard_mode::KeymapConfig::clear_nvs(&mut nvs)?;
-                        let mut popup = ui::popup_centered(target.bounding_box());
                         let _ = popup.show_transient(&mut target, "Clear all config");
                         std::thread::sleep(std::time::Duration::from_secs(1));
                         // 清空后重启:让(已清空的)配置重新加载,避免继续用内存里的旧值。
@@ -547,7 +566,7 @@ fn main() -> anyhow::Result<()> {
 
     let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
 
-    let _ = ui::render_keyboard_view(&mut target, false, false, "Connecting the WiFi...");
+    let _ = ui2::net_view(&mut target, "Connecting the WiFi...");
 
     // 用 boot 阶段的扫描结果与已配置 wifi_list 匹配,挑当前在范围内的网络连接。
     let r = match bt_wifi_mode::pick_cred(&scan_list, &setting.wifi_list) {
@@ -562,7 +581,7 @@ fn main() -> anyhow::Result<()> {
     };
     if r.is_err() {
         log::error!("Failed to connect to WiFi: {:?}", r.err());
-        let _ = ui::render_keyboard_view(&mut target, false, false, " WiFi connection failed\n");
+        let _ = ui2::net_view_err(&mut target, "WiFi connection failed");
         std::thread::sleep(std::time::Duration::from_secs(60));
         esp_idf_svc::hal::reset::restart();
     }
@@ -580,7 +599,7 @@ fn main() -> anyhow::Result<()> {
         || broker_in_tailnet.is_some()
     // DERP 中继走 TLS,隧道拉起前必须对时
     {
-        let _ = ui::render_keyboard_view(&mut target, false, false, "Syncing time...");
+        let _ = ui2::sync_time_view(&mut target, "Syncing time...");
         if !sync_time_with_retry(&mut target, &btn7, &btn3) {
             log::warn!("Time sync canceled; restarting before remote mode");
             esp_idf_svc::hal::reset::restart();
@@ -594,20 +613,13 @@ fn main() -> anyhow::Result<()> {
     {
         match tailscale_key.as_deref() {
             Some(auth_key) => {
-                let _ = ui::render_keyboard_view(
-                    &mut target,
-                    false,
-                    false,
-                    "Tailscale\n Connecting...",
-                );
+                let _ = ui2::net_view(&mut target, "Tailscale\n Connecting...");
                 let guard = microlink::start_and_wait(
                     auth_key,
                     std::time::Duration::from_secs(90),
                     |label| {
-                        let _ = ui::render_keyboard_view(
+                        let _ = ui2::net_view(
                             &mut target,
-                            false,
-                            false,
                             &format!("Tailscale\n Connecting...\n{label}"),
                         );
                     },
@@ -616,10 +628,8 @@ fn main() -> anyhow::Result<()> {
                     // 中继包只走自己的 mailbox:broker 在别的 DERP region 时先搬家,再握手。
                     if let Some(region) = ml.rehome_to_peer(host) {
                         log::info!("DERP mailbox rehomed to broker home region {region}");
-                        let _ = ui::render_keyboard_view(
+                        let _ = ui2::net_view(
                             &mut target,
-                            false,
-                            false,
                             &format!("Tailscale\n Mailbox -> region {region}"),
                         );
                         std::thread::sleep(std::time::Duration::from_secs(3));
@@ -633,10 +643,8 @@ fn main() -> anyhow::Result<()> {
             }
             None => {
                 log::warn!("broker in tailnet but no tailscale_key provisioned (setup.html)");
-                let _ = ui::render_keyboard_view(
+                let _ = ui2::net_view_err(
                     &mut target,
-                    false,
-                    false,
                     "Tailscale key missing\nProvision via setup.html",
                 );
                 std::thread::sleep(std::time::Duration::from_secs(3));
@@ -697,7 +705,7 @@ fn main() -> anyhow::Result<()> {
     .map_err(|e| log::error!("Failed to spawn ASR worker task: {e:?}"))
     .ok();
 
-    let _ = ui::render_keyboard_view(&mut target, false, false, "Connecting the Server...");
+    let _ = ui2::net_view(&mut target, "Connecting the Server...");
 
     let mut ui = lcd::UI::new_with_target(target);
 

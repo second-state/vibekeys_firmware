@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeKeys · Atlas 换皮验证(同一合成代码 × 2 套 atlas)</title>
+<style>
+  /* ============================================================
+     换皮验证:两列设备跑【完全相同】的合成代码,
+     唯一区别 = 挂载的 atlas(256×132)+ 调色板常量。
+     若右列(原神)成立 → 皮肤干净隔离在 atlas + palette,架构通过。
+     ============================================================ */
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#1b1d22; font-family:ui-monospace, Menlo, monospace; padding:28px; }
+
+  .cols { display:flex; gap:48px; align-items:flex-start; }
+  .col { flex:0 0 640px; width:640px; }
+  .col h2 { font-size:13px; color:#aab2bc; margin-bottom:14px; font-weight:600; }
+  .col .device { margin-bottom:26px; }
+
+  /* ===== 主题调色板:唯一允许差异的地方(除 atlas 外) ===== */
+  .theme-green   { --bg:#0a0f0c; --border:#26332b; --accent:#7fcb9c; --ok:#4ade80; --focus-fill:#7fcb9c; --onbar:#0a0f0c;
+                   --text:#dde5de; --dim:#6f7d74; --faint:#3c4a41; --panel:#121a15;
+                   --violet:#a78bfa; --yellow:#e0af68; --orange:#ff9e64; --red:#f87171; }
+  .theme-genshin { --bg:#0d1118; --border:#8a744e; --accent:#d3aa6a; --ok:#d3aa6a; --focus-fill:#212020; --onbar:#e8c88a;
+                   --text:#ece5d8; --dim:#7d8290; --faint:#4a4234; --panel:#1a2130;
+                   --violet:#9a6bff; --yellow:#e0af68; --orange:#ff9e64; --red:#e05555; }
+
+  .device { width:640px; height:344px; overflow:hidden;
+            outline:1px solid #3a3f47; box-shadow:0 12px 40px rgba(0,0,0,.5); }
+  .screen { width:320px; height:172px; transform:scale(2); transform-origin:top left;
+            background:var(--bg); position:relative;
+            font-family:ui-monospace, Menlo, monospace; font-size:13px; line-height:14px;
+            -webkit-font-smoothing:antialiased; }
+
+  /* 合成原语(两主题共用,零差异) */
+  .fr  { position:absolute; border:1px solid var(--border); background:var(--bg); }
+  .fb  { position:absolute; height:16px; background:var(--focus-fill); border:1px solid var(--accent); }
+  .fb .blit { overflow:hidden; }
+  .ttl { position:absolute; top:6px; left:8px; transform:translateY(-50%);
+         background:var(--bg); padding:0 3px; color:var(--accent); font-size:9px; font-weight:700; }
+  .t   { position:absolute; white-space:nowrap; color:var(--text); }
+  .t.dim { color:var(--dim); }
+  .t.onbar { color:var(--onbar); font-weight:700; }
+  .t.mk { font-size:9px; }
+  .blit { position:absolute; overflow:hidden; }
+
+  /* atlas 模板根 */
+  .atlas-tpl { position:absolute; width:202px; height:54px; }
+  .atlas-tpl .icon { position:absolute; width:10px; height:10px; }
+  .atlas-tpl .emblem { position:absolute; width:32px; height:32px; display:flex; align-items:center; justify-content:center; }
+  .atlas-tpl .outer { width:26px; height:26px; border:1px solid currentColor; transform:rotate(45deg);
+                      display:flex; align-items:center; justify-content:center; }
+  .atlas-tpl .mid { width:17px; height:17px; border:1px solid rgba(255,255,255,.14);
+                    display:flex; align-items:center; justify-content:center; }
+  .atlas-tpl .core { width:5px; height:5px; transform:rotate(-45deg); }
+  #atlas-hidden { position:absolute; left:-9999px; top:0; }
+</style>
+</head>
+<body>
+
+<!-- ============ ATLAS · 品牌绿 ============ -->
+<div id="atlas-hidden">
+<div class="atlas-tpl" id="atlas-green">
+  <div style="position:absolute; left:0px; top:0px; width:12px; height:12px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <svg class="icon" style="left:1px; top:1px; color:#dde5de;" viewBox="0 0 10 12">
+    <path d="M2 3 L8 8.5 L5 10.5 V1.5 L8 3.5 L2 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+  <div style="position:absolute; left:12px; top:0px; width:12px; height:12px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <svg class="icon" style="left:13px; top:1px; color:#3c4a41;" viewBox="0 0 10 12">
+    <path d="M2 3 L8 8.5 L5 10.5 V1.5 L8 3.5 L2 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+  <div style="position:absolute; left:24px; top:0px; width:12px; height:12px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <svg class="icon" style="left:25px; top:1px; color:#dde5de;" viewBox="0 0 12 10">
+    <path d="M1 4 C3.5 1.6 8.5 1.6 11 4 M2.8 6.4 C4.5 5 7.5 5 9.2 6.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="6" cy="8.6" r="1.2" fill="currentColor"/></svg>
+  <div style="position:absolute; left:36px; top:0px; width:12px; height:12px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <svg class="icon" style="left:37px; top:1px; color:#3c4a41;" viewBox="0 0 12 10">
+    <path d="M1 4 C3.5 1.6 8.5 1.6 11 4 M2.8 6.4 C4.5 5 7.5 5 9.2 6.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="6" cy="8.6" r="1.2" fill="currentColor"/></svg>
+  <div style="position:absolute; left:48px; top:0px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:49px; top:1px; width:6px; height:6px; background:#4ade80;"></div>
+  <div style="position:absolute; left:56px; top:0px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:57px; top:1px; width:6px; height:6px; background:#ff9e64;"></div>
+  <div style="position:absolute; left:0px; top:12px; width:202px; height:18px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:1px; top:13px; width:200px; height:16px;">
+    <div style="text-align:center; font-size:13px; line-height:14px; color:#dde5de; font-weight:700;">V I B E K E Y S</div>
+  </div>
+  <div style="position:absolute; left:0px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:8px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:16px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:24px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:1px; top:31px; width:6px; height:6px; border-top:1px solid #7fcb9c; border-left:1px solid #7fcb9c;"></div>
+  <div style="position:absolute; left:9px; top:31px; width:6px; height:6px; border-top:1px solid #7fcb9c; border-right:1px solid #7fcb9c;"></div>
+  <div style="position:absolute; left:17px; top:31px; width:6px; height:6px; border-bottom:1px solid #7fcb9c; border-left:1px solid #7fcb9c;"></div>
+  <div style="position:absolute; left:25px; top:31px; width:6px; height:6px; border-bottom:1px solid #7fcb9c; border-right:1px solid #7fcb9c;"></div>
+  <div style="position:absolute; left:32px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:40px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:48px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:56px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:33px; top:31px; width:6px; height:6px; border-top:1px solid #7fcb9c; border-left:1px solid #7fcb9c;"></div>
+  <div style="position:absolute; left:41px; top:31px; width:6px; height:6px; border-top:1px solid #7fcb9c; border-right:1px solid #7fcb9c;"></div>
+  <div style="position:absolute; left:49px; top:31px; width:6px; height:6px; border-bottom:1px solid #7fcb9c; border-left:1px solid #7fcb9c;"></div>
+  <div style="position:absolute; left:57px; top:31px; width:6px; height:6px; border-bottom:1px solid #7fcb9c; border-right:1px solid #7fcb9c;"></div>
+  <div style="position:absolute; left:0px; top:48px; width:66px; height:6px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:1px; top:49px; width:4px; height:4px; background:#0a0f0c;"></div>
+  <div style="position:absolute; left:5px; top:49px; width:4px; height:4px; background:#121a15;"></div>
+  <div style="position:absolute; left:9px; top:49px; width:4px; height:4px; background:#26332b;"></div>
+  <div style="position:absolute; left:13px; top:49px; width:4px; height:4px; background:#7fcb9c;"></div>
+  <div style="position:absolute; left:17px; top:49px; width:4px; height:4px; background:#98d6ad;"></div>
+  <div style="position:absolute; left:21px; top:49px; width:4px; height:4px; background:#dde5de;"></div>
+  <div style="position:absolute; left:25px; top:49px; width:4px; height:4px; background:#6f7d74;"></div>
+  <div style="position:absolute; left:29px; top:49px; width:4px; height:4px; background:#3c4a41;"></div>
+  <div style="position:absolute; left:33px; top:49px; width:4px; height:4px; background:#7fcb9c;"></div>
+  <div style="position:absolute; left:37px; top:49px; width:4px; height:4px; background:#0a0f0c;"></div>
+  <div style="position:absolute; left:41px; top:49px; width:4px; height:4px; background:#4ade80;"></div>
+  <div style="position:absolute; left:45px; top:49px; width:4px; height:4px; background:#e0af68;"></div>
+  <div style="position:absolute; left:49px; top:49px; width:4px; height:4px; background:#ff9e64;"></div>
+  <div style="position:absolute; left:53px; top:49px; width:4px; height:4px; background:#f87171;"></div>
+  <div style="position:absolute; left:57px; top:49px; width:4px; height:4px; background:#a78bfa;"></div>
+  <div style="position:absolute; left:61px; top:49px; width:4px; height:4px; background:#000000;"></div>
+</div>
+<div class="atlas-tpl" id="atlas-genshin">
+  <div style="position:absolute; left:0px; top:0px; width:12px; height:12px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <svg class="icon" style="left:1px; top:1px; color:#e0b872;" viewBox="0 0 10 12">
+    <path d="M2 3 L8 8.5 L5 10.5 V1.5 L8 3.5 L2 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+  <div style="position:absolute; left:12px; top:0px; width:12px; height:12px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <svg class="icon" style="left:13px; top:1px; color:#4a4234;" viewBox="0 0 10 12">
+    <path d="M2 3 L8 8.5 L5 10.5 V1.5 L8 3.5 L2 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+  <div style="position:absolute; left:24px; top:0px; width:12px; height:12px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <svg class="icon" style="left:25px; top:1px; color:#ece5d8;" viewBox="0 0 12 10">
+    <path d="M1 4 C3.5 1.6 8.5 1.6 11 4 M2.8 6.4 C4.5 5 7.5 5 9.2 6.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="6" cy="8.6" r="1.2" fill="currentColor"/></svg>
+  <div style="position:absolute; left:36px; top:0px; width:12px; height:12px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <svg class="icon" style="left:37px; top:1px; color:#4a4234;" viewBox="0 0 12 10">
+    <path d="M1 4 C3.5 1.6 8.5 1.6 11 4 M2.8 6.4 C4.5 5 7.5 5 9.2 6.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="6" cy="8.6" r="1.2" fill="currentColor"/></svg>
+  <div style="position:absolute; left:48px; top:0px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:49px; top:1px; width:6px; height:6px; background:#6bc28b;"></div>
+  <div style="position:absolute; left:56px; top:0px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:57px; top:1px; width:6px; height:6px; background:#ff9e64;"></div>
+  <div style="position:absolute; left:0px; top:12px; width:202px; height:18px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:1px; top:13px; width:200px; height:16px;">
+    <div style="text-align:center; font-size:13px; line-height:14px; color:#d3aa6a; font-weight:700; font-family:'Songti SC','STSong',serif;">V I B E K E Y S</div>
+  </div>
+  <div style="position:absolute; left:0px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:8px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:16px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:24px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:1px; top:31px; width:6px; height:6px; border-top:2px solid #d3aa6a; border-left:2px solid #d3aa6a;"></div>
+  <div style="position:absolute; left:9px; top:31px; width:6px; height:6px; border-top:2px solid #d3aa6a; border-right:2px solid #d3aa6a;"></div>
+  <div style="position:absolute; left:17px; top:31px; width:6px; height:6px; border-bottom:2px solid #d3aa6a; border-left:2px solid #d3aa6a;"></div>
+  <div style="position:absolute; left:25px; top:31px; width:6px; height:6px; border-bottom:2px solid #d3aa6a; border-right:2px solid #d3aa6a;"></div>
+  <div style="position:absolute; left:32px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:40px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:48px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:56px; top:30px; width:8px; height:8px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:33px; top:31px; width:6px; height:6px; border-top:2px solid #d3aa6a; border-left:2px solid #d3aa6a;"></div>
+  <div style="position:absolute; left:41px; top:31px; width:6px; height:6px; border-top:2px solid #d3aa6a; border-right:2px solid #d3aa6a;"></div>
+  <div style="position:absolute; left:49px; top:31px; width:6px; height:6px; border-bottom:2px solid #d3aa6a; border-left:2px solid #d3aa6a;"></div>
+  <div style="position:absolute; left:57px; top:31px; width:6px; height:6px; border-bottom:2px solid #d3aa6a; border-right:2px solid #d3aa6a;"></div>
+  <div style="position:absolute; left:0px; top:48px; width:66px; height:6px; border:1px solid #ffffff; pointer-events:none;"></div>
+  <div style="position:absolute; left:1px; top:49px; width:4px; height:4px; background:#0d1118;"></div>
+  <div style="position:absolute; left:5px; top:49px; width:4px; height:4px; background:#1a2130;"></div>
+  <div style="position:absolute; left:9px; top:49px; width:4px; height:4px; background:#8a744e;"></div>
+  <div style="position:absolute; left:13px; top:49px; width:4px; height:4px; background:#d3aa6a;"></div>
+  <div style="position:absolute; left:17px; top:49px; width:4px; height:4px; background:#e8c88a;"></div>
+  <div style="position:absolute; left:21px; top:49px; width:4px; height:4px; background:#ece5d8;"></div>
+  <div style="position:absolute; left:25px; top:49px; width:4px; height:4px; background:#7d8290;"></div>
+  <div style="position:absolute; left:29px; top:49px; width:4px; height:4px; background:#4a4234;"></div>
+  <div style="position:absolute; left:33px; top:49px; width:4px; height:4px; background:#212020;"></div>
+  <div style="position:absolute; left:37px; top:49px; width:4px; height:4px; background:#e8c88a;"></div>
+  <div style="position:absolute; left:41px; top:49px; width:4px; height:4px; background:#6bc28b;"></div>
+  <div style="position:absolute; left:45px; top:49px; width:4px; height:4px; background:#e0af68;"></div>
+  <div style="position:absolute; left:49px; top:49px; width:4px; height:4px; background:#ff9e64;"></div>
+  <div style="position:absolute; left:53px; top:49px; width:4px; height:4px; background:#e05555;"></div>
+  <div style="position:absolute; left:57px; top:49px; width:4px; height:4px; background:#9a6bff;"></div>
+  <div style="position:absolute; left:61px; top:49px; width:4px; height:4px; background:#000000;"></div>
+</div>
+</div>
+
+<h1 style="font-size:16px; color:#cfd6dd; margin-bottom:6px;">Atlas 换皮验证</h1>
+<p style="font-size:12px; color:#7d8794; margin-bottom:24px; max-width:760px; line-height:1.7;">
+  两列跑的是<b style="color:#cfd6dd">同一份合成代码</b>(相同 DOM、相同坐标、相同 blit 槽位)。
+  左 = 品牌绿 atlas + 绿调色板;右 = <b style="color:#cfd6dd">原神 atlas + 原神调色板</b>。
+  差异只有 <b style="color:#cfd6dd">一个文件:atlas.png</b> —— 底部 4px 色板条(16 槽)即调色板,固件从固定偏移读入,文字色/焦点底色/框线色全部数据驱动,不再需要每主题一份常量表。<br>注意 <b style="color:#cfd6dd">选中条</b>:合成代码里两列都是同一个 blit 槽位,绿皮肤烘焙的是纯色条,原神皮肤烘焙的是「金边 + 角标 + 预混金底」—— 非矩形的选中框就是这样做进皮肤的。
+</p>
+
+<div class="cols">
+  <div class="col theme-green" id="col-green"><h2>■ 品牌绿(现网)</h2></div>
+  <div class="col theme-genshin" id="col-genshin"><h2>■ 原神(atlas + palette 换皮)</h2></div>
+</div>
+
+<!-- ============ 屏幕合成模板(两主题共用同一份) ============ -->
+<template id="tpl-screens">
+
+  <!-- BOOT -->
+  <div class="screen">
+    <div class="fr" style="inset:6px 4px 17px;"></div>
+    <div class="blit" data-x="1" data-y="13" data-w="200" data-h="16" style="left:60px; top:14px;"></div>
+    <div class="t" style="left:0; right:0; top:32px; text-align:center; font-size:8px; color:var(--dim);">v0.4.3</div>
+    <div class="fb" style="top:46px; left:4px; right:4px;"></div>
+    <div class="t onbar" style="left:30px; right:30px; top:47px; text-align:center;">Keyboard</div>
+    <div class="t dim" style="left:30px; right:30px; top:66px; text-align:center;">Remote</div>
+    <div class="t dim" style="left:30px; right:30px; top:85px; text-align:center;">Setting</div>
+    <div class="t" style="left:30px; right:30px; top:120px; text-align:center; font-size:12px; color:var(--dim);"><b style="color:var(--accent);">NEXT</b> 切换 · <b style="color:var(--accent);">ACC</b> 确认</div>
+  </div>
+
+  <!-- SETTING -->
+  <div class="screen">
+    <div class="fr" style="inset:6px 4px 17px;"></div>
+    <div class="ttl">Setting</div>
+    <div class="blit" data-x="1" data-y="1" data-w="10" data-h="10" style="left:272px; top:2px;"></div>
+    <div class="blit" data-x="25" data-y="1" data-w="10" data-h="10" style="left:286px; top:2px;"></div>
+    <div class="fb" style="top:22px; left:4px; right:4px;"></div>
+    <div class="t onbar" style="left:10px; top:23px;">WiFi networks (2)</div>
+    <div class="t dim" style="left:10px; top:42px;">OTA Update</div>
+    <div class="t" style="left:10px; top:61px; color:var(--red);">Clear config</div>
+    <div class="t dim" style="left:10px; top:80px;">Hardware test</div>
+    <div class="t" style="left:6px; bottom:2px; font-size:12px; color:var(--dim);"><b style="color:var(--accent);">NEXT</b> 选择 · <b style="color:var(--accent);">ACC</b> 进入</div>
+    <div class="t" style="right:6px; bottom:2px; font-size:12px; color:var(--dim);">· <b style="color:var(--accent);">ESC</b> 返回</div>
+  </div>
+
+  <!-- SESSIONS PICKER -->
+  <div class="screen">
+    <div class="fr" style="inset:6px 4px 17px;"></div>
+    <div class="ttl">Focus session</div>
+    <div class="blit" data-x="1" data-y="1" data-w="10" data-h="10" style="left:272px; top:2px;"></div>
+    <div class="blit" data-x="25" data-y="1" data-w="10" data-h="10" style="left:286px; top:2px;"></div>
+    <div class="fb" style="top:43px; left:4px; right:4px;"></div>
+    <div class="t" style="left:10px; top:24px; color:var(--yellow);"><span class="mk">▲</span> vibekeys (a3f)</div>
+    <div class="t onbar" style="left:10px; top:44px;"><span class="mk">●</span> vibekeys (9d1)</div>
+    <div class="blit" data-x="49" data-y="1" data-w="6" data-h="6" style="left:12px; top:68px;"></div>
+    <div class="t" style="left:22px; top:63px; color:var(--ok);">vibekeys (e52)</div>
+    <div class="blit" data-x="57" data-y="1" data-w="6" data-h="6" style="left:12px; top:87px;"></div>
+    <div class="t" style="left:22px; top:82px; color:var(--orange);">docs (c08)</div>
+    <div class="t" style="left:10px; top:101px;"><span class="mk" style="color:var(--faint);">·</span> win:term (55e)</div>
+    <div class="t" style="left:6px; bottom:2px; font-size:12px; color:var(--dim);"><b style="color:var(--accent);">旋钮</b> 滚动 · <b style="color:var(--accent);">按下</b> 确认</div>
+    <div class="t" style="right:6px; bottom:2px; font-size:12px; color:var(--dim);">· <b style="color:var(--accent);">再按</b> 退出</div>
+  </div>
+
+  <!-- POPUP -->
+  <div class="screen">
+    <div class="fr" style="inset:6px 4px 17px;"></div>
+    <div class="ttl">Sessions</div>
+    <div class="blit" data-x="1" data-y="1" data-w="10" data-h="10" style="left:272px; top:2px;"></div>
+    <div class="blit" data-x="25" data-y="1" data-w="10" data-h="10" style="left:286px; top:2px;"></div>
+    <div class="t" style="left:10px; top:23px; color:var(--ok);"><span class="mk">●</span> vibekeys (9d1)</div>
+    <div class="t" style="left:10px; top:42px; color:var(--orange);"><span class="mk">○</span> docs (c08)</div>
+    <div style="position:absolute; left:32px; top:64px; width:256px; height:40px; background:var(--panel); border:1px solid var(--accent);"></div>
+    <div class="blit" data-x="1" data-y="31" data-w="6" data-h="6" style="left:32px; top:64px;"></div>
+    <div class="blit" data-x="9" data-y="31" data-w="6" data-h="6" style="left:282px; top:64px;"></div>
+    <div class="blit" data-x="17" data-y="31" data-w="6" data-h="6" style="left:32px; top:98px;"></div>
+    <div class="blit" data-x="25" data-y="31" data-w="6" data-h="6" style="left:282px; top:98px;"></div>
+    <div class="t" style="left:32px; right:32px; top:78px; text-align:center;"><span style="color:var(--accent);">◐</span> 正在连接主机…</div>
+  </div>
+
+</template>
+
+<script>
+  const tpl = document.getElementById('tpl-screens');
+  for (const [colId, atlasId] of [['col-green','atlas-green'], ['col-genshin','atlas-genshin']]) {
+    const col = document.getElementById(colId);
+    const atlas = document.getElementById(atlasId);
+
+    // 1) 克隆屏幕到设备外壳
+    tpl.content.querySelectorAll('.screen').forEach(sc => {
+      const clone = sc.cloneNode(true);
+      clone.querySelectorAll('.blit').forEach(slot => {
+        slot.style.width  = slot.dataset.w + 'px';
+        slot.style.height = slot.dataset.h + 'px';
+        const c = atlas.cloneNode(true);
+        c.removeAttribute('id');
+        c.style.left = (-slot.dataset.x) + 'px';
+        c.style.top  = (-slot.dataset.y) + 'px';
+        slot.appendChild(c);
+      });
+      const dev = document.createElement('div');
+      dev.className = 'device';
+      dev.appendChild(clone);
+      col.appendChild(dev);
+    });
+
+    // 2) 焦点行:底色 fill 之上 blit 四角(BOX_TL/TR/BL/BR)—— 同一套角贴拼任意宽度
+    col.querySelectorAll('.fb').forEach(fb => {
+      const corners = [
+        {sx:33, sy:31, pos:'left:0; top:0;'},
+        {sx:41, sy:31, pos:'right:0; top:0;'},
+        {sx:49, sy:31, pos:'left:0; bottom:0;'},
+        {sx:57, sy:31, pos:'right:0; bottom:0;'},
+      ];
+      corners.forEach(({sx, sy, pos}) => {
+        const slot = document.createElement('div');
+        slot.className = 'blit';
+        slot.style.cssText = pos + '; width:6px; height:6px;';
+        const c = atlas.cloneNode(true);
+        c.removeAttribute('id');
+        c.style.left = (-sx) + 'px'; c.style.top = (-sy) + 'px';
+        slot.appendChild(c);
+        fb.appendChild(slot);
+      });
+    });
+
+    // 3) 列首插可见 atlas(= 要截图的 png,200×132 1:1)
+    const head = document.createElement('div');
+    head.style.cssText = 'margin-bottom:26px;';
+    const lab = document.createElement('div');
+    lab.style.cssText = 'font-size:11px; color:#7d8794; margin-bottom:6px;';
+    lab.textContent = 'atlas.png · 202×54(白框在间隙中,不进取图区域)';
+    const vis = atlas.cloneNode(true);
+    vis.removeAttribute('id');
+    vis.style.position = 'relative';
+    vis.style.outline = '1px solid #3a3f47';
+    head.appendChild(lab);
+    head.appendChild(vis);
+    col.insertBefore(head, col.querySelector('.device'));
+  }
+</script>
+
+</body>
+</html>

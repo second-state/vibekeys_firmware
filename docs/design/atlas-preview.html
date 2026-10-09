@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeKeys · Atlas 主题预览器(上传 PNG → 渲染 UI)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#1b1d22; font-family:ui-monospace, Menlo, monospace; padding:28px; color:#aab2bc; }
+  h1 { font-size:16px; color:#cfd6dd; margin-bottom:8px; }
+  .note { font-size:12px; color:#7d8794; line-height:1.8; max-width:860px; margin-bottom:20px; }
+  .note b { color:#cfd6dd; }
+  .bar { display:flex; gap:16px; align-items:center; margin-bottom:20px; flex-wrap:wrap; }
+  input[type=file] { font-family:inherit; font-size:12px; color:#cfd6dd; }
+  button { font-family:inherit; font-size:12px; padding:6px 14px; cursor:pointer;
+           background:#26332b; color:#cfd6dd; border:1px solid #3c4a41; border-radius:4px; }
+  button:hover { border-color:#7fcb9c; color:#7fcb9c; }
+
+  .pal { display:flex; gap:6px; align-items:center; font-size:11px; color:#7d8794; margin-bottom:24px; flex-wrap:wrap; }
+  .pal .c { display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .pal .c i { width:22px; height:22px; border:1px solid #3c4a41; display:block; }
+  .pal .c span { font-size:9px; color:#5d6673; }
+
+  .cols { display:flex; gap:40px; flex-wrap:wrap; align-items:flex-start; }
+  .col h2 { font-size:13px; color:#aab2bc; margin-bottom:12px; font-weight:600; }
+  .device { width:640px; height:344px; overflow:hidden; outline:1px solid #3a3f47;
+            box-shadow:0 12px 40px rgba(0,0,0,.5); margin-bottom:26px; }
+  .device canvas { width:640px; height:344px; display:block; image-rendering:pixelated; }
+  .atlas-ref canvas { width:606px; height:162px; display:block; image-rendering:pixelated;
+                      outline:1px solid #3a3f47; }
+  .cap { font-size:11px; color:#7d8794; margin-bottom:6px; }
+</style>
+</head>
+<body>
+
+<h1>Atlas 主题预览器</h1>
+<p class="note">
+  上传一张 <b>atlas.png(202×54)</b>,本页按固件的方式渲染 UI:从色板条 (0,38) 读 16 色调色板 →
+  按偏移表 blit 各 sprite(图标 / 圆点 / 字标 / 角贴)→ 矩形原语画框线和焦点条 → 叠运行时文字。
+  <b>你改 PNG 里的任何像素,这里就渲染出对应的样子</b> —— 和固件行为一致。
+</p>
+
+<div class="bar">
+  <input type="file" id="file" accept="image/png">
+  <button id="demo">载入示例主题(品牌绿)</button>
+  <span id="status" style="font-size:11px; color:#7d8794;"></span>
+</div>
+
+<div class="pal" id="pal"></div>
+
+<div class="cols">
+  <div class="col">
+    <div class="cap">atlas.png · 200×42(上传的这张)</div>
+    <div class="atlas-ref"><canvas id="atlas-cv" width="200" height="42"></canvas></div>
+    <div class="cap" style="margin-top:14px;">3× 检查视图</div>
+    <div class="atlas-ref"><canvas id="atlas-zoom" width="600" height="126"></canvas></div>
+  </div>
+  <div class="col">
+    <h2>渲染输出(320×172 @2x 显示)</h2>
+    <div class="device"><canvas id="scr-boot"    width="320" height="172"></canvas></div>
+    <div class="device"><canvas id="scr-setting" width="320" height="172"></canvas></div>
+    <div class="device"><canvas id="scr-sessions" width="320" height="172"></canvas></div>
+    <div class="device"><canvas id="scr-popup"   width="320" height="172"></canvas></div>
+  </div>
+</div>
+
+<script>
+/* ============ 调色板槽序(固件 ABI) ============ */
+const PAL_NAMES = ['BG','PANEL','BORDER','ACCENT','ACCENT_HI','TEXT','DIM','FAINT',
+                   'FOCUS_FILL','ONBAR','OK','PERM','IDLE','ERR','STOP','RSVD'];
+/* sprite 取图区域(与 bitmap-plates-assets.html 偏移表一致) */
+const SPR = {
+  BT_ON:[1,1,10,10], BT_OFF:[13,1,10,10], WF_ON:[25,1,10,10], WF_OFF:[37,1,10,10],
+  DOT_W:[49,1,6,6], DOT_I:[57,1,6,6],
+  LOGO:[1,13,200,16],
+  BOX_TL:[1,31,6,6], BOX_TR:[9,31,6,6], BOX_BL:[17,31,6,6], BOX_BR:[25,31,6,6],
+  FOCUS_TL:[33,31,6,6], FOCUS_TR:[41,31,6,6], FOCUS_BL:[49,31,6,6], FOCUS_BR:[57,31,6,6],
+};
+
+let atlasImg = null;   // 上传/生成的 atlas 位图
+let g_pal = [];        // 从色板条读出的 16 色
+
+const P = i => g_pal[i] || '#000';
+
+/* ============ 内置示例主题(品牌绿):程序化画一张 atlas ============ */
+function makeDemoAtlas() {
+  const cv = document.createElement('canvas');
+  cv.width = 202; cv.height = 54;
+  const c = cv.getContext('2d');
+  // 背景保持透明:屏幕底色由固件按 PAL_BG 绘制,atlas 只承载元素
+  const F = (x,y,w,h) => { c.strokeStyle = '#ffffff'; c.strokeRect(x+.5, y+.5, w-1, h-1); };
+  // 图标槽 (0,0,12,12) 等:元素在 +1,+1
+  const bt = (x, col) => { c.strokeStyle = col; c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(x+2,2); c.lineTo(x+8,7.5); c.lineTo(x+5,9.5); c.lineTo(x+5,0.5);
+    c.lineTo(x+8,2.5); c.lineTo(x+2,8); c.stroke(); };
+  const wf = (x, col) => { c.strokeStyle = col; c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(x+1,4); c.bezierCurveTo(x+3.5,1.6,x+8.5,1.6,x+11,4); c.stroke();
+    c.beginPath(); c.moveTo(x+2.8,6.4); c.bezierCurveTo(x+4.5,5,x+7.5,5,x+9.2,6.4); c.stroke();
+    c.fillStyle = col; c.beginPath(); c.arc(x+6,8.6,1.2,0,7); c.fill(); };
+  F(0,0,12,12);  bt(2,2,'#dde5de');
+  F(12,0,12,12); bt(14,2,'#3c4a41');
+  F(24,0,12,12); wf(26,2,'#dde5de');
+  F(36,0,12,12); wf(38,2,'#3c4a41');
+  // 圆点槽 (48,0,8,8)(56,0,8,8):元素在 +1,+1
+  F(48,0,8,8); c.fillStyle = '#4ade80'; c.beginPath(); c.arc(52,4,3,0,7); c.fill();
+  F(56,0,8,8); c.fillStyle = '#ff9e64'; c.beginPath(); c.arc(60,4,3,0,7); c.fill();
+  // 字标槽 (0,12,202,18):只有字形像素,底色由固件画
+  F(0,12,202,18);
+  c.fillStyle = '#dde5de'; c.font = '700 13px ui-monospace, Menlo, monospace';
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('V I B E K E Y S', 101, 21);
+  // BOX 角贴槽 (0/8/16/24, 30, 8×8):角贴在 +1,+1
+  const cc = (x, y, col, pos) => { c.strokeStyle = col; c.lineWidth = 1;
+    const H = {tl:[[x,y],[x+6,y],[x+6,y+6]], tr:[[x,y],[x,y+6],[x+6,y+6]],
+               bl:[[x,y+6],[x+6,y+6],[x+6,y]], br:[[x+6,y],[x+6,y+6],[x,y+6]]}[pos];
+    c.beginPath(); c.moveTo(H[0][0],H[0][1]); c.lineTo(H[1][0],H[1][1]); c.lineTo(H[2][0],H[2][1]); c.stroke(); };
+  F(0,30,8,8);  cc(1,31,'#7fcb9c','tl');
+  F(8,30,8,8);  cc(9,31,'#7fcb9c','tr');
+  F(16,30,8,8); cc(17,31,'#7fcb9c','bl');
+  F(24,30,8,8); cc(25,31,'#7fcb9c','br');
+  // FOCUS 角贴槽 (32/40/48/56, 30, 8×8):实心方角
+  F(32,30,8,8); c.fillStyle = '#7fcb9c'; c.fillRect(33,31,6,6);
+  F(40,30,8,8); c.fillRect(41,31,6,6);
+  F(48,30,8,8); c.fillRect(49,31,6,6);
+  F(56,30,8,8); c.fillRect(57,31,6,6);
+  // 调色板槽 (0,48,66,6):色板条在 (1,49) 16 槽 × 4×4
+  F(0,48,66,6);
+  const pal = ['#0a0f0c','#121a15','#26332b','#7fcb9c','#98d6ad','#dde5de','#6f7d74','#3c4a41',
+               '#7fcb9c','#0a0f0c','#4ade80','#e0af68','#ff9e64','#f87171','#a78bfa','#000000'];
+  pal.forEach((col, i) => { c.fillStyle = col; c.fillRect(1 + i*4, 49, 4, 4); });
+  return cv;
+}
+
+/* ============ 读色板条:(0,38) 起 16 槽 × 4×4,取中心像素 ============ */
+function readPalette(cv) {
+  const c = cv.getContext('2d');
+  const d = c.getImageData(0, 0, cv.width, cv.height).data;
+  g_pal = [];
+  for (let i = 0; i < 16; i++) {
+    const x = i*4 + 3, y = 51;   // 色板条 (1,49,64,4),槽 4×4 中心
+    const o = (y*cv.width + x) * 4;
+    g_pal.push(`rgb(${d[o]},${d[o+1]},${d[o+2]})`);
+  }
+  // 色板 UI
+  const box = document.getElementById('pal');
+  box.innerHTML = '';
+  g_pal.forEach((col, i) => {
+    const el = document.createElement('div');
+    el.className = 'c';
+    el.innerHTML = `<i style="background:${col}"></i><span>${i} ${PAL_NAMES[i]}</span>`;
+    box.appendChild(el);
+  });
+}
+
+/* ============ 绘制原语 ============ */
+function blit(ctx, sx, sy, w, h, dx, dy) {
+  ctx.drawImage(atlasImg, sx, sy, w, h, dx, dy, w, h);
+}
+function frame(ctx, x, y, w, h) {
+  ctx.strokeStyle = P(2); ctx.lineWidth = 1;
+  ctx.strokeRect(x+.5, y+.5, w-1, h-1);
+}
+function chip(ctx, x, y, text) {           // 标题嵌片:挖底 + accent 文字
+  ctx.fillStyle = P(0);
+  ctx.fillRect(x+7, y-6, ctx.measureText(text).width + 10, 11);
+  ctx.fillStyle = P(3); ctx.font = '700 9px ui-monospace, Menlo, monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(text, x+11, y+3);
+}
+function focusbar(ctx, x, y, w) {          // 选中条:底色 + 四边线 + 四角花纹
+  ctx.fillStyle = P(8); ctx.fillRect(x, y, w, 16);
+  ctx.fillStyle = P(3);
+  ctx.fillRect(x, y, w, 1); ctx.fillRect(x, y+15, w, 1);
+  ctx.fillRect(x, y, 1, 16); ctx.fillRect(x+w-1, y, 1, 16);
+  ctx.drawImage(atlasImg, 33, 31, 6, 6, x,       y,       6, 6);   // TL
+  ctx.drawImage(atlasImg, 41, 31, 6, 6, x+w-6,   y,       6, 6);   // TR
+  ctx.drawImage(atlasImg, 49, 31, 6, 6, x,       y+10,    6, 6);   // BL
+  ctx.drawImage(atlasImg, 57, 31, 6, 6, x+w-6,   y+10,    6, 6);   // BR
+}
+function txt(ctx, s, x, y, col, size, align) {
+  ctx.fillStyle = col; ctx.font = `${size||13}px ui-monospace, Menlo, monospace`;
+  ctx.textAlign = align || 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(s, x, y);
+}
+function statusDot(ctx, sprite, x, y) {    // 状态圆点 blit
+  ctx.drawImage(atlasImg, ...SPR[sprite].slice(0,2), 6, 6, x, y, 6, 6);
+}
+
+/* ============ 各屏合成(与 atlas-skin-test 配方一致) ============ */
+function drawBoot(cv) {
+  const c = cv.getContext('2d');
+  c.clearRect(0,0,320,172);
+  frame(c, 4, 6, 312, 149);
+  blit(c, ...SPR.LOGO, 60, 14);                       // 字标
+  txt(c, 'v0.4.3', 160, 40, P(6), 8, 'center');       // 版本(运行时文字)
+  focusbar(c, 4, 46, 312);
+  txt(c, 'Keyboard', 160, 58, P(9), 13, 'center');
+  txt(c, 'Remote',  160, 77, P(6), 13, 'center');
+  txt(c, 'Setting', 160, 96, P(6), 13, 'center');
+  txt(c, 'NEXT 切换 · ACC 确认', 160, 134, P(3), 12, 'center');
+}
+function drawSetting(cv) {
+  const c = cv.getContext('2d');
+  c.clearRect(0,0,320,172);
+  frame(c, 4, 6, 312, 149);
+  chip(c, 4, 7, 'Setting');
+  blit(c, ...SPR.BT_ON, 272, 2); blit(c, ...SPR.WF_ON, 286, 2);
+  focusbar(c, 4, 22, 312);
+  txt(c, 'WiFi networks (2)', 10, 34, P(9), 13);
+  txt(c, 'OTA Update',    10, 53, P(6), 13);
+  txt(c, 'Clear config',  10, 72, P(13), 13);
+  txt(c, 'Hardware test', 10, 91, P(6), 13);
+  txt(c, 'NEXT 选择 · ACC 进入', 6, 164, P(3), 12, 'left');
+  txt(c, '· ESC 返回', 314, 164, P(3), 12, 'right');
+}
+function drawSessions(cv) {
+  const c = cv.getContext('2d');
+  c.clearRect(0,0,320,172);
+  frame(c, 4, 6, 312, 149);
+  chip(c, 4, 7, 'Focus session');
+  blit(c, ...SPR.BT_ON, 272, 2); blit(c, ...SPR.WF_ON, 286, 2);
+  const rows = [
+    ['vibekeys (a3f)', 11, 'perm',  '▲'],
+    ['vibekeys (9d1)', 30, 'focus', '●'],
+    ['vibekeys (e52)', 49, 'work',  '●'],
+    ['docs (c08)',     68, 'idle',  '○'],
+    ['win:term (55e)', 87, 'dim',   '·'],
+  ];
+  focusbar(c, 4, 25, 312);               // 焦点行底(第 2 行)
+  rows.forEach(([name, y, st, mark]) => {
+    const focus = st === 'focus';
+    if (focus) {
+      txt(c, '● ' + name, 10, y+12, P(9), 13);
+    } else {
+      const col = {perm:P(11), work:P(10), err:P(13), idle:P(12), dim:P(7)}[st] || P(6);
+      txt(c, mark + ' ' + name, 10, y+12, col, 13);
+    }
+  });
+  txt(c, '旋钮 滚动 · 按下 确认 · 再按 退出', 6, 164, P(3), 12, 'left');
+}
+function drawPopup(cv) {
+  const c = cv.getContext('2d');
+  c.clearRect(0,0,320,172);
+  frame(c, 4, 6, 312, 149);
+  chip(c, 4, 7, 'Sessions');
+  txt(c, '● vibekeys (9d1)', 10, 34, P(10), 13);
+  txt(c, '○ docs (c08)',    10, 53, P(12), 13);
+  // draw_box(32, 64, 256, 40):面板底 + 四边线 + BOX 四角
+  c.fillStyle = P(1); c.fillRect(32, 64, 256, 40);
+  c.strokeStyle = P(3); c.strokeRect(32.5, 64.5, 255, 39);
+  for (const [sx, sy, dx, dy] of [[1,31,32,64],[9,31,282,64],[17,31,32,98],[25,31,282,98]])
+    blit(c, sx, sy, 6, 6, dx, dy);
+  txt(c, '◐ 正在连接主机…', 160, 88, P(5), 13, 'center');
+}
+
+/* ============ 渲染全部 ============ */
+function renderAll() {
+  if (!atlasImg) return;
+  // atlas 参考视图(1x + 3x)
+  for (const id of ['atlas-cv', 'atlas-zoom']) {
+    const cv = document.getElementById(id);
+    const c = cv.getContext('2d');
+    c.imageSmoothingEnabled = false;
+    c.clearRect(0, 0, cv.width, cv.height);
+    c.drawImage(atlasImg, 0, 0);
+  }
+  readPalette(atlasImg);
+  drawBoot(document.getElementById('scr-boot'));
+  drawSetting(document.getElementById('scr-setting'));
+  drawSessions(document.getElementById('scr-sessions'));
+  drawPopup(document.getElementById('scr-popup'));
+  document.getElementById('status').textContent = '已加载 atlas · 调色板 16 色已从色板条读出';
+}
+
+/* ============ 上传 / 示例 ============ */
+document.getElementById('file').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const img = new Image();
+  img.onload = () => {
+    atlasImg = img;
+    // 统一到 200×42 画布再读(上传图应为 200×42;若为 2x 则缩回)
+    const cv = document.createElement('canvas');
+    cv.width = 202; cv.height = 54;
+    cv.getContext('2d').drawImage(img, 0, 0, 202, 54);
+    atlasImg = cv;
+    readPalette(cv);
+    renderAll();
+  };
+  img.src = URL.createObjectURL(f);
+};
+document.getElementById('demo').onclick = () => {
+  atlasImg = makeDemoAtlas();
+  renderAll();
+};
+
+/* 启动:自动载入示例主题 */
+atlasImg = makeDemoAtlas();
+renderAll();
+</script>
+
+</body>
+</html>

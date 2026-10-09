@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeKeys · 元素级位图 ATLAS(整张 202×54,1:1)</title>
+<style>
+  /* ============================================================
+     VibeKeys 元素级位图 ATLAS — 整张截图用
+     · 画布 202×54,1:1 像素
+     · 每个 sprite 外扩 1px 白框(框在间隙中,不属于任何取图区域)
+     · 固件按「取图区域」偏移表 blit —— 白框永远不会上屏
+     · 白框同时是编辑参考:改布局时元素范围一目了然
+     · 框线、边线、面板底、选中条底 = 纯矩形,fill_rect 直出,不进图
+     · 版本号 = 运行时文字,不入图
+     · 布局与 atlas-skin-test.html 两个主题 atlas 槽位一一对应
+     ============================================================ */
+  :root {
+    --bg:      #0a0f0c;
+    --panel:   #121a15;
+    --accent:  #7fcb9c;
+    --text:    #dde5de;
+    --faint:   #3c4a41;
+    --green:   #4ade80;
+    --orange:  #ff9e64;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#1b1d22; font-family:var(--mono); padding:32px; color:#aab2bc; }
+
+  .note { max-width:680px; font-size:12px; line-height:1.8; margin-bottom:20px; color:#8a939e; }
+  .note b { color:#cfd6dd; }
+  .note code { color:var(--accent); }
+
+  .cap { font-size:11px; color:#7d8794; margin-bottom:6px; }
+  .atlas-wrap { outline:1px solid #3a3f47; outline-offset:4px; width:202px; margin-bottom:28px; }
+  .atlas { position:relative; width:202px; height:54px; background:#0a0f0c;
+           -webkit-font-smoothing:antialiased; font-family:var(--mono); }
+  .zoom-wrap { width:606px; height:162px; overflow:hidden; margin-bottom:28px; }
+  .zoom { position:relative; width:202px; height:54px; background:#0a0f0c;
+          transform:scale(3); transform-origin:top left;
+          -webkit-font-smoothing:antialiased; font-family:var(--mono); }
+
+  .icon { position:absolute; width:10px; height:10px; }
+
+  table { border-collapse:collapse; font-size:12px; margin-top:14px; margin-bottom:14px; }
+  td, th { border:1px solid #3a3f47; padding:4px 12px; text-align:left; }
+  th { color:#7d8794; font-weight:600; }
+  td code { color:var(--accent); }
+
+  .abi { max-width:680px; font-size:12px; line-height:1.9; margin-top:20px; color:#8a939e; }
+  .abi h3 { color:#cfd6dd; font-size:12px; margin:16px 0 6px; }
+  .abi code { color:var(--accent); }
+</style>
+</head>
+<body>
+
+<p class="note">
+  <b>元素级 atlas,画布 202×54</b>,1:1 像素,零间隙。整块截图(描边在外)。
+  <br><b>白色 1px 外框是每个 sprite 的取图边界标记</b>,画在元素间隙中 —— 固件按「取图区域」偏移表 blit,
+  白框不属于任何取图区域,<b>永远不会上屏</b>。
+  <br>布局与 <code>atlas-skin-test.html</code> 两个主题 atlas 的槽位一一对应 —— <b>换主题 = 换这张 png</b>。
+  <br>调色板内嵌于图中(见底部色板条与 ABI 表)。
+</p>
+
+<!-- ============ 1:1 原底(截图这块) ============ -->
+<div class="cap">1:1 原底 · 202×54 —— 截图这块</div>
+<div class="atlas-wrap"><div class="atlas" id="a1">
+
+  <!-- 行 0:图标槽 + 圆点槽(槽 12×12 / 8×8,含 1px 白框) -->
+  <div style="position:absolute; left:0; top:0; width:12px; height:12px; border:1px solid #ffffff;"></div>
+  <svg class="icon" style="left:1px; top:1px; color:#dde5de;" viewBox="0 0 10 12">
+    <path d="M2 3 L8 8.5 L5 10.5 V1.5 L8 3.5 L2 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+  </svg>
+  <div style="position:absolute; left:12px; top:0; width:12px; height:12px; border:1px solid #ffffff;"></div>
+  <svg class="icon" style="left:13px; top:1px; color:#3c4a41;" viewBox="0 0 10 12">
+    <path d="M2 3 L8 8.5 L5 10.5 V1.5 L8 3.5 L2 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+  </svg>
+  <div style="position:absolute; left:24px; top:0; width:12px; height:12px; border:1px solid #ffffff;"></div>
+  <svg class="icon" style="left:25px; top:1px; color:#dde5de;" viewBox="0 0 12 10">
+    <path d="M1 4 C3.5 1.6 8.5 1.6 11 4 M2.8 6.4 C4.5 5 7.5 5 9.2 6.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="6" cy="8.6" r="1.2" fill="currentColor"/>
+  </svg>
+  <div style="position:absolute; left:36px; top:0; width:12px; height:12px; border:1px solid #ffffff;"></div>
+  <svg class="icon" style="left:37px; top:1px; color:#3c4a41;" viewBox="0 0 12 10">
+    <path d="M1 4 C3.5 1.6 8.5 1.6 11 4 M2.8 6.4 C4.5 5 7.5 5 9.2 6.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="6" cy="8.6" r="1.2" fill="currentColor"/>
+  </svg>
+  <div style="position:absolute; left:48px; top:0; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:49px; top:1px; width:6px; height:6px; background:#4ade80;"></div>
+  <div style="position:absolute; left:56px; top:0; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:57px; top:1px; width:6px; height:6px; background:#ff9e64;"></div>
+
+  <!-- 行 1:LOGO 槽(槽 202×18,含 1px 白框) -->
+  <div style="position:absolute; left:0; top:12px; width:202px; height:18px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:1px; top:13px; width:200px; height:16px; background:#0a0f0c;">
+    <div style="text-align:center; font-size:13px; line-height:14px; color:#dde5de; font-weight:700;">V I B E K E Y S</div>
+  </div>
+
+  <!-- 行 2:BOX 角贴槽 ×4(槽 8×8) -->
+  <div style="position:absolute; left:0; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:1px; top:31px; width:6px; height:6px; border-top:1px solid var(--accent); border-left:1px solid var(--accent);"></div>
+  <div style="position:absolute; left:8px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:9px; top:31px; width:6px; height:6px; border-top:1px solid var(--accent); border-right:1px solid var(--accent);"></div>
+  <div style="position:absolute; left:16px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:17px; top:31px; width:6px; height:6px; border-bottom:1px solid var(--accent); border-left:1px solid var(--accent);"></div>
+  <div style="position:absolute; left:24px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:25px; top:31px; width:6px; height:6px; border-bottom:1px solid var(--accent); border-right:1px solid var(--accent);"></div>
+
+  <!-- 行 2:FOCUS 角贴槽 ×4(槽 8×8) -->
+  <div style="position:absolute; left:32px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:33px; top:31px; width:6px; height:6px; background:var(--accent);"></div>
+  <div style="position:absolute; left:40px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:41px; top:31px; width:6px; height:6px; background:var(--accent);"></div>
+  <div style="position:absolute; left:48px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:49px; top:31px; width:6px; height:6px; background:var(--accent);"></div>
+  <div style="position:absolute; left:56px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:57px; top:31px; width:6px; height:6px; background:var(--accent);"></div>
+
+  <!-- 行 3:调色板槽(槽 66×6) -->
+  <div style="position:absolute; left:0; top:48px; width:66px; height:6px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:1px; top:49px; width:4px; height:4px; background:#0a0f0c;"></div>
+  <div style="position:absolute; left:5px; top:49px; width:4px; height:4px; background:#121a15;"></div>
+  <div style="position:absolute; left:9px; top:49px; width:4px; height:4px; background:#26332b;"></div>
+  <div style="position:absolute; left:13px; top:49px; width:4px; height:4px; background:#7fcb9c;"></div>
+  <div style="position:absolute; left:17px; top:49px; width:4px; height:4px; background:#98d6ad;"></div>
+  <div style="position:absolute; left:21px; top:49px; width:4px; height:4px; background:#dde5de;"></div>
+  <div style="position:absolute; left:25px; top:49px; width:4px; height:4px; background:#6f7d74;"></div>
+  <div style="position:absolute; left:29px; top:49px; width:4px; height:4px; background:#3c4a41;"></div>
+  <div style="position:absolute; left:33px; top:49px; width:4px; height:4px; background:#7fcb9c;"></div>
+  <div style="position:absolute; left:37px; top:49px; width:4px; height:4px; background:#0a0f0c;"></div>
+  <div style="position:absolute; left:41px; top:49px; width:4px; height:4px; background:#4ade80;"></div>
+  <div style="position:absolute; left:45px; top:49px; width:4px; height:4px; background:#e0af68;"></div>
+  <div style="position:absolute; left:49px; top:49px; width:4px; height:4px; background:#ff9e64;"></div>
+  <div style="position:absolute; left:53px; top:49px; width:4px; height:4px; background:#f87171;"></div>
+  <div style="position:absolute; left:57px; top:49px; width:4px; height:4px; background:#a78bfa;"></div>
+  <div style="position:absolute; left:61px; top:49px; width:4px; height:4px; background:#000000;"></div>
+
+</div></div>
+
+<!-- ============ 3× 放大检查视图(仅供查看,不截图) ============ -->
+<div class="cap">3× 放大检查视图 —— 仅供查看,不截图</div>
+<div class="zoom-wrap"><div class="zoom" id="z1">
+
+  <div style="position:absolute; left:0; top:0; width:12px; height:12px; border:1px solid #ffffff;"></div>
+  <svg class="icon" style="left:1px; top:1px; color:#dde5de;" viewBox="0 0 10 12">
+    <path d="M2 3 L8 8.5 L5 10.5 V1.5 L8 3.5 L2 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+  <div style="position:absolute; left:12px; top:0; width:12px; height:12px; border:1px solid #ffffff;"></div>
+  <svg class="icon" style="left:13px; top:1px; color:#3c4a41;" viewBox="0 0 10 12">
+    <path d="M2 3 L8 8.5 L5 10.5 V1.5 L8 3.5 L2 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+  <div style="position:absolute; left:24px; top:0; width:12px; height:12px; border:1px solid #ffffff;"></div>
+  <svg class="icon" style="left:25px; top:1px; color:#dde5de;" viewBox="0 0 12 10">
+    <path d="M1 4 C3.5 1.6 8.5 1.6 11 4 M2.8 6.4 C4.5 5 7.5 5 9.2 6.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="6" cy="8.6" r="1.2" fill="currentColor"/>
+  </svg>
+  <div style="position:absolute; left:36px; top:0; width:12px; height:12px; border:1px solid #ffffff;"></div>
+  <svg class="icon" style="left:37px; top:1px; color:#3c4a41;" viewBox="0 0 12 10">
+    <path d="M1 4 C3.5 1.6 8.5 1.6 11 4 M2.8 6.4 C4.5 5 7.5 5 9.2 6.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="6" cy="8.6" r="1.2" fill="currentColor"/>
+  </svg>
+  <div style="position:absolute; left:48px; top:0; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:49px; top:1px; width:6px; height:6px; background:#4ade80;"></div>
+  <div style="position:absolute; left:56px; top:0; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:57px; top:1px; width:6px; height:6px; background:#ff9e64;"></div>
+
+  <div style="position:absolute; left:0; top:12px; width:202px; height:18px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:1px; top:13px; width:200px; height:16px; background:#0a0f0c;">
+    <div style="text-align:center; font-size:13px; line-height:14px; color:#dde5de; font-weight:700;">V I B E K E Y S</div>
+  </div>
+
+  <div style="position:absolute; left:0; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:1px; top:31px; width:6px; height:6px; border-top:1px solid var(--accent); border-left:1px solid var(--accent);"></div>
+  <div style="position:absolute; left:8px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:9px; top:31px; width:6px; height:6px; border-top:1px solid var(--accent); border-right:1px solid var(--accent);"></div>
+  <div style="position:absolute; left:16px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:17px; top:31px; width:6px; height:6px; border-bottom:1px solid var(--accent); border-left:1px solid var(--accent);"></div>
+  <div style="position:absolute; left:24px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:25px; top:31px; width:6px; height:6px; border-bottom:1px solid var(--accent); border-right:1px solid var(--accent);"></div>
+
+  <div style="position:absolute; left:32px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:33px; top:31px; width:6px; height:6px; background:var(--accent);"></div>
+  <div style="position:absolute; left:40px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:41px; top:31px; width:6px; height:6px; background:var(--accent);"></div>
+  <div style="position:absolute; left:48px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:49px; top:31px; width:6px; height:6px; background:var(--accent);"></div>
+  <div style="position:absolute; left:56px; top:30px; width:8px; height:8px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:57px; top:31px; width:6px; height:6px; background:var(--accent);"></div>
+
+  <div style="position:absolute; left:0; top:48px; width:66px; height:6px; border:1px solid #ffffff;"></div>
+  <div style="position:absolute; left:1px; top:49px; width:4px; height:4px; background:#0a0f0c;"></div>
+  <div style="position:absolute; left:5px; top:49px; width:4px; height:4px; background:#121a15;"></div>
+  <div style="position:absolute; left:9px; top:49px; width:4px; height:4px; background:#26332b;"></div>
+  <div style="position:absolute; left:13px; top:49px; width:4px; height:4px; background:#7fcb9c;"></div>
+  <div style="position:absolute; left:17px; top:49px; width:4px; height:4px; background:#98d6ad;"></div>
+  <div style="position:absolute; left:21px; top:49px; width:4px; height:4px; background:#dde5de;"></div>
+  <div style="position:absolute; left:25px; top:49px; width:4px; height:4px; background:#6f7d74;"></div>
+  <div style="position:absolute; left:29px; top:49px; width:4px; height:4px; background:#3c4a41;"></div>
+  <div style="position:absolute; left:33px; top:49px; width:4px; height:4px; background:#7fcb9c;"></div>
+  <div style="position:absolute; left:37px; top:49px; width:4px; height:4px; background:#0a0f0c;"></div>
+  <div style="position:absolute; left:41px; top:49px; width:4px; height:4px; background:#4ade80;"></div>
+  <div style="position:absolute; left:45px; top:49px; width:4px; height:4px; background:#e0af68;"></div>
+  <div style="position:absolute; left:49px; top:49px; width:4px; height:4px; background:#ff9e64;"></div>
+  <div style="position:absolute; left:53px; top:49px; width:4px; height:4px; background:#f87171;"></div>
+  <div style="position:absolute; left:57px; top:49px; width:4px; height:4px; background:#a78bfa;"></div>
+  <div style="position:absolute; left:61px; top:49px; width:4px; height:4px; background:#000000;"></div>
+
+</div></div>
+
+<table>
+  <tr><th>sprite</th><th>取图 x</th><th>取图 y</th><th>w</th><th>h</th><th>用途</th></tr>
+  <tr><td><code>ICON_BT_ON</code></td><td>1</td><td>1</td><td>10</td><td>10</td><td>蓝牙已连</td></tr>
+  <tr><td><code>ICON_BT_OFF</code></td><td>13</td><td>1</td><td>10</td><td>10</td><td>蓝牙未连</td></tr>
+  <tr><td><code>ICON_WF_ON</code></td><td>25</td><td>1</td><td>10</td><td>10</td><td>WiFi 已连</td></tr>
+  <tr><td><code>ICON_WF_OFF</code></td><td>37</td><td>1</td><td>10</td><td>10</td><td>WiFi 未连</td></tr>
+  <tr><td><code>DOT_WORKING</code></td><td>49</td><td>1</td><td>6</td><td>6</td><td>会话状态:working(绿)</td></tr>
+  <tr><td><code>DOT_IDLE</code></td><td>57</td><td>1</td><td>6</td><td>6</td><td>会话状态:idle(橙)</td></tr>
+  <tr><td><code>LOGO_BOOT</code></td><td>1</td><td>13</td><td>200</td><td>16</td><td>开机字标(版本号为运行时文字)</td></tr>
+  <tr><td><code>BOX_TL/TR/BL/BR</code></td><td>1/9/17/25</td><td>31</td><td>6</td><td>6</td><td>方框四角花纹(边线由代码 fill_rect)</td></tr>
+  <tr><td><code>FOCUS_TL/TR/BL/BR</code></td><td>33/41/49/57</td><td>31</td><td>6</td><td>6</td><td>选中条四角花纹(独立定制)</td></tr>
+  <tr><td><code>PALETTE</code></td><td>1</td><td>49</td><td>64</td><td>4</td><td>调色板:16 槽 × 4×4,槽序 = ABI(见下)</td></tr>
+</table>
+
+<div class="abi">
+  <h3>调色板槽序(固件 ABI,不可变)</h3>
+  <div>固件启动时从 atlas 取图区 (1,49) 起读 16 个 4×4 色块中心像素 → 填充运行时调色板 <code>g_pal[16]</code>,
+  文字色 / 焦点底色 / 框线色全部数据驱动。<b>换主题 = 只换这一张 PNG</b>。</div>
+  <table>
+    <tr><th>槽</th><th>令牌</th><th>绿主题</th><th>原神主题</th><th>用途</th></tr>
+    <tr><td>0</td><td><code>PAL_BG</code></td><td>#0A0F0C</td><td>#0D1118</td><td>屏幕底色</td></tr>
+    <tr><td>1</td><td><code>PAL_PANEL</code></td><td>#121A15</td><td>#1A2130</td><td>面板/卡片底</td></tr>
+    <tr><td>2</td><td><code>PAL_BORDER</code></td><td>#26332B</td><td>#8A744E</td><td>框线/分隔线</td></tr>
+    <tr><td>3</td><td><code>PAL_ACCENT</code></td><td>#7FCB9C</td><td>#D3AA6A</td><td>主强调(标题嵌片/键名/线段)</td></tr>
+    <tr><td>4</td><td><code>PAL_ACCENT_HI</code></td><td>#98D6AD</td><td>#E8C88A</td><td>亮强调</td></tr>
+    <tr><td>5</td><td><code>PAL_TEXT</code></td><td>#DDE5DE</td><td>#ECE5D8</td><td>正文</td></tr>
+    <tr><td>6</td><td><code>PAL_DIM</code></td><td>#6F7D74</td><td>#7D8290</td><td>未聚焦项/提示</td></tr>
+    <tr><td>7</td><td><code>PAL_FAINT</code></td><td>#3C4A41</td><td>#4A4234</td><td>未连接图标/最弱化</td></tr>
+    <tr><td>8</td><td><code>PAL_FOCUS_FILL</code></td><td>#7FCB9C</td><td>#212020</td><td><b>选中条填充</b>(原神为预混暖金底)</td></tr>
+    <tr><td>9</td><td><code>PAL_ONBAR</code></td><td>#0A0F0C</td><td>#E8C88A</td><td><b>选中行文字色</b></td></tr>
+    <tr><td>10</td><td><code>PAL_OK</code></td><td>#4ADE80</td><td>#6BC28B</td><td>work 中/已连接</td></tr>
+    <tr><td>11</td><td><code>PAL_PERM</code></td><td>#E0AF68</td><td>#E0AF68</td><td>待授权</td></tr>
+    <tr><td>12</td><td><code>PAL_IDLE</code></td><td>#FF9E64</td><td>#FF9E64</td><td>空闲</td></tr>
+    <tr><td>13</td><td><code>PAL_ERR</code></td><td>#F87171</td><td>#E05555</td><td>错误/危险</td></tr>
+    <tr><td>14</td><td><code>PAL_STOP</code></td><td>#A78BFA</td><td>#9A6BFF</td><td>预留</td></tr>
+    <tr><td>15</td><td><code>PAL_RSVD</code></td><td>#000000</td><td>#000000</td><td>保留</td></tr>
+  </table>
+
+  <h3>每屏合成配方(atlas blit + fill_rect + 文字)</h3>
+  <div><b>Boot</b>:框描边 → blit LOGO_BOOT(居中)→ 运行时画版本号 → draw_focus(焦点行)→ 3 行菜单文字</div>
+  <div><b>Setting / List / Sessions / ASR</b>:框描边 → 标题嵌片 → draw_focus → blit ICON_* → 状态圆点 DOT_* → 条目文字 → footer 键位文字</div>
+  <div><b>Password</b>:框描边 → draw_box(输入匣)→ 基线 fill_rect → ssid/计数/密码/字符文字 → 焦点格 fill_rect</div>
+  <div><b>Popup</b>:backup → draw_box → 文字 → restore</div>
+
+  <h3>体积</h3>
+  <div>atlas 202×54:RGB565 原始 21.8KB → 4bit 调色板 5.5KB → RLE 后预估 <b>1–2KB</b>(白框在间隙中,不增加 sprite 体积)。</div>
+</div>
+
+</body>
+</html>

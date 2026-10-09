@@ -502,6 +502,19 @@ fn render_setting_menu(
     focus: usize,
     setting: &crate::bt_wifi_mode::Setting,
 ) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::setting_menu(target, focus, setting.wifi_list.len());
+    }
+    #[allow(unreachable_code)]
+    render_setting_menu_classic(target, focus, setting)
+}
+
+fn render_setting_menu_classic(
+    target: &mut FrameBuffer,
+    focus: usize,
+    setting: &crate::bt_wifi_mode::Setting,
+) -> anyhow::Result<()> {
     let width = target.bounding_box().size.width;
     clear(target, ColorFormat::CSS_BLACK)?;
     draw_text(
@@ -759,6 +772,20 @@ pub fn render_list(
     items: &[String],
     focus: usize,
 ) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::list(target, title, items, focus);
+    }
+    #[allow(unreachable_code)]
+    render_list_classic(target, title, items, focus)
+}
+
+fn render_list_classic(
+    target: &mut FrameBuffer,
+    title: &str,
+    items: &[String],
+    focus: usize,
+) -> anyhow::Result<()> {
     let bb = target.bounding_box();
     let width = bb.size.width;
     let height = bb.size.height;
@@ -821,6 +848,21 @@ pub fn render_session_list(
     items: &[(String, bool)],
     focus: usize,
 ) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::session_list(target, title, items, focus);
+    }
+    #[allow(unreachable_code)]
+    render_session_list_classic(target, title, items, focus)
+}
+
+fn render_session_list_classic(
+    target: &mut FrameBuffer,
+    title: &str,
+    // items: (label, is_working)
+    items: &[(String, bool)],
+    focus: usize,
+) -> anyhow::Result<()> {
     let bb = target.bounding_box();
     let width = bb.size.width;
     let height = bb.size.height;
@@ -873,6 +915,20 @@ pub fn render_session_list(
 /// 排序:非 active(done/note/perm/err,需要用户关注/已结束)排在前面,active
 /// 的往后放 —— 屏幕小,列表可能被截断,要关注的会话必须始终可见。
 pub fn render_session_view(
+    target: &mut FrameBuffer,
+    wifi_on: bool,
+    ble_on: bool,
+    items: &[crate::sessions::SessionEntry],
+) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::session_view(target, wifi_on, ble_on, items);
+    }
+    #[allow(unreachable_code)]
+    render_session_view_classic(target, wifi_on, ble_on, items)
+}
+
+fn render_session_view_classic(
     target: &mut FrameBuffer,
     wifi_on: bool,
     ble_on: bool,
@@ -944,6 +1000,21 @@ pub fn render_session_view(
 /// 再按一下旋钮确认即向主机聚焦该会话。items 非空由调用方保证;focus 超出可视区时
 /// 滚动窗口跟随。
 pub fn render_knob_picker(
+    target: &mut FrameBuffer,
+    wifi_on: bool,
+    ble_on: bool,
+    items: &[&crate::sessions::SessionEntry],
+    focus: usize,
+) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::knob_picker(target, wifi_on, ble_on, items, focus);
+    }
+    #[allow(unreachable_code)]
+    render_knob_picker_classic(target, wifi_on, ble_on, items, focus)
+}
+
+fn render_knob_picker_classic(
     target: &mut FrameBuffer,
     wifi_on: bool,
     ble_on: bool,
@@ -1096,6 +1167,20 @@ fn render_password(
     password: &str,
     focus: usize,
 ) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::password(target, header, password, focus);
+    }
+    #[allow(unreachable_code)]
+    render_password_classic(target, header, password, focus)
+}
+
+fn render_password_classic(
+    target: &mut FrameBuffer,
+    header: &str,
+    password: &str,
+    focus: usize,
+) -> anyhow::Result<()> {
     let width = target.bounding_box().size.width;
     let height = target.bounding_box().size.height;
     clear(target, ColorFormat::CSS_BLACK)?;
@@ -1233,6 +1318,20 @@ pub fn render_keyboard_view(
     ble_on: bool,
     feedback: &str,
 ) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::keyboard_view(target, wifi_on, ble_on, feedback);
+    }
+    #[allow(unreachable_code)]
+    render_keyboard_view_classic(target, wifi_on, ble_on, feedback)
+}
+
+fn render_keyboard_view_classic(
+    target: &mut FrameBuffer,
+    wifi_on: bool,
+    ble_on: bool,
+    feedback: &str,
+) -> anyhow::Result<()> {
     let bb = target.bounding_box();
     clear(target, ColorFormat::CSS_BLACK)?;
     draw_status_bar(target, wifi_on, Some(ble_on))?;
@@ -1256,6 +1355,15 @@ pub fn render_keyboard_view(
 /// Remote 模式视图:stop 显示占位提示,working 显示动画占位。
 /// (working 时实际屏幕由 app::run 的 ui.handle_message 显示 vibetty 实时画面覆盖。)
 pub fn render_remote_view(target: &mut FrameBuffer, working: bool) -> anyhow::Result<()> {
+    #[cfg(feature = "max2")]
+    {
+        return crate::ui2::compat::remote_view(target, working);
+    }
+    #[allow(unreachable_code)]
+    render_remote_view_classic(target, working)
+}
+
+fn render_remote_view_classic(target: &mut FrameBuffer, working: bool) -> anyhow::Result<()> {
     let bb = target.bounding_box();
     clear(target, ColorFormat::CSS_BLACK)?;
     draw_status_bar(target, working, None)?;
@@ -1387,6 +1495,20 @@ fn draw_popup_with_border(
     text: &str,
     border: ColorFormat,
 ) -> anyhow::Result<()> {
+    // max2:ui2 弹窗面板(PANEL 底 + 调色板描边 + 角贴);边框色映射到语义槽
+    #[cfg(feature = "max2")]
+    {
+        let slot = if border == ColorFormat::CSS_GREEN {
+            crate::ui2::slot::OK
+        } else if border == ColorFormat::CSS_YELLOW {
+            crate::ui2::slot::PERM
+        } else {
+            crate::ui2::slot::ACCENT
+        };
+        let r = rect.intersection(&target.bounding_box());
+        return crate::ui2::draw_popup_panel(target, r, text, slot);
+    }
+    #[allow(unreachable_code)]
     let r = rect.intersection(&target.bounding_box());
     fill_rect(target, r, ColorFormat::CSS_BLACK)?;
     // TUI 风格描边
@@ -1479,6 +1601,15 @@ impl AsrEditor {
 
     /// 全量重绘编辑器:清屏 → 白框 → 标题 → 正文(光标高亮)→ 底部提示。
     pub fn render(&self, target: &mut FrameBuffer) -> anyhow::Result<()> {
+        #[cfg(feature = "max2")]
+        {
+            return crate::ui2::compat::asr_editor(target, &self.cursor_text());
+        }
+        #[allow(unreachable_code)]
+        self.render_classic(target)
+    }
+
+    fn render_classic(&self, target: &mut FrameBuffer) -> anyhow::Result<()> {
         let bb = target.bounding_box();
         let w = bb.size.width as i32;
         let h = bb.size.height as i32;

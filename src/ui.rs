@@ -1,5 +1,9 @@
 //! 手写 UI:开机菜单 / Setting / 各模式外壳。
 //!
+//! [旧渲染路径保留为参考]:双尺寸都已迁往 ui2(compat 分发),以下 *_classic
+//! 与配套 helper 平时是死代码,仅用于对照与回退,见文件顶部的 allow(dead_code)。
+#![allow(dead_code)]
+//!
 //! 基于 embedded-graphics + u8g2 中文字体,直接画到 `lcd::FrameBuffer`。
 //! vibekeys 无触屏,菜单用 Next(btn4)切换选项、Accept(btn7)确认;子列表(WiFi/密码字符)
 //! 仍可用旋钮(pin16/17)双向滚动。
@@ -502,12 +506,7 @@ fn render_setting_menu(
     focus: usize,
     setting: &crate::bt_wifi_mode::Setting,
 ) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::setting_menu(target, focus, setting.wifi_list.len());
-    }
-    #[allow(unreachable_code)]
-    render_setting_menu_classic(target, focus, setting)
+    crate::ui2::compat::setting_menu(target, focus, setting.wifi_list.len())
 }
 
 fn render_setting_menu_classic(
@@ -772,12 +771,7 @@ pub fn render_list(
     items: &[String],
     focus: usize,
 ) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::list(target, title, items, focus);
-    }
-    #[allow(unreachable_code)]
-    render_list_classic(target, title, items, focus)
+    crate::ui2::compat::list(target, title, items, focus)
 }
 
 fn render_list_classic(
@@ -848,12 +842,7 @@ pub fn render_session_list(
     items: &[(String, bool)],
     focus: usize,
 ) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::session_list(target, title, items, focus);
-    }
-    #[allow(unreachable_code)]
-    render_session_list_classic(target, title, items, focus)
+    crate::ui2::compat::session_list(target, title, items, focus)
 }
 
 fn render_session_list_classic(
@@ -920,12 +909,7 @@ pub fn render_session_view(
     ble_on: bool,
     items: &[crate::sessions::SessionEntry],
 ) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::session_view(target, wifi_on, ble_on, items);
-    }
-    #[allow(unreachable_code)]
-    render_session_view_classic(target, wifi_on, ble_on, items)
+    crate::ui2::compat::session_view(target, wifi_on, ble_on, items)
 }
 
 fn render_session_view_classic(
@@ -1006,12 +990,7 @@ pub fn render_knob_picker(
     items: &[&crate::sessions::SessionEntry],
     focus: usize,
 ) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::knob_picker(target, wifi_on, ble_on, items, focus);
-    }
-    #[allow(unreachable_code)]
-    render_knob_picker_classic(target, wifi_on, ble_on, items, focus)
+    crate::ui2::compat::knob_picker(target, wifi_on, ble_on, items, focus)
 }
 
 fn render_knob_picker_classic(
@@ -1167,12 +1146,7 @@ fn render_password(
     password: &str,
     focus: usize,
 ) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::password(target, header, password, focus);
-    }
-    #[allow(unreachable_code)]
-    render_password_classic(target, header, password, focus)
+    crate::ui2::compat::password(target, header, password, focus)
 }
 
 fn render_password_classic(
@@ -1318,12 +1292,7 @@ pub fn render_keyboard_view(
     ble_on: bool,
     feedback: &str,
 ) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::keyboard_view(target, wifi_on, ble_on, feedback);
-    }
-    #[allow(unreachable_code)]
-    render_keyboard_view_classic(target, wifi_on, ble_on, feedback)
+    crate::ui2::compat::keyboard_view(target, wifi_on, ble_on, feedback)
 }
 
 fn render_keyboard_view_classic(
@@ -1355,12 +1324,7 @@ fn render_keyboard_view_classic(
 /// Remote 模式视图:stop 显示占位提示,working 显示动画占位。
 /// (working 时实际屏幕由 app::run 的 ui.handle_message 显示 vibetty 实时画面覆盖。)
 pub fn render_remote_view(target: &mut FrameBuffer, working: bool) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::remote_view(target, working);
-    }
-    #[allow(unreachable_code)]
-    render_remote_view_classic(target, working)
+    crate::ui2::compat::remote_view(target, working)
 }
 
 fn render_remote_view_classic(target: &mut FrameBuffer, working: bool) -> anyhow::Result<()> {
@@ -1495,19 +1459,16 @@ fn draw_popup_with_border(
     text: &str,
     border: ColorFormat,
 ) -> anyhow::Result<()> {
-    // max2:ui2 弹窗面板(PANEL 底 + 调色板描边 + 角贴);边框色映射到语义槽
-    #[cfg(feature = "max2")]
-    {
-        let slot = if border == ColorFormat::CSS_GREEN {
-            crate::ui2::slot::OK
-        } else if border == ColorFormat::CSS_YELLOW {
-            crate::ui2::slot::PERM
-        } else {
-            crate::ui2::slot::ACCENT
-        };
-        let r = rect.intersection(&target.bounding_box());
-        return crate::ui2::draw_popup_panel(target, r, text, slot);
-    }
+    // ui2 弹窗面板(PANEL 底 + 调色板描边 + 角贴);边框色映射到语义槽
+    let slot = if border == ColorFormat::CSS_GREEN {
+        crate::ui2::slot::OK
+    } else if border == ColorFormat::CSS_YELLOW {
+        crate::ui2::slot::PERM
+    } else {
+        crate::ui2::slot::ACCENT
+    };
+    let r = rect.intersection(&target.bounding_box());
+    return crate::ui2::draw_popup_panel(target, r, text, slot);
     #[allow(unreachable_code)]
     let r = rect.intersection(&target.bounding_box());
     fill_rect(target, r, ColorFormat::CSS_BLACK)?;
@@ -1601,12 +1562,7 @@ impl AsrEditor {
 
     /// 全量重绘编辑器:清屏 → 白框 → 标题 → 正文(光标高亮)→ 底部提示。
     pub fn render(&self, target: &mut FrameBuffer) -> anyhow::Result<()> {
-        #[cfg(feature = "max2")]
-        {
-            return crate::ui2::compat::asr_editor(target, &self.cursor_text());
-        }
-        #[allow(unreachable_code)]
-        self.render_classic(target)
+        crate::ui2::compat::asr_editor(target, &self.cursor_text())
     }
 
     fn render_classic(&self, target: &mut FrameBuffer) -> anyhow::Result<()> {

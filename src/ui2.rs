@@ -23,8 +23,7 @@ use u8g2_fonts::{fonts::u8g2_font_wqy12_t_gb2312, U8g2TextStyle};
 
 use crate::atlas;
 use crate::lcd::{ColorFormat, FrameBuffer};
-// flush() 所在 trait;仅 max2 的 render 用到
-#[cfg(feature = "max2")]
+// flush() 所在 trait
 use crate::lcd::DisplayTargetDrive;
 
 const LINE_H: u32 = 14;
@@ -75,16 +74,51 @@ pub fn load_palette() {
     *PAL.lock().unwrap() = Some(p);
 }
 
-/* ============ 布局常量(按 max2 320×172 设计,与设计稿 bitmap-plates-assets.html 一致;
-小屏(i2c_oled 284×78)不放这套布局,交互页回退 ui.rs) ============ */
+/* ============ 布局常量(双尺寸:max2 320×172 / 小屏 284×78;
+小屏几何按设计稿 atlas-small-screen.html 定) ============ */
 pub const SCREEN_W: i32 = crate::lcd::DISPLAY_WIDTH as i32;
 pub const SCREEN_H: i32 = crate::lcd::DISPLAY_HEIGHT as i32;
-pub const FRAME_X: i32 = 4;
-pub const FRAME_Y: i32 = 6;
-pub const FRAME_W: i32 = SCREEN_W - FRAME_X * 2; // 312
-pub const FRAME_H: i32 = SCREEN_H - FRAME_Y - 6; // footer 已移除,边框向下扩展(留 6px 底边距)
-pub const ROW_H: i32 = 16;
-pub const ROW_STEP: i32 = 19;
+
+#[cfg(feature = "max2")]
+pub mod geo {
+    pub const FRAME_X: i32 = 4;
+    pub const FRAME_Y: i32 = 6;
+    pub const FRAME_W: i32 = super::SCREEN_W - FRAME_X * 2; // 312
+    pub const FRAME_H: i32 = super::SCREEN_H - FRAME_Y - 6; // y6..168
+    pub const LIST_TOP: i32 = 24;
+    pub const ROW_STEP: i32 = 19;
+    pub const ROW_H: i32 = 16;
+    // 标题嵌片:挖 11px、文字 rect 14px(7×13 字体)
+    pub const TITLE_DY: i32 = -5;
+    pub const TITLE_H: u32 = 11;
+    pub const TITLE_TEXT_DY: i32 = -6;
+    pub const TITLE_TEXT_H: u32 = 14;
+    pub const ICON_WF_X: i32 = super::SCREEN_W - 34;
+    pub const ICON_BT_X: i32 = super::SCREEN_W - 48;
+    pub const ICON_Y: i32 = 2;
+    // 标题嵌片跨顶线(挖 BG 底)
+    pub const TITLE_INSIDE: bool = false;
+}
+#[cfg(not(feature = "max2"))]
+pub mod geo {
+    pub const FRAME_X: i32 = 2;
+    pub const FRAME_Y: i32 = 6;
+    pub const FRAME_W: i32 = super::SCREEN_W - FRAME_X * 2; // 280
+    pub const FRAME_H: i32 = super::SCREEN_H - FRAME_Y - 4; // y6..74
+    pub const LIST_TOP: i32 = 26; // 标题放框内,列表起点下移
+    pub const ROW_STEP: i32 = 16;
+    pub const ROW_H: i32 = 13; // 6px 角贴 6+6 < 13,不重叠
+                               // 标题放框内(不跨顶线、不挖嵌片):文字 rect 13px,贴顶线下方
+    pub const TITLE_INSIDE: bool = true;
+    pub const TITLE_DY: i32 = 3;
+    pub const TITLE_H: u32 = 0; // 不挖底
+    pub const TITLE_TEXT_DY: i32 = 3;
+    pub const TITLE_TEXT_H: u32 = 13;
+    pub const ICON_WF_X: i32 = super::SCREEN_W - 26;
+    pub const ICON_BT_X: i32 = super::SCREEN_W - 40;
+    pub const ICON_Y: i32 = 2;
+}
+pub use geo::*;
 
 /* ============ 数据模型 ============ */
 
@@ -170,8 +204,8 @@ impl Row {
 pub enum Elem {
     /// 屏幕外框(1px 边线,BORDER 色;渲染器自动画,无需进表)
     // (见 render 开头)
-    /// 标题嵌片(固定画在框顶线上,挖 BG 底)
-    Title { text: String },
+    /// 标题嵌片(固定画在框顶线上,挖 BG 底;center=true 时水平居中)
+    Title { text: String, center: bool },
     /// 列表行(状态标记 + 文字;focus=true 时文字用 ONBAR,配 FocusBar 用)
     Row { y: i32, row: Row, focus: bool },
     /// 通栏焦点框:FOCUS_FILL 底 + 4 边 accent 线 + 4 角 sprite(线宽代码写死)
@@ -206,7 +240,6 @@ pub enum Elem {
 
 /// 渲染一块屏:铺底 → 外框 → 走元素表。
 /// 蓝牙/WiFi 状态由表内的 `Elem::Icons{ bt, wf }` 携带,渲染器无全局状态。
-#[cfg(feature = "max2")]
 pub fn render(elems: &[Elem], target: &mut FrameBuffer) -> anyhow::Result<()> {
     // 底色
     fill(
@@ -219,28 +252,36 @@ pub fn render(elems: &[Elem], target: &mut FrameBuffer) -> anyhow::Result<()> {
         Point::new(FRAME_X, FRAME_Y),
         Size::new(FRAME_W as u32, FRAME_H as u32),
     );
+    // FRAME_* 由 geo 模块按屏幕尺寸给出
     stroke(target, f, pal(slot::BORDER))?;
 
     for elem in elems {
         match elem {
-            Elem::Title { text } => {
+            Elem::Title { text, center } => {
                 let w = text_w(text) + 10;
                 let text = text.as_str();
-                // 挖穿顶线做嵌片;文字 rect 要给足 13px 字体高度(否则 ShrinkToText 整行裁掉)
-                fill(
-                    target,
-                    Rectangle::new(
-                        Point::new(FRAME_X + 8, FRAME_Y - 5),
-                        Size::new(w as u32, 11),
-                    ),
-                    pal(slot::BG),
-                )?;
+                let tx = if *center {
+                    (SCREEN_W - w) / 2
+                } else {
+                    FRAME_X + 8
+                };
+                // 小屏:标题放框内不跨线;max2:挖穿顶线做嵌片
+                if !TITLE_INSIDE {
+                    fill(
+                        target,
+                        Rectangle::new(
+                            Point::new(tx, FRAME_Y + TITLE_DY),
+                            Size::new(w as u32, TITLE_H),
+                        ),
+                        pal(slot::BG),
+                    )?;
+                }
                 draw_str(
                     target,
                     text,
                     Rectangle::new(
-                        Point::new(FRAME_X + 8, FRAME_Y - 6),
-                        Size::new(w as u32, 14),
+                        Point::new(tx, FRAME_Y + TITLE_TEXT_DY),
+                        Size::new(w as u32, TITLE_TEXT_H),
                     ),
                     pal(slot::ACCENT),
                     HorizontalAlignment::Center,
@@ -281,9 +322,9 @@ pub fn render(elems: &[Elem], target: &mut FrameBuffer) -> anyhow::Result<()> {
                     (false, false) => (atlas::sprite::ICON_BT_OFF, atlas::sprite::ICON_WF_OFF),
                 };
                 let (sx, sy, w, h) = wf_s;
-                atlas::blit(target, sx, sy, w, h, SCREEN_W - 34, 2)?;
+                atlas::blit(target, sx, sy, w, h, ICON_WF_X, ICON_Y)?;
                 let (sx, sy, w, h) = bt_s;
-                atlas::blit(target, sx, sy, w, h, SCREEN_W - 48, 2)?;
+                atlas::blit(target, sx, sy, w, h, ICON_BT_X, ICON_Y)?;
             }
             Elem::Logo { x, y } => {
                 let (sx, sy, w, h) = atlas::sprite::LOGO_BOOT;
@@ -465,26 +506,53 @@ fn draw_focus_bar(target: &mut FrameBuffer, y: i32) -> anyhow::Result<()> {
 /// BOOT:字标 + 版本 + 三项菜单(焦点由 focus 指定)
 pub fn boot(version: &str, focus: usize) -> Vec<Elem> {
     let items = ["Keyboard", "Remote", "Setting"];
-    let mut elems = vec![
-        Elem::Logo { x: 60, y: 16 },
-        Elem::Text {
+    let mut elems = Vec::new();
+    #[cfg(feature = "max2")]
+    {
+        elems.push(Elem::Logo { x: 60, y: 16 });
+        elems.push(Elem::Text {
             x: 0,
             y: 36,
             text: version.into(),
             ink: Ink::Faint,
             center: true,
-        },
-    ];
-    for (i, item) in items.iter().enumerate() {
-        let y = 58 + i as i32 * ROW_STEP;
-        if i == focus {
-            elems.push(Elem::FocusBar { y });
+        });
+        for (i, item) in items.iter().enumerate() {
+            let y = 58 + i as i32 * ROW_STEP;
+            if i == focus {
+                elems.push(Elem::FocusBar { y });
+            }
+            elems.push(Elem::Text {
+                x: 0,
+                y: y + 2,
+                text: (*item).into(),
+                ink: if i == focus { Ink::OnBar } else { Ink::Dim },
+                center: true,
+            });
         }
+    }
+    // 小屏:78px 放不下字标+版本+3 行菜单 → 标题嵌片 + 版本 + 单行选项
+    // (只显示焦点项,NEXT 轮换)
+    #[cfg(not(feature = "max2"))]
+    {
+        elems.push(Elem::Title {
+            text: "VibeKeys".into(),
+            center: true,
+        });
         elems.push(Elem::Text {
             x: 0,
-            y: y + 2,
-            text: (*item).into(),
-            ink: if i == focus { Ink::OnBar } else { Ink::Dim },
+            y: 24,
+            text: version.into(),
+            ink: Ink::Faint,
+            center: true,
+        });
+        let y = 44;
+        elems.push(Elem::FocusBar { y });
+        elems.push(Elem::Text {
+            x: 0,
+            y: y + 1,
+            text: items[focus.min(items.len() - 1)].into(),
+            ink: Ink::OnBar,
             center: true,
         });
     }
@@ -502,6 +570,7 @@ pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
     let mut elems = vec![
         Elem::Title {
             text: "Setting".into(),
+            center: false,
         },
         Elem::Icons {
             bt: false,
@@ -509,7 +578,7 @@ pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
         },
     ];
     for (i, item) in items.iter().enumerate() {
-        let y = 24 + i as i32 * ROW_STEP;
+        let y = LIST_TOP + i as i32 * ROW_STEP;
         if i == focus {
             elems.push(Elem::FocusBar { y });
         }
@@ -534,9 +603,10 @@ pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
 pub fn sessions(rows: &[Row], focus: usize) -> Vec<Elem> {
     let mut elems = vec![Elem::Title {
         text: "Focus session".into(),
+        center: false,
     }];
     for (i, row) in rows.iter().enumerate() {
-        let y = 24 + i as i32 * ROW_STEP;
+        let y = LIST_TOP + i as i32 * ROW_STEP;
         if i == focus {
             elems.push(Elem::FocusBar { y });
         }
@@ -551,46 +621,59 @@ pub fn sessions(rows: &[Row], focus: usize) -> Vec<Elem> {
 
 /// POPUP:弹窗框 + 底下变暗的会话列表 + 居中消息
 pub fn popup(msg: &str) -> Vec<Elem> {
-    vec![
+    // 小屏空间小,只留一行会话;弹窗框几何按屏幕尺寸
+    let mut elems = vec![
         Elem::Title {
             text: "Sessions".into(),
+            center: false,
         },
         Elem::Row {
-            y: 24,
+            y: LIST_TOP,
             row: Row::new("vibekeys (9d1)", Status::Work),
             focus: false,
         },
-        Elem::Row {
+    ];
+    if cfg!(feature = "max2") {
+        elems.push(Elem::Row {
             y: 43,
             row: Row::new("docs (c08)", Status::Idle),
             focus: false,
-        },
-        Elem::Box {
-            x: 60,
-            y: 70,
-            w: 200,
-            h: 40,
-        },
-        Elem::Text {
-            x: 0,
-            y: 82,
-            text: msg.into(),
-            ink: Ink::Text,
-            center: true,
-        },
-    ]
-}
+        });
+    }
 
+    let (box_rect, msg_y) = if cfg!(feature = "max2") {
+        ((60, 70, 200, 40), 82)
+    } else {
+        ((42, 44, 200, 24), 50)
+    };
+    elems.push(Elem::Box {
+        x: box_rect.0,
+        y: box_rect.1,
+        w: box_rect.2,
+        h: box_rect.3,
+    });
+    elems.push(Elem::Text {
+        x: 0,
+        y: msg_y,
+        text: msg.into(),
+        ink: Ink::Text,
+        center: true,
+    });
+    elems
+}
 /// 通用列表:标题 + 滚动窗口 + 焦点条(行数超屏时整页跟随焦点,与旧 render_list 同策略)。
 /// 列表项是纯文本行(· 标记 + TEXT 色文字)。
 pub fn list(title: &str, items: &[String], focus: usize) -> Vec<Elem> {
-    const LIST_TOP: i32 = 24;
+    let list_top = LIST_TOP;
     let bottom = FRAME_Y + FRAME_H;
-    let visible = (((bottom - LIST_TOP) / ROW_STEP) as usize).max(1);
+    let visible = (((bottom - list_top) / ROW_STEP) as usize).max(1);
     let start = focus.saturating_sub(visible.saturating_sub(1));
-    let mut elems = vec![Elem::Title { text: title.into() }];
+    let mut elems = vec![Elem::Title {
+        text: title.into(),
+        center: false,
+    }];
     for (i, item) in items.iter().enumerate().skip(start).take(visible) {
-        let y = LIST_TOP + (i - start) as i32 * ROW_STEP;
+        let y = list_top + (i - start) as i32 * ROW_STEP;
         if i == focus {
             elems.push(Elem::FocusBar { y });
         }
@@ -603,9 +686,8 @@ pub fn list(title: &str, items: &[String], focus: usize) -> Vec<Elem> {
     elems
 }
 
-/* ============ compat:旧 ui.rs 各渲染函数在 max2 下的 ui2 出口 ============ */
-/// 签名与旧函数一一对应;状态机不动,只换渲染。小屏不放新布局,调用方自行回退。
-#[cfg(feature = "max2")]
+/* ============ compat:旧 ui.rs 各渲染函数的 ui2 出口(双尺寸) ============ */
+/// 签名与旧函数一一对应;状态机不动,只换渲染。几何全部来自 geo 模块。
 pub mod compat {
     use super::*;
 
@@ -642,7 +724,10 @@ pub mod compat {
         let bottom = FRAME_Y + FRAME_H;
         let visible = (((bottom - LIST_TOP) / ROW_STEP) as usize).max(1);
         let start = focus.saturating_sub(visible.saturating_sub(1));
-        let mut elems = vec![Elem::Title { text: title.into() }];
+        let mut elems = vec![Elem::Title {
+            text: title.into(),
+            center: false,
+        }];
         for (i, (label, is_working)) in items.iter().enumerate().skip(start).take(visible) {
             let y = LIST_TOP + (i - start) as i32 * ROW_STEP;
             if i == focus {
@@ -675,12 +760,13 @@ pub mod compat {
         let n = ((FRAME_W as u32) / 16).clamp(5, 11) as usize;
         let cell_w = FRAME_W as u32 / n as u32;
         let half = n / 2;
-        let wheel_y: i32 = 44;
-        let cell_h: i32 = 20;
+        let wheel_y: i32 = if cfg!(feature = "max2") { 44 } else { 38 };
+        let cell_h: i32 = if cfg!(feature = "max2") { 20 } else { 16 };
 
         let mut elems = vec![
             Elem::Title {
                 text: header.into(),
+                center: false,
             },
             // 密码文本 + 末尾块状光标(光标用 Box 描边;宽高 ≥ 12 才容得下 6px 角贴)
             Elem::Text {
@@ -733,6 +819,7 @@ pub mod compat {
         let mut elems = vec![
             Elem::Title {
                 text: "Keyboard".into(),
+                center: false,
             },
             Elem::Icons {
                 bt: ble_on,
@@ -742,7 +829,7 @@ pub mod compat {
         if !feedback.is_empty() {
             elems.push(Elem::Text {
                 x: 0,
-                y: 80,
+                y: SCREEN_H / 2 - 7,
                 text: feedback.into(),
                 ink: Ink::Text,
                 center: true,
@@ -753,9 +840,10 @@ pub mod compat {
 
     /// 旧 render_remote_view:working 时实际画面由 app 的 vt100 画布覆盖,这里只画外壳
     pub fn remote_view(target: &mut FrameBuffer, working: bool) -> anyhow::Result<()> {
-        let mut elems = vec![
+        let elems = vec![
             Elem::Title {
                 text: "Remote".into(),
+                center: false,
             },
             Elem::Icons {
                 bt: false,
@@ -763,7 +851,7 @@ pub mod compat {
             },
             Elem::Text {
                 x: 0,
-                y: 80,
+                y: SCREEN_H / 2 - 7,
                 text: if working { "working" } else { "stop" }.into(),
                 ink: if working { Ink::Ok } else { Ink::Idle },
                 center: true,
@@ -780,11 +868,19 @@ pub mod compat {
         body: &str,
         ink: Ink,
     ) -> anyhow::Result<()> {
-        let mut elems = vec![Elem::Title { text: title.into() }];
+        let (y0, step) = if cfg!(feature = "max2") {
+            (44, 20)
+        } else {
+            (30, 16)
+        };
+        let mut elems = vec![Elem::Title {
+            text: title.into(),
+            center: false,
+        }];
         for (i, line) in body.lines().enumerate() {
             elems.push(Elem::Text {
                 x: 0,
-                y: 44 + i as i32 * 20,
+                y: y0 + i as i32 * step,
                 text: line.into(),
                 ink,
                 center: true,
@@ -799,11 +895,41 @@ pub mod compat {
         status(target, "Sync time", msg, Ink::Text)
     }
 
+    /// keyboard 模式会话展示(旧 render_session_view):
+    /// 整行底色表状态 → 行首标记表状态(perm ▲ / err × / active ● / idle ◆),
+    /// 非 active(需关注)排前,与旧版同序。
+    pub fn session_view(
+        target: &mut FrameBuffer,
+        wifi_on: bool,
+        ble_on: bool,
+        items: &[crate::sessions::SessionEntry],
+    ) -> anyhow::Result<()> {
+        let refs: Vec<&crate::sessions::SessionEntry> = items.iter().collect();
+        let elems = super::kb_session_elems(wifi_on, ble_on, &refs, None);
+        render(&elems, target)
+    }
+
+    /// keyboard 模式旋钮会话选择器(旧 render_knob_picker):同 session_view,
+    /// 焦点行走焦点条(替代旧版的 "> <" 尖括号标记)。
+    pub fn knob_picker(
+        target: &mut FrameBuffer,
+        wifi_on: bool,
+        ble_on: bool,
+        items: &[&crate::sessions::SessionEntry],
+        focus: usize,
+    ) -> anyhow::Result<()> {
+        let elems = super::kb_session_elems(wifi_on, ble_on, items, Some(focus));
+        render(&elems, target)
+    }
+
     /// ASR 结果编辑页:标题嵌片 + 多行正文(含 ANSI 光标高亮)+ 键位提示。
     /// body 由调用方传 cursor_text()(光标字符包 \x1b[44m..[49m)。
     pub fn asr_editor(target: &mut FrameBuffer, body: &str) -> anyhow::Result<()> {
         let elems = vec![
-            Elem::Title { text: "ASR".into() },
+            Elem::Title {
+                text: "ASR".into(),
+                center: false,
+            },
             Elem::Para {
                 x: FRAME_X + 10,
                 y: 28,
@@ -818,33 +944,6 @@ pub mod compat {
         ];
         render(&elems, target)
     }
-
-    /// keyboard 模式会话展示(旧 render_session_view):
-    /// 整行底色表状态 → 行首标记表状态(perm ▲ / err × / active ● / idle ◆),
-    /// 非 active(需关注)排前,与旧版同序。
-    pub fn session_view(
-        target: &mut FrameBuffer,
-        wifi_on: bool,
-        ble_on: bool,
-        items: &[crate::sessions::SessionEntry],
-    ) -> anyhow::Result<()> {
-        let refs: Vec<&crate::sessions::SessionEntry> = items.iter().collect();
-        let elems = kb_session_elems(wifi_on, ble_on, &refs, None);
-        render(&elems, target)
-    }
-
-    /// keyboard 模式旋钮会话选择器(旧 render_knob_picker):同 session_view,
-    /// 焦点行走焦点条(替代旧版的 "> <" 尖括号标记)。
-    pub fn knob_picker(
-        target: &mut FrameBuffer,
-        wifi_on: bool,
-        ble_on: bool,
-        items: &[&crate::sessions::SessionEntry],
-        focus: usize,
-    ) -> anyhow::Result<()> {
-        let elems = kb_session_elems(wifi_on, ble_on, items, Some(focus));
-        render(&elems, target)
-    }
 }
 
 /// keyboard 会话屏公共构建:标题 + 状态图标 + 状态行(可选焦点行 + 滚动窗口)
@@ -854,12 +953,13 @@ fn kb_session_elems(
     items: &[&crate::sessions::SessionEntry],
     focus: Option<usize>,
 ) -> Vec<Elem> {
-    const LIST_TOP: i32 = 24;
+    let list_top = LIST_TOP;
     let bottom = FRAME_Y + FRAME_H;
-    let visible = (((bottom - LIST_TOP) / ROW_STEP) as usize).max(1);
+    let visible = (((bottom - list_top) / ROW_STEP) as usize).max(1);
     let mut elems = vec![
         Elem::Title {
             text: "Sessions".into(),
+            center: false,
         },
         Elem::Icons {
             bt: ble_on,
@@ -869,7 +969,7 @@ fn kb_session_elems(
     if items.is_empty() {
         elems.push(Elem::Text {
             x: FRAME_X + 12,
-            y: LIST_TOP + 2,
+            y: list_top + 2,
             text: "No sessions".into(),
             ink: Ink::Dim,
             center: false,
@@ -889,7 +989,7 @@ fn kb_session_elems(
         .skip(start.unwrap_or(0))
         .take(visible)
     {
-        let y = LIST_TOP + (i - start.unwrap_or(0)) as i32 * ROW_STEP;
+        let y = list_top + (i - start.unwrap_or(0)) as i32 * ROW_STEP;
         let status = if e.st.is_perm() {
             Status::Perm
         } else if e.st.is_active() {
@@ -914,12 +1014,7 @@ fn kb_session_elems(
 
 /// SNTP 对时页(小屏回退 display_text;main.rs 的调用点不带 cfg,故放 compat 外)
 pub fn sync_time_view(target: &mut FrameBuffer, msg: &str) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return compat::status(target, "Sync time", msg, Ink::Text);
-    }
-    #[allow(unreachable_code)]
-    crate::lcd::display_text(target, &format!("Sync time\n {msg}"), 0)
+    compat::status(target, "Sync time", msg, Ink::Text)
 }
 
 /// 弹窗面板(ui.rs 的增量 Popup 用):PANEL 底 + 语义色描边 + 4 角 sprite + 居中文本。
@@ -962,22 +1057,12 @@ pub fn draw_popup_panel(
 
 /// 网络流程页(WiFi / MQTT / Tailscale 连接进度):左上角嵌片固定 "Network"
 pub fn net_view(target: &mut FrameBuffer, msg: &str) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return compat::status(target, "Network", msg, Ink::Text);
-    }
-    #[allow(unreachable_code)]
-    crate::lcd::display_text(target, &format!("Network\n {msg}"), 0)
+    compat::status(target, "Network", msg, Ink::Text)
 }
 
 /// 同 net_view,正文错误色
 pub fn net_view_err(target: &mut FrameBuffer, msg: &str) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return compat::status(target, "Network", msg, Ink::Err);
-    }
-    #[allow(unreachable_code)]
-    crate::lcd::display_text(target, &format!("Network\n {msg}"), 0)
+    compat::status(target, "Network", msg, Ink::Err)
 }
 
 /* ============ 底层原语(FrameBuffer 直写;颜色一律来自 pal()) ============ */
@@ -1050,38 +1135,30 @@ pub async fn boot_menu(
     esc: Btn<'_>,
     next: Btn<'_>,
 ) -> crate::ui::BootChoice {
-    #[cfg(not(feature = "max2"))]
-    {
-        return crate::ui::boot_menu(target, accept, esc, next).await;
-    }
+    const CHOICES: [crate::ui::BootChoice; 3] = [
+        crate::ui::BootChoice::Keyboard,
+        crate::ui::BootChoice::Remote,
+        crate::ui::BootChoice::Setting,
+    ];
+    let version = concat!("v", env!("CARGO_PKG_VERSION"));
+    let mut focus: usize = 0;
 
-    #[cfg(feature = "max2")]
-    {
-        const CHOICES: [crate::ui::BootChoice; 3] = [
-            crate::ui::BootChoice::Keyboard,
-            crate::ui::BootChoice::Remote,
-            crate::ui::BootChoice::Setting,
-        ];
-        let version = concat!("v", env!("CARGO_PKG_VERSION"));
-        let mut focus: usize = 0;
+    loop {
+        let elems = boot(version, focus);
+        let _ = render(&elems, target);
 
-        loop {
-            let elems = boot(version, focus);
-            let _ = render(&elems, target);
+        let evt = tokio::select! {
+            _ = next.wait_for_falling_edge() => MenuEvt::Next,
+            _ = accept.wait_for_falling_edge() => MenuEvt::Accept,
+            _ = esc.wait_for_falling_edge() => MenuEvt::Esc,
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await; // 消抖
 
-            let evt = tokio::select! {
-                _ = next.wait_for_falling_edge() => MenuEvt::Next,
-                _ = accept.wait_for_falling_edge() => MenuEvt::Accept,
-                _ = esc.wait_for_falling_edge() => MenuEvt::Esc,
-            };
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await; // 消抖
-
-            match evt {
-                MenuEvt::Next if next.is_low() => focus = (focus + 1) % CHOICES.len(),
-                MenuEvt::Accept if accept.is_low() => return CHOICES[focus],
-                MenuEvt::Esc if esc.is_low() => focus = (focus + CHOICES.len() - 1) % CHOICES.len(),
-                _ => {}
-            }
+        match evt {
+            MenuEvt::Next if next.is_low() => focus = (focus + 1) % CHOICES.len(),
+            MenuEvt::Accept if accept.is_low() => return CHOICES[focus],
+            MenuEvt::Esc if esc.is_low() => focus = (focus + CHOICES.len() - 1) % CHOICES.len(),
+            _ => {}
         }
     }
 }

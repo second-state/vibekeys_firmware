@@ -33,22 +33,12 @@ static OTA_INDEX_HTML: &str = include_str!("../assets/ota_index.html");
 
 /// OTA 流程页统一出口:max2 走 ui2 状态页(标题嵌片 + 居中正文),小屏回退 display_text。
 fn show(target: &mut crate::lcd::FrameBuffer, title: &str, body: &str) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::status(target, title, body, crate::ui2::Ink::Text);
-    }
-    #[allow(unreachable_code)]
-    crate::lcd::display_text(target, &format!("{title}\n {body}"), 0)
+    crate::ui2::compat::status(target, title, body, crate::ui2::Ink::Text)
 }
 
 /// 同 show,正文用错误色
 fn show_err(target: &mut crate::lcd::FrameBuffer, title: &str, body: &str) -> anyhow::Result<()> {
-    #[cfg(feature = "max2")]
-    {
-        return crate::ui2::compat::status(target, title, body, crate::ui2::Ink::Err);
-    }
-    #[allow(unreachable_code)]
-    crate::lcd::display_text(target, &format!("{title}\n {body}"), 0)
+    crate::ui2::compat::status(target, title, body, crate::ui2::Ink::Err)
 }
 
 enum OtaEvent {

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>vibekeys small screen (284×78) — atlas layout mockup</title>
+<style>
+  body { background:#1a1a1a; color:#ddd; font-family: Menlo, monospace; padding:20px; }
+  h2 { font-size:14px; margin:18px 0 6px; color:#9ad; }
+  .wrap { display:flex; flex-wrap:wrap; gap:24px; }
+  .screen { image-rendering: pixelated; border:1px solid #444; }
+  .note { font-size:11px; color:#888; max-width:300px; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<h1 style="font-size:16px">vibekeys 小屏 284×78 — 复用 atlas-green.png 素材的 ui2 布局</h1>
+<p class="note">设计约束:7×13 ASCII / wqy12 12px;焦点条 13px 高(6×6 角贴 6+6&lt;13 不重叠);
+   列表 3 行;标题嵌片保留但压缩到 9px 高。所有坐标与 ui2 小屏 Layout 常量一一对应。</p>
+<div class="wrap" id="screens"></div>
+
+<script>
+const ATLAS = 'atlas-green.png';
+const W = 284, H = 78, SCALE = 3;
+
+// ---- 与 ui2 小屏 Layout 常量一致 ----
+const L = {
+  FRAME_X: 2, FRAME_Y: 6, FRAME_W: W - 4, FRAME_H: H - 6 - 4, // y6..74
+  LIST_TOP: 26, ROW_STEP: 16, ROW_H: 13, LINE_H: 14,
+};
+
+// ---- atlas ABI(sprite 源区域,同固件) ----
+const S = {
+  ICON_BT_ON:[1,1,10,10], ICON_BT_OFF:[13,1,10,10],
+  ICON_WF_ON:[25,1,10,10], ICON_WF_OFF:[37,1,10,10],
+  LOGO:[1,13,200,16],
+  FOCUS_TL:[33,31,6,6], FOCUS_TR:[41,31,6,6], FOCUS_BL:[49,31,6,6], FOCUS_BR:[57,31,6,6],
+};
+// 调色板(与 PNG 色板条一致,模拟 pal())
+const P = { BG:'#0A0F0C', PANEL:'#121A15', BORDER:'#26332B', ACCENT:'#7FCB9C', HI:'#98D6AD',
+            TEXT:'#DDE5DE', DIM:'#6F7D74', FAINT:'#3C4A41', FOCUS:'#7FCB9C', ONBAR:'#0A0F0C',
+            OK:'#4ADE80', PERM:'#E0AF68', IDLE:'#FF9E64', ERR:'#F87171' };
+
+let atlas = null;
+function blit(ctx, sx, sy, w, h, dx, dy) {
+  ctx.drawImage(atlas, sx, sy, w, h, dx, dy, w, h);
+}
+function rect(ctx, x, y, w, h, fill) { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h); }
+function stroke(ctx, x, y, w, h, col) {
+  ctx.strokeStyle = col; ctx.lineWidth = 1;
+  ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
+}
+// 7×13 ASCII(ctx.font 用 px 近似;真机是等宽点阵,这里只求比例)
+function txt(ctx, s, x, y, col, size = 13, bold = true, cw = 7) {
+  ctx.fillStyle = col; ctx.font = `${bold ? 'bold ' : ''}${size - 1}px Menlo, monospace`;
+  ctx.textBaseline = 'top';
+  ctx.fillText(s, x, y + 1);
+}
+function tw(s, cw = 7) { return s.length * cw; }
+
+// 标题放框内(小屏不跨线);cx 传 null 时水平居中
+function title(ctx, text, cx = null) {
+  txt(ctx, text, cx === null ? L.FRAME_X + 6 : cx, L.FRAME_Y + 3, P.ACCENT, 13, true);
+}
+// 焦点条:填充 + 描边 + 4 角贴(13px 高,角贴 6+6 不重叠)
+function focusbar(ctx, y) {
+  const fx = L.FRAME_X + 1, fw = L.FRAME_W - 2;
+  rect(ctx, fx, y, fw, L.ROW_H, P.FOCUS);
+  stroke(ctx, fx, y, fw, L.ROW_H, P.ACCENT);
+  blit(ctx, ...S.FOCUS_TL, fx, y);
+  blit(ctx, ...S.FOCUS_TR, fx + fw - 6, y);
+  blit(ctx, ...S.FOCUS_BL, fx, y + L.ROW_H - 6);
+  blit(ctx, ...S.FOCUS_BR, fx + fw - 6, y + L.ROW_H - 6);
+}
+function icons(ctx, bt, wf) {
+  blit(ctx, ...(wf ? S.ICON_WF_ON : S.ICON_WF_OFF), W - 26, 2);
+  blit(ctx, ...(bt ? S.ICON_BT_ON : S.ICON_BT_OFF), W - 40, 2);
+}
+function marker(ctx, ch, x, y, col) { txt(ctx, ch, x, y, col, 12, false); }
+
+function newScreen(name, draw) {
+  const holder = document.createElement('div');
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H; c.className = 'screen';
+  c.style.width = (W * SCALE) + 'px'; c.style.height = (H * SCALE) + 'px';
+  const label = document.createElement('h2'); label.textContent = name;
+  holder.append(label, c);
+  document.getElementById('screens').append(holder);
+  const ctx = c.getContext('2d');
+  rect(ctx, 0, 0, W, H, P.BG);
+  stroke(ctx, L.FRAME_X, L.FRAME_Y, L.FRAME_W, L.FRAME_H, P.BORDER);
+  draw(ctx);
+}
+
+const boot = () => newScreen('BOOT(标题 + 版本 + 单行选项)', ctx => {
+  // 标题嵌片 + 版本号 + 单行焦点选项(NEXT 轮换)
+  title(ctx, 'VibeKeys', (W - (tw('VibeKeys') + 8)) / 2);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = P.FAINT; ctx.font = 'bold 12px Menlo, monospace';
+  ctx.fillText('v0.5.0', W / 2, 21);
+  focusbar(ctx, 42);
+  ctx.fillStyle = P.ONBAR;
+  ctx.textBaseline = 'top';
+  ctx.fillText('Keyboard', W / 2, 44);
+  ctx.textAlign = 'left';
+});
+
+const sessions = () => newScreen('SESSIONS(3 行 + 焦点)', ctx => {
+  title(ctx, 'Session');
+  icons(ctx, true, true);
+  const rows = [
+    ['●', 'vibekeys (9d1)', P.OK],
+    ['▲', 'infra (e2a)', P.PERM],
+    ['◆', 'docs (c08)', P.IDLE],
+  ];
+  rows.forEach((r, i) => {
+    const y = L.LIST_TOP + i * L.ROW_STEP;
+    if (i === 0) focusbar(ctx, y);
+    marker(ctx, r[0], L.FRAME_X + 8, y + 1, i === 0 ? P.ONBAR : r[2]);
+    txt(ctx, r[1], L.FRAME_X + 22, y + 1, i === 0 ? P.ONBAR : P.TEXT);
+  });
+});
+
+const setting = () => newScreen('SETTING(标题 + 图标 + 3 行可视)', ctx => {
+  title(ctx, 'Setting');
+  icons(ctx, true, true);
+  const items = [['WiFi networks (5)', P.DIM], ['OTA Update', P.ACCENT], ['Clear config', P.ERR]];
+  items.forEach((it, i) => {
+    const y = L.LIST_TOP + i * L.ROW_STEP;
+    if (i === 1) focusbar(ctx, y);
+    txt(ctx, it[0], L.FRAME_X + 10, y + 1, i === 1 ? P.ONBAR : it[1]);
+  });
+});
+
+const kb = () => newScreen('KEYBOARD 外壳(状态行 + 会话)', ctx => {
+  title(ctx, 'Keyboard');
+  icons(ctx, false, true);
+  const rows = [
+    ['▲', 'vibekeys-ui (9d1)', P.PERM],
+    ['●', 'vibetty (e2a)', P.OK],
+    ['◆', 'docs (c08)', P.IDLE],
+  ];
+  rows.forEach((r, i) => {
+    const y = L.LIST_TOP + i * L.ROW_STEP;
+    marker(ctx, r[0], L.FRAME_X + 8, y + 1, r[2]);
+    txt(ctx, r[1], L.FRAME_X + 22, y + 1, P.TEXT);
+  });
+});
+
+const status = () => newScreen('STATUS(OTA/对时/网络流程页)', ctx => {
+  title(ctx, 'OTA');
+  ctx.textAlign = 'center';
+  ctx.fillStyle = P.TEXT; ctx.font = 'bold 12px Menlo, monospace';
+  ctx.fillText('Connecting wifi', W / 2, 31);
+  ctx.textAlign = 'left';
+});
+
+window.onload = () => {
+  const img = new Image();
+  img.onload = () => {
+    atlas = img;
+    boot(); sessions(); setting(); kb(); status();
+  };
+  img.src = ATLAS;
+};
+</script>
+</body>
+</html>

@@ -102,15 +102,9 @@ fn read_nvs_atlas(nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> Option<Vec<u8>> {
     }
 }
 
-/// 调色板:色板条取图区 (1,49) 起 16 槽 × 4×4,取各槽中心像素。
+/// 调色板槽位的原始 RGB:色板条取图区 (1,49) 起 16 槽 × 4×4,取各槽中心像素。
 /// 槽序 = ABI:BG/PANEL/BORDER/ACCENT/ACCENT_HI/TEXT/DIM/FAINT/
-///           FOCUS_FILL/ONBAR/OK/PERM/IDLE/ERR/STOP/RSVD
-pub fn palette(idx: usize) -> ColorFormat {
-    let (r, g, b) = palette_rgb(idx);
-    rgb_to_cf(r, g, b)
-}
-
-/// 调色板槽位的原始 RGB(ui2 的 PAL 表从这里读)
+///           FOCUS_FILL/ONBAR/OK/PERM/IDLE/ERR/STOP/RSVD(ui2 的 PAL 表从这里读)
 pub fn palette_rgb(idx: usize) -> (u8, u8, u8) {
     let guard = ATLAS.lock().unwrap();
     let img = guard.as_ref().expect("atlas not init");

@@ -9,7 +9,6 @@ use embedded_graphics::{
     },
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle, StyledDrawable},
-    Pixel,
 };
 use esp_idf_svc::{
     hal::{
@@ -548,43 +547,6 @@ impl DisplayTargetDrive for FrameBuffer {
         Ok(())
     }
 }
-
-pub const DEFAULT_BACKGROUND: &[u8] = &[];
-
-pub fn display_png<D: DisplayTargetDrive>(
-    display_target: &mut D,
-    png: &[u8],
-    timeout: std::time::Duration,
-) -> anyhow::Result<()> {
-    let img_reader =
-        image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
-
-    let img = img_reader.decode().unwrap().to_rgb8();
-
-    let p = img.enumerate_pixels().map(|(x, y, p)| {
-        Pixel(
-            Point::new(x as i32, y as i32),
-            ColorFormat::new(
-                p[0] / (u8::MAX / ColorFormat::MAX_R),
-                p[1] / (u8::MAX / ColorFormat::MAX_G),
-                p[2] / (u8::MAX / ColorFormat::MAX_B),
-            ),
-        )
-    });
-
-    display_target
-        .draw_iter(p)
-        .map_err(|_| anyhow::anyhow!("Failed to draw PNG image"))?;
-
-    display_target.fix_background()?;
-
-    display_target.flush()?;
-
-    std::thread::sleep(timeout);
-
-    Ok(())
-}
-
 pub fn display_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
     let jpeg_buffer = crate::new_jpg::esp_jpeg_decode_one_picture(jpeg)?;
     log::info!(

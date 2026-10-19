@@ -935,10 +935,21 @@ async fn keyboard_mode_main(
                 match mic_mode {
                     app::key_task::MicMode::PushToTalk => {
                         // 按住说话:松手(is_high)停止 —— 现状不变。
+                        // 两段式弹窗(与远程模式一致):请求发起即「connecting 黄框」,
+                        // on_start_listen 在 TLS 连上、开始推流时 fire,切「listening 绿框」。
+                        let _ = popup.show_with_border(
+                            display,
+                            "connecting...",
+                            lcd::ColorFormat::CSS_YELLOW,
+                        );
                         match driver.start_asr(
                             asr_config,
                             || {
-                                let _ = popup.show(display, "recording...");
+                                let _ = popup.show_with_border(
+                                    display,
+                                    "listening...",
+                                    lcd::ColorFormat::CSS_GREEN,
+                                );
                             },
                             || key_pins.mic.is_high(),
                         ) {
@@ -958,10 +969,21 @@ async fn keyboard_mode_main(
                         // 做状态机:state 0 = 等首按松开;state 1 = 等第二次按下 → 返回 true 停止。
                         // is_stop 是 FnMut,可直接捕获可变 state,不必用原子。
                         let mut state: u8 = 0;
+                        // 两段式弹窗(与远程模式一致):请求发起即「connecting 黄框」,
+                        // on_start_listen 在 TLS 连上、开始推流时 fire,切「listening 绿框」。
+                        let _ = popup.show_with_border(
+                            display,
+                            "connecting...",
+                            lcd::ColorFormat::CSS_YELLOW,
+                        );
                         match driver.start_asr(
                             asr_config,
                             || {
-                                let _ = popup.show(display, "recording...");
+                                let _ = popup.show_with_border(
+                                    display,
+                                    "listening...",
+                                    lcd::ColorFormat::CSS_GREEN,
+                                );
                             },
                             || {
                                 if key_pins.mic.is_low() {

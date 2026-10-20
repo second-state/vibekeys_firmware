@@ -566,6 +566,7 @@ pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
         "OTA Update".to_string(),
         "Clear config".to_string(),
         "Clear BLE".to_string(),
+        "Power off".to_string(),
         "Hardware test".to_string(),
     ];
     let mut elems = vec![
@@ -589,8 +590,8 @@ pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
             text: item.clone(),
             ink: if i == focus {
                 Ink::OnBar
-            } else if matches!(i, 2 | 3) {
-                // 两个破坏性操作标红提醒
+            } else if matches!(i, 2 | 3 | 4) {
+                // 破坏性操作(清配置/清绑定/关机)标红提醒
                 Ink::Err
             } else {
                 Ink::Dim

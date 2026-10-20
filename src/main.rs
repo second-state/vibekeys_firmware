@@ -396,6 +396,37 @@ fn main() -> anyhow::Result<()> {
                         // 重启让 BLE host 以空 store 冷启动(NVS 已无绑定记录)。
                         esp_idf_svc::hal::reset::restart();
                     }
+                    ui::SettingOutcome::PowerOff => {
+                        // 关机 = 深睡:数字域/射频全部下电,不设唤醒源,按 RESET 开机。
+                        // 同 Clear* 流程:等 ACC 松开 + 二次确认。
+                        wait_button_release(&btn7);
+                        let mut popup = ui::popup_centered(target.bounding_box());
+                        let _ = popup.show(&mut target, "Power off?\n ACC=confirm  ESC=cancel");
+                        let confirmed = loop {
+                            if btn7.is_low() {
+                                wait_button_release(&btn7);
+                                break true;
+                            }
+                            if btn3.is_low() {
+                                wait_button_release(&btn3);
+                                break false;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        };
+                        if !confirmed {
+                            let _ = popup.hide(&mut target);
+                            continue;
+                        }
+                        let _ = popup.show_transient(&mut target, "Powering off...");
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        // 先关屏(DISPOFF,面板黑屏):深睡只断 ESP32 数字域,LCD 供电轨
+                        // 还在,不主动关面板会一直亮着最后一帧。
+                        let _ = lcd::disp_off();
+                        // esp_deep_sleep_start 不返回;深睡即关机(按 RESET 开机)。
+                        unsafe {
+                            esp_idf_svc::sys::esp_deep_sleep_start();
+                        }
+                    }
                     ui::SettingOutcome::Test => {
                         // 硬件自检:取走 I2S 外设临时建驱动录音,测试完 drop。
                         // 外设只能消费一次;已被消费则跳过 MIC 可视化,仅测按键。

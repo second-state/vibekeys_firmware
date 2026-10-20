@@ -269,6 +269,8 @@ pub enum SettingOutcome {
     ClearConfig,
     /// 清掉 NimBLE 的绑定数据(所有已配对主机的密钥),实际动作在 main 里。
     ClearBle,
+    /// 关机(深睡:RF/CPU 全部下电,按 RESET 唤醒),实际动作在 main 里。
+    PowerOff,
     /// 硬件自检:显示按键按下/放开,MIC 按住时可视化录音电平。
     Test,
 }
@@ -354,7 +356,7 @@ pub async fn setting_page(
                 let _ = render_setting_menu(target, menu_focus, setting);
                 match wait_input(rot_a, accept, esc, next, backspace).await {
                     // 主菜单改用 Next 键切换选项;滚轮在这里不再切换(避免误触/跳格)。
-                    InputEvt::Next => menu_focus = rotate_index(menu_focus, 5, true),
+                    InputEvt::Next => menu_focus = rotate_index(menu_focus, 6, true),
                     InputEvt::Rotate => {}
                     InputEvt::Accept => match menu_focus {
                         0 => {
@@ -366,7 +368,8 @@ pub async fn setting_page(
                         // 清空配置的实际动作(操作 nvs)交给 main,这里只回报意图。
                         2 => return SettingOutcome::ClearConfig,
                         3 => return SettingOutcome::ClearBle,
-                        4 => return SettingOutcome::Test,
+                        4 => return SettingOutcome::PowerOff,
+                        5 => return SettingOutcome::Test,
                         _ => {}
                     },
                     // 每条 cred 的增删改都即时落盘,Esc 直接返回即可。
@@ -532,6 +535,7 @@ fn render_setting_menu_classic(
         "OTA Update".to_string(),
         "Clear config".to_string(),
         "Clear BLE".to_string(),
+        "Power off".to_string(),
         "Hardware test".to_string(),
     ];
     let item_h = LINE_H + 4;

@@ -262,6 +262,19 @@ fn flush_display_with_retry(
     anyhow::bail!("{what} failed after retries")
 }
 
+/// 关屏(DISPOFF):面板黑屏,显存保留。关机(Setting → Power off)在深睡前调用 ——
+/// 深睡只切断 ESP32 数字域,LCD 供电轨仍在,不发 DISPOFF 面板会一直亮着最后一帧。
+/// 配套的开屏是 init_lcd 末尾的 disp_on_off(true)。
+pub fn disp_off() -> Result<(), EspError> {
+    use esp_idf_svc::sys::esp;
+
+    let panel = unsafe { ESP_LCD_PANEL_HANDLE };
+    if panel.is_null() {
+        return Ok(());
+    }
+    unsafe { esp!(esp_idf_svc::sys::esp_lcd_panel_disp_on_off(panel, false)) }
+}
+
 /*
 const LEDC_MAX_DUTY: u32 = (1 << 13) - 1;
 pub fn set_backlight<'d>(

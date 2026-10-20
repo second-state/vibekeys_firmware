@@ -341,8 +341,11 @@ fn main() -> anyhow::Result<()> {
                     }
                     ui::SettingOutcome::ClearConfig => {
                         // 确认弹窗:焦点在这项上一按 ACC 就会清空全部配置,先要二次确认。
+                        // 菜单里选中的正是 ACC —— 先等它松开,否则下面的确认循环立刻
+                        // 读到按住状态,弹窗一闪就直接执行了。
+                        wait_button_release(&btn7);
                         let mut popup = ui::popup_centered(target.bounding_box());
-                        let _ = popup.show(&mut target, "Clear all config?\n ACC=确认  ESC=取消");
+                        let _ = popup.show(&mut target, "Clear all config?\n ACC=confirm  ESC=cancel");
                         let confirmed = loop {
                             if btn7.is_low() {
                                 wait_button_release(&btn7);
@@ -363,6 +366,34 @@ fn main() -> anyhow::Result<()> {
                         let _ = popup.show_transient(&mut target, "Clear all config");
                         std::thread::sleep(std::time::Duration::from_secs(1));
                         // 清空后重启:让(已清空的)配置重新加载,避免继续用内存里的旧值。
+                        esp_idf_svc::hal::reset::restart();
+                    }
+                    ui::SettingOutcome::ClearBle => {
+                        // 清掉 NimBLE 绑定(所有已配对主机的密钥 + CCCD 订阅记录):
+                        // 各主机下次连接需要重新配对。同样二次确认 + 重启冷启动。
+                        // 菜单选中的也是 ACC,同 ClearConfig:先等松开再进确认循环。
+                        wait_button_release(&btn7);
+                        let mut popup = ui::popup_centered(target.bounding_box());
+                        let _ = popup.show(&mut target, "Clear BLE bonding?\n ACC=confirm  ESC=cancel");
+                        let confirmed = loop {
+                            if btn7.is_low() {
+                                wait_button_release(&btn7);
+                                break true;
+                            }
+                            if btn3.is_low() {
+                                wait_button_release(&btn3);
+                                break false;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        };
+                        if !confirmed {
+                            let _ = popup.hide(&mut target);
+                            continue;
+                        }
+                        bt_wifi_mode::Setting::clear_ble_bonds();
+                        let _ = popup.show_transient(&mut target, "Clear BLE bonding");
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        // 重启让 BLE host 以空 store 冷启动(NVS 已无绑定记录)。
                         esp_idf_svc::hal::reset::restart();
                     }
                     ui::SettingOutcome::Test => {
@@ -935,24 +966,46 @@ async fn keyboard_mode_main(
                 match mic_mode {
                     app::key_task::MicMode::PushToTalk => {
                         // 按住说话:松手(is_high)停止 —— 现状不变。
-                        // 两段式弹窗(与远程模式一致):请求发起即「connecting 黄框」,
-                        // on_start_listen 在 TLS 连上、开始推流时 fire,切「listening 绿框」。
+                        // 三段式弹窗(配色与远程模式一致):请求发起即「connecting 黄框」,
+                        // on_start_listen 在 TLS 连上、开始推流时 fire,切「listening 绿框」;
+                        // 松手录完后等 Whisper 返回,切「waiting 黄框」。
                         let _ = popup.show_with_border(
                             display,
                             "connecting...",
                             lcd::ColorFormat::CSS_YELLOW,
                         );
-                        match driver.start_asr(
+                        // on_start_listen 与 is_stop 两个 FnMut 都要操作 popup/display,
+                        // Rust 不允许两个闭包同时可变借用同一变量 —— 装进 RefCell 共享
+                        // (同线程顺序调用,无重入,无竞争)。
+                        let ui = std::cell::RefCell::new((&mut popup, &mut *display));
+                        let ui = &ui;
+                        let mut waiting = false;
+                        let mic = &key_pins.mic;
+                        let asr = driver.start_asr(
                             asr_config,
                             || {
-                                let _ = popup.show_with_border(
-                                    display,
+                                let (p, d) = &mut *ui.borrow_mut();
+                                let _ = p.show_with_border(
+                                    d,
                                     "listening...",
                                     lcd::ColorFormat::CSS_GREEN,
                                 );
                             },
-                            || key_pins.mic.is_high(),
-                        ) {
+                            move || {
+                                let stop = mic.is_high();
+                                if stop && !waiting {
+                                    waiting = true;
+                                    let (p, d) = &mut *ui.borrow_mut();
+                                    let _ = p.show_with_border(
+                                        d,
+                                        "waiting...",
+                                        lcd::ColorFormat::CSS_YELLOW,
+                                    );
+                                }
+                                stop
+                            },
+                        );
+                        match asr {
                             Ok(asr) => {
                                 let _ = popup.show(display, &asr);
                                 controller.notify_asr(&asr);
@@ -969,25 +1022,44 @@ async fn keyboard_mode_main(
                         // 做状态机:state 0 = 等首按松开;state 1 = 等第二次按下 → 返回 true 停止。
                         // is_stop 是 FnMut,可直接捕获可变 state,不必用原子。
                         let mut state: u8 = 0;
-                        // 两段式弹窗(与远程模式一致):请求发起即「connecting 黄框」,
-                        // on_start_listen 在 TLS 连上、开始推流时 fire,切「listening 绿框」。
+                        // 三段式弹窗(配色与远程模式一致):请求发起即「connecting 黄框」,
+                        // TLS 连上开始推流 → 「listening 绿框」;再次按下录完、等 Whisper
+                        // 返回 → 「waiting 黄框」。
                         let _ = popup.show_with_border(
                             display,
                             "connecting...",
                             lcd::ColorFormat::CSS_YELLOW,
                         );
-                        match driver.start_asr(
+                        // on_start_listen 与 is_stop 两个 FnMut 都要操作 popup/display,
+                        // Rust 不允许两个闭包同时可变借用同一变量 —— 装进 RefCell 共享
+                        // (同线程顺序调用,无重入,无竞争)。
+                        let ui = std::cell::RefCell::new((&mut popup, &mut *display));
+                        let ui = &ui;
+                        let mut waiting = false;
+                        let mic = &key_pins.mic;
+                        let asr = driver.start_asr(
                             asr_config,
                             || {
-                                let _ = popup.show_with_border(
-                                    display,
+                                let (p, d) = &mut *ui.borrow_mut();
+                                let _ = p.show_with_border(
+                                    d,
                                     "listening...",
                                     lcd::ColorFormat::CSS_GREEN,
                                 );
                             },
-                            || {
-                                if key_pins.mic.is_low() {
-                                    // 已松开过(state 1)之后的按下即第二次 → 停止
+                            move || {
+                                if mic.is_low() {
+                                    // 已松开过(state 1)之后的按下即第二次 → 停止,
+                                    // 录音结束后等 Whisper 转写,只弹一次「waiting 黄框」。
+                                    if state == 1 && !waiting {
+                                        waiting = true;
+                                        let (p, d) = &mut *ui.borrow_mut();
+                                        let _ = p.show_with_border(
+                                            d,
+                                            "waiting...",
+                                            lcd::ColorFormat::CSS_YELLOW,
+                                        );
+                                    }
                                     state == 1
                                 } else {
                                     if state == 0 {
@@ -996,7 +1068,8 @@ async fn keyboard_mode_main(
                                     false
                                 }
                             },
-                        ) {
+                        );
+                        match asr {
                             Ok(asr) => {
                                 let _ = popup.show(display, &asr);
                                 controller.notify_asr(&asr);

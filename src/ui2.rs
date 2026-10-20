@@ -565,6 +565,7 @@ pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
         format!("WiFi networks ({wifi_count})"),
         "OTA Update".to_string(),
         "Clear config".to_string(),
+        "Clear BLE".to_string(),
         "Hardware test".to_string(),
     ];
     let mut elems = vec![
@@ -588,7 +589,8 @@ pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
             text: item.clone(),
             ink: if i == focus {
                 Ink::OnBar
-            } else if i == 2 {
+            } else if matches!(i, 2 | 3) {
+                // 两个破坏性操作标红提醒
                 Ink::Err
             } else {
                 Ink::Dim

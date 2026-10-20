@@ -102,6 +102,33 @@ impl Setting {
         Ok(())
     }
 
+    /// 擦掉 NimBLE 存在 NVS 里的绑定数据(所有已配对主机的 bond 密钥 + CCCD 订阅记录),
+    /// 重启后生效 —— 各主机下次连接需要重新配对。
+    /// ESP-IDF 的 NimBLE port(ble_store_nvs.c)把 bond 和 CCCD 都存在 "nimble_bond"
+    /// 一个 namespace 里(NIMBLE_NVS_NAMESPACE);上游版另有 "nimble_cccd",一并尝试、
+    /// 不存在即忽略。只能在设置菜单里调用:此时 NimBLE host 尚未启动(BLEDevice::take
+    /// 在 boot-menu 分支之后),直接擦 NVS 是安全的;需要 host 在线的 ble_store_clear()
+    /// 在这里反而用不了。
+    pub fn clear_ble_bonds() {
+        for ns in ["nimble_bond\0", "nimble_cccd\0"] {
+            unsafe {
+                let mut handle: esp_idf_svc::sys::nvs_handle_t = 0;
+                let rc = esp_idf_svc::sys::nvs_open(
+                    ns.as_ptr().cast(),
+                    esp_idf_svc::sys::nvs_open_mode_t_NVS_READWRITE,
+                    &mut handle,
+                );
+                if rc != 0 {
+                    // namespace 不存在 = 本来就没有绑定记录,忽略。
+                    continue;
+                }
+                esp_idf_svc::sys::nvs_erase_all(handle);
+                esp_idf_svc::sys::nvs_commit(handle);
+                esp_idf_svc::sys::nvs_close(handle);
+            }
+        }
+    }
+
     pub fn load_from_nvs(nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<Self> {
         let mut str_buf = [0; 128];
 

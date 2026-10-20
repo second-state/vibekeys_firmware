@@ -8,7 +8,7 @@ use esp32_nimble::{
     uuid128, BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice, BLEService,
     NimbleProperties,
 };
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use zerocopy::IntoBytes;
 use zerocopy_derive::{Immutable, IntoBytes};
 
@@ -1051,6 +1051,27 @@ pub enum ControllerCommand {
     Paste(u8),
 }
 
+/// KEYMAP_CONFIG_ID 特征值的引用:读取直接走特征值缓存。esp32-nimble 对长度
+/// > MTU-3 的特征值,普通 Read Request 不触发 on_read、直接回缓存的 value
+/// (与 bt_wifi_mode::CONFIG_CHAR 同款问题),所以不注册 on_read,而是让
+/// keymap 变更后调 refresh_keymap_cache 保持缓存新鲜。
+static KEYMAP_CHAR: OnceLock<Arc<Mutex<BLECharacteristic>>> = OnceLock::new();
+
+/// 把 keymap(紧凑 JSON,键名 → 绑定对象,与写入格式一致)刷进 KEYMAP_CONFIG_ID
+/// 的缓存。开机从 NVS 加载后、以及每次写入保存成功后各调一次。
+pub fn refresh_keymap_cache(keymap: &KeymapConfig) {
+    let Some(ch) = KEYMAP_CHAR.get() else {
+        return;
+    };
+    match serde_json::to_string(keymap) {
+        Ok(json) => {
+            log::info!("Keymap cache refreshed: {json}");
+            ch.lock().set_value(json.as_bytes());
+        }
+        Err(e) => log::error!("Keymap cache refresh failed: {e:?}"),
+    }
+}
+
 pub fn new_controller_service(
     service: &mut BLEService,
     tx: tokio::sync::mpsc::Sender<ControllerCommand>,
@@ -1119,8 +1140,13 @@ pub fn new_controller_service(
     let notify_characteristic =
         service.create_characteristic(KEYBOARD_NOTIFY_ID, NimbleProperties::NOTIFY);
 
-    let keymap_config_characteristic =
-        service.create_characteristic(KEYMAP_CONFIG_ID, NimbleProperties::WRITE);
+    let keymap_config_characteristic = service.create_characteristic(
+        KEYMAP_CONFIG_ID,
+        NimbleProperties::READ | NimbleProperties::WRITE,
+    );
+    let _ = KEYMAP_CHAR.set(keymap_config_characteristic.clone());
+    // 初值在此处为空;keyboard_mode_main 入口会用 NVS 里加载的 keymap 刷新一次
+    // (见 refresh_keymap_cache),此后每次写入保存成功也会刷新。
 
     let tx_ = tx.clone();
     keymap_config_characteristic.lock().on_write(move |args| {

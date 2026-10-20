@@ -845,6 +845,8 @@ fn handle_keymap_config(
             match keymap.save_to_nvs(nvs) {
                 Ok(()) => {
                     log::info!("Keymap config merged and saved to NVS successfully");
+                    // 同步刷新 KEYMAP_CONFIG_ID 缓存(读取走缓存,见 refresh_keymap_cache)。
+                    bt_keyboard_mode::refresh_keymap_cache(keymap);
                 }
                 Err(e) => {
                     log::error!("Failed to save keymap to NVS: {:?}", e);
@@ -883,6 +885,9 @@ async fn keyboard_mode_main(
     let mut sessions = sessions::SessionTable::new();
     // 当前屏幕视图留档:旋钮选择器退出后按它恢复按下前的界面。
     let mut cur_view = KbView::Keyboard(format!("Keyboard\n {ble_mac}"));
+    // KEYMAP_CONFIG_ID 的读取走特征值缓存(见 refresh_keymap_cache 注释),
+    // 用开机从 NVS 加载的 keymap 刷一次初值。
+    bt_keyboard_mode::refresh_keymap_cache(keymap);
     loop {
         let event = tokio::select! {
             // Handle setting events (reset / tailscale page jump)

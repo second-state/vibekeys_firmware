@@ -35,7 +35,9 @@ struct ConfigSaveSnapshot {
     tailscale_key: Option<String>,
 }
 
-/// 统一配置特征值的读取快照:整份 wifi_list + server_url + asr_config + mic_model + prefer_builtin_asr。
+/// 统一配置特征值的读取快照:整份 wifi_list + server_url + asr_config + mic_model +
+/// prefer_builtin_asr。keymap 不在这里 —— 走 KEYMAP_CONFIG_ID(READ|WRITE)单独读写,
+/// 值为键名 → 绑定对象的 JSON(与写入格式一致)。
 #[derive(Serialize)]
 struct ConfigSnapshot<'a> {
     wifi_list: &'a [WifiCred],
@@ -44,6 +46,28 @@ struct ConfigSnapshot<'a> {
     asr_config: Option<serde_json::Value>,
     mic_model: u8,
     prefer_builtin_asr: bool,
+}
+
+/// 构建整份配置快照 JSON。on_read 与 on_write 末尾的缓存刷新共用,保证两条路径
+/// 吐出完全一致的内容。序列化失败返回 None(极少见:字段里出现不可序列化值)。
+fn config_snapshot_json(
+    setting: &Setting,
+    nvs: &esp_idf_svc::nvs::EspDefaultNvs,
+) -> Option<String> {
+    let asr_config = AsrConfig::load_from_nvs(nvs);
+    log::info!(
+        "Config snapshot: asr_config = {}",
+        asr_config.as_ref().map(|_| "present").unwrap_or("absent")
+    );
+    let asr_config = asr_config.and_then(|cfg| serde_json::to_value(&cfg).ok());
+    let snap = ConfigSnapshot {
+        wifi_list: &setting.wifi_list,
+        server_url: &setting.server_url,
+        asr_config,
+        mic_model: setting.mic_model,
+        prefer_builtin_asr: setting.prefer_builtin_asr,
+    };
+    serde_json::to_string(&snap).ok()
 }
 /// 单条 WiFi 凭据。顺序即连接优先级。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +96,8 @@ pub struct Setting {
     pub mic_model: u8,
     /// 键盘模式下是否优先用内置 ASR(Whisper);false 时 MIC 透传给主机(触发主机自带听写)。
     pub prefer_builtin_asr: bool,
+    // TODO: 把 asr_config 挪进来(内存持有,启动从 NVS 加载、CONFIG 写入时双写),
+    // config_snapshot_json 就不用再拿 nvs 现场读了。
     state: u8,
 }
 
@@ -219,29 +245,21 @@ pub fn new_setting_service(
 
     let config_characteristic =
         service.create_characteristic(CONFIG_ID, NimbleProperties::READ | NimbleProperties::WRITE);
+    // on_write 末尾刷新缓存时要用。
+    let config_char_for_write = config_characteristic.clone();
     config_characteristic
         .lock()
         .on_read(move |c, _| {
-            // 读一次返回整份快照(wifi_list + server_url + asr_config + mic_model),免去多次读。
+            // 读一次返回整份快照,免去多次读。注意:快照超过 MTU-3 时本回调不保证
+            // 被触发 —— esp32-nimble 对长值的普通 Read Request 不调 on_read,直接
+            // 回上次 set_value 的缓存;所以 on_write 末尾会主动刷新缓存。
             let setting = config_r.lock().unwrap();
-            let asr_config = AsrConfig::load_from_nvs(&setting.1);
-            log::info!(
-                "Config read: asr_config = {}",
-                asr_config.as_ref().map(|_| "present").unwrap_or("absent")
-            );
-            let asr_config = asr_config.and_then(|cfg| serde_json::to_value(&cfg).ok());
-            let snap = ConfigSnapshot {
-                wifi_list: &setting.0.wifi_list,
-                server_url: setting.0.server_url.as_str(),
-                asr_config,
-                mic_model: setting.0.mic_model,
-                prefer_builtin_asr: setting.0.prefer_builtin_asr,
-            };
-            match serde_json::to_string(&snap) {
-                Ok(json) => {
+            match config_snapshot_json(&setting.0, &setting.1) {
+                Some(json) => {
+                    log::info!("Config read: {} bytes", json.len());
                     c.set_value(json.as_bytes());
                 }
-                Err(e) => log::error!("Failed to serialize config snapshot: {:?}", e),
+                None => log::error!("Failed to serialize config snapshot"),
             }
         })
         .on_write({
@@ -353,6 +371,13 @@ pub fn new_setting_service(
                             let _ = tx.blocking_send(BTevent::Tailscale);
                         }
                     }
+                }
+
+                // 写入改了配置:同步刷新特征值缓存 —— esp32-nimble 对长值(>MTU-3)
+                // 的普通 Read Request 不触发 on_read、直接回缓存,不刷新的话客户端
+                // 会一直读到旧值。
+                if let Some(json) = config_snapshot_json(&setting.0, &setting.1) {
+                    config_char_for_write.lock().set_value(json.as_bytes());
                 }
             }
         });

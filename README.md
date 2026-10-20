@@ -117,7 +117,9 @@ When you scroll past the edge of the local buffer, the device asks vibetty for t
 
 ### Setting
 
-Entered from the boot menu. Options: **WiFi networks**, **OTA Update**, **Clear config**. Move with **NEXT** (or the rotary in sub-screens), pick/edit with **ACCEPT**, delete with **BACKSPACE**, go back with **ESC**. **OTA Update** enters OTA mode in-process (same firmware, no rescue reboot): it connects WiFi, starts an HTTP server for browser upload, and offers a **download-latest** button to fetch the newest firmware from GitHub releases. **Clear config** wipes NVS and reboots.
+Entered from the boot menu. Options: **WiFi networks**, **OTA Update**, **Clear config**, **Clear BLE**, **Power off**, **Hardware test**. Move with **NEXT** (or the rotary in sub-screens), pick/edit with **ACCEPT**, delete with **BACKSPACE**, go back with **ESC**. **OTA Update** enters OTA mode in-process (same firmware, no rescue reboot): it connects WiFi, starts an HTTP server for browser upload, and offers a **download-latest** button to fetch the newest firmware from GitHub releases. **Clear config** wipes NVS and reboots. **Clear BLE** wipes the NimBLE bonding keys and reboots — every paired host must re-pair on next connect. **Power off** blanks the screen and enters deep sleep (µA-level; press RESET to boot).
+
+For client apps (vibeup): the BLE config surface is split — CONFIG (`623fa3e2-…`) serves the settings snapshot (WiFi list / server URL / ASR config / MIC mode / prefer-builtin), while KEYMAP_CONFIG_ID (`6f2a291c-…`) is now **READ|WRITE** and speaks the same keymap JSON both ways (key name → binding object, e.g. `{"raw":"Shift+Tab","type":"combo","key":"TAB","modifiers":["shift"]}`).
 
 ## Multiple WiFi (wifi_list)
 

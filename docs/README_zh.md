@@ -117,7 +117,9 @@ VibeKeys 是一套运行在 **ESP32-S3** 上的 Rust 固件,把一块带屏幕�
 
 ### 设置(Setting)
 
-从启动菜单进入。选项:**WiFi networks**、**OTA Update**、**Clear config**。用 **NEXT**(子界面里也可用旋钮)移动,**ACCEPT** 选定 / 编辑,**BACKSPACE** 删除,**ESC** 返回。**OTA Update** 同进程进入 OTA 模式(同一固件,不重启到救援固件):连 WiFi 后启动 HTTP server 供浏览器上传,并支持从 GitHub release **download-latest** 下载最新固件。**Clear config** 清空 NVS 并重启。
+从启动菜单进入。选项:**WiFi networks**、**OTA Update**、**Clear config**、**Clear BLE**、**Power off**、**Hardware test**。用 **NEXT**(子界面里也可用旋钮)移动,**ACCEPT** 选定 / 编辑,**BACKSPACE** 删除,**ESC** 返回。**OTA Update** 同进程进入 OTA 模式(同一固件,不重启到救援固件):连 WiFi 后启动 HTTP server 供浏览器上传,并支持从 GitHub release **download-latest** 下载最新固件。**Clear config** 清空 NVS 并重启。**Clear BLE** 清掉 NimBLE 绑定密钥并重启——所有已配对主机下次连接需重新配对。**Power off** 关屏并进入深度睡眠(µA 级电流;按 RESET 开机)。
+
+客户端对接(vibeup):BLE 配置面拆成两块——CONFIG(`623fa3e2-…`)返回配置快照(WiFi 列表 / 服务器地址 / ASR 配置 / MIC 模式 / 优先内置 ASR);KEYMAP_CONFIG_ID(`6f2a291c-…`)现在**可读可写**,两个方向都是同一种 keymap JSON(键名 → 绑定对象,如 `{"raw":"Shift+Tab","type":"combo","key":"TAB","modifiers":["shift"]}`)。
 
 ## 多 WiFi(wifi_list)
 

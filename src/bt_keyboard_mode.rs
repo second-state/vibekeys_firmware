@@ -1256,8 +1256,9 @@ pub fn key_name_to_hid_code(key: &str) -> anyhow::Result<(u8, u8)> {
         "DOWN" => (0x51, 0),
         "UP" => (0x52, 0),
         // Symbols
-        "MINUS" | "PLUS" => (0x2D, 0),
-        "EQUAL" => (0x2E, 0),
+        "MINUS" => (0x2D, 0),
+        // "+" 与 "=" 共用基础键 0x2E,要打 + 需在 modifiers 里加 "shift"
+        "PLUS" | "EQUAL" => (0x2E, 0),
         "SEMICOLON" => (0x33, 0),
         "QUOTE" => (0x34, 0),
         "BACKQUOTE" => (0x35, 0),

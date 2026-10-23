@@ -156,6 +156,20 @@ fn state_label(state: ml::microlink_state_t) -> &'static str {
     }
 }
 
+/// Tailscale 注册名:"vibekeys-{WiFi MAC hex}"(如 `vibekeys-a1b2c3d4e5f6`)。
+/// 同 tailnet 多台设备各自可辨,不依赖 Tailscale 重名后缀(后缀顺序不稳定)。
+fn device_name() -> std::ffi::CString {
+    let mut mac = [0u8; 6];
+    unsafe {
+        esp_idf_svc::sys::esp_read_mac(
+            mac.as_mut_ptr(),
+            esp_idf_svc::sys::esp_mac_type_t_ESP_MAC_WIFI_STA,
+        );
+    }
+    let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
+    std::ffi::CString::new(format!("{DEVICE_NAME}-{hex}")).unwrap()
+}
+
 /// 初始化 microlink 并等待注册完成(同步)。WiFi 必须已连接。
 /// 状态变化经 `show(label)` 上屏;CONNECTED 返回会话 guard(调用方须持有到
 /// 整个 remote 会话结束——drop 即拆隧道);失败/超时显示原因后返回 None。
@@ -168,7 +182,7 @@ pub fn start_and_wait(
         show("Bad auth key");
         return None;
     };
-    let device_name = std::ffi::CString::new(DEVICE_NAME).unwrap();
+    let device_name = device_name();
     let config = ml::microlink_config_t {
         auth_key: auth_key.as_ptr(),
         device_name: device_name.as_ptr(),

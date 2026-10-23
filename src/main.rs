@@ -345,7 +345,8 @@ fn main() -> anyhow::Result<()> {
                         // 读到按住状态,弹窗一闪就直接执行了。
                         wait_button_release(&btn7);
                         let mut popup = ui::popup_centered(target.bounding_box());
-                        let _ = popup.show(&mut target, "Clear all config?\n ACC=confirm  ESC=cancel");
+                        let _ =
+                            popup.show(&mut target, "Clear all config?\n ACC=confirm  ESC=cancel");
                         let confirmed = loop {
                             if btn7.is_low() {
                                 wait_button_release(&btn7);
@@ -374,7 +375,8 @@ fn main() -> anyhow::Result<()> {
                         // 菜单选中的也是 ACC,同 ClearConfig:先等松开再进确认循环。
                         wait_button_release(&btn7);
                         let mut popup = ui::popup_centered(target.bounding_box());
-                        let _ = popup.show(&mut target, "Clear BLE bonding?\n ACC=confirm  ESC=cancel");
+                        let _ =
+                            popup.show(&mut target, "Clear BLE bonding?\n ACC=confirm  ESC=cancel");
                         let confirmed = loop {
                             if btn7.is_low() {
                                 wait_button_release(&btn7);

@@ -943,6 +943,13 @@ async fn keyboard_mode_main(
                         );
                         continue;
                     }
+                    // CONFIG 被写入(配网页保存等):在主循环任务里刷新特征值缓存。
+                    // 不在 on_write 回调里做 —— 分发期间持有特征自身的锁,重入即自死锁。
+                    bt_wifi_mode::BTevent::RefreshConfig => {
+                        let guard = setting_arc.lock().unwrap();
+                        bt_wifi_mode::refresh_config_cache(&guard.0, &guard.1);
+                        continue;
+                    }
                 }
             }
             // Handle physical key events

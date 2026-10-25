@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use esp32_nimble::{utilities::BleUuid, uuid128, BLEService, NimbleProperties};
+use esp32_nimble::{utilities::BleUuid, uuid128, BLECharacteristic, BLEService, NimbleProperties};
 use serde::{Deserialize, Serialize};
 
 use crate::audio::AsrConfig;
@@ -48,7 +48,29 @@ struct ConfigSnapshot<'a> {
     prefer_builtin_asr: bool,
 }
 
-/// 构建整份配置快照 JSON。on_read 与 on_write 末尾的缓存刷新共用,保证两条路径
+/// CONFIG 特征值的引用:refresh_config_cache 在主循环任务里刷新缓存时用。
+/// 为什么需要主动刷新:esp32-nimble 对长度 > MTU-3 的特征值,普通 Read Request
+/// **不触发 on_read**,直接把上次 set_value 缓存的旧值切给客户端(crate
+/// ble_characteristic.rs 的 om_pkthdr_len 条件)。
+static CONFIG_CHAR: OnceLock<Arc<esp32_nimble::utilities::mutex::Mutex<BLECharacteristic>>> =
+    OnceLock::new();
+
+/// 重建快照并写进 CONFIG 特征值缓存。由主循环在收到 BTevent::RefreshConfig 时
+/// 调用 —— 那时已不在特征分发栈内,lock 这把锁是安全的(on_write 回调里做
+/// 同样的事会自死锁,见该变体注释)。序列化失败打日志后跳过。
+pub fn refresh_config_cache(setting: &Setting, nvs: &esp_idf_svc::nvs::EspDefaultNvs) {
+    let Some(ch) = CONFIG_CHAR.get() else {
+        return;
+    };
+    match config_snapshot_json(setting, nvs) {
+        Some(json) => {
+            ch.lock().set_value(json.as_bytes());
+        }
+        None => log::error!("Config cache refresh: failed to serialize snapshot"),
+    }
+}
+
+/// 构建整份配置快照 JSON。on_read 与 refresh_config_cache 共用,保证两条路径
 /// 吐出完全一致的内容。序列化失败返回 None(极少见:字段里出现不可序列化值)。
 fn config_snapshot_json(
     setting: &Setting,
@@ -233,6 +255,10 @@ pub enum BTevent {
     Reset,
     /// 配网页写入了 tailscale_key:已存 NVS + 清旧 tailnet 注册,跳 Tailscale 页面。
     Tailscale,
+    /// CONFIG 被写入:主循环里刷新特征值缓存。⚠️ 不能在 on_write 回调内直接做 ——
+    /// handle_gap_event 分发回调期间持有特征自身的锁,重入 lock 即自死锁
+    /// (栈任务冻死 → ATT 超时断链);经此事件到主循环任务再刷新就安全了。
+    RefreshConfig,
 }
 
 pub fn new_setting_service(
@@ -245,8 +271,8 @@ pub fn new_setting_service(
 
     let config_characteristic =
         service.create_characteristic(CONFIG_ID, NimbleProperties::READ | NimbleProperties::WRITE);
-    // on_write 末尾刷新缓存时要用。
-    let config_char_for_write = config_characteristic.clone();
+    // 刷新缓存(BTevent::RefreshConfig → 主循环 → refresh_config_cache)要用。
+    let _ = CONFIG_CHAR.set(config_characteristic.clone());
     config_characteristic
         .lock()
         .on_read(move |c, _| {
@@ -373,11 +399,12 @@ pub fn new_setting_service(
                     }
                 }
 
-                // 写入改了配置:同步刷新特征值缓存 —— esp32-nimble 对长值(>MTU-3)
-                // 的普通 Read Request 不触发 on_read、直接回缓存,不刷新的话客户端
-                // 会一直读到旧值。
-                if let Some(json) = config_snapshot_json(&setting.0, &setting.1) {
-                    config_char_for_write.lock().set_value(json.as_bytes());
+                // 写入改了配置:通知主循环刷新特征值缓存 —— esp32-nimble 对长值
+                // (>MTU-3)的普通 Read Request 不触发 on_read、直接回缓存,不刷新
+                // 客户端就读到旧值。刷新动作走 BTevent::RefreshConfig(为什么不在
+                // 这里直接做,见该变体的注释)。
+                if let Some(tx) = &evt_tx {
+                    let _ = tx.blocking_send(BTevent::RefreshConfig);
                 }
             }
         });

@@ -348,6 +348,11 @@ pub fn new_setting_service(
                     if let (Some(base_obj), Some(in_obj)) = (base.as_object_mut(), asr.as_object())
                     {
                         for (k, v) in in_obj {
+                            // null = 未提供:vibeup 会把未填字段发成 null,跳过以保留
+                            // 现有值(否则覆盖成 null 后反序列化失败,整个 merge 丢弃)。
+                            if v.is_null() {
+                                continue;
+                            }
                             base_obj.insert(k.clone(), v.clone());
                         }
                     }

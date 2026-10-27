@@ -559,7 +559,9 @@ pub fn boot(version: &str, focus: usize) -> Vec<Elem> {
     elems
 }
 
-/// SETTING:四项菜单(focus 行走焦点框)
+/// SETTING:菜单(focus 行走焦点框)。
+/// max2:6 行全部可见,平铺。小屏:78px 只放得下 3 行 → 滚动窗口跟随焦点
+/// (窗口外不渲染),否则下面的选项不可见但焦点还能落到上面,ACC 会误触。
 pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
     let items = [
         format!("WiFi networks ({wifi_count})"),
@@ -579,8 +581,18 @@ pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
             wf: false,
         },
     ];
-    for (i, item) in items.iter().enumerate() {
-        let y = LIST_TOP + i as i32 * ROW_STEP;
+
+    #[cfg(feature = "max2")]
+    let view = (0, items.len());
+    #[cfg(not(feature = "max2"))]
+    let view = {
+        const VISIBLE: usize = 3;
+        (focus.saturating_sub(VISIBLE - 1), VISIBLE)
+    };
+    let (start, take) = view;
+
+    for (i, item) in items.iter().enumerate().skip(start).take(take) {
+        let y = LIST_TOP + (i - start) as i32 * ROW_STEP;
         if i == focus {
             elems.push(Elem::FocusBar { y });
         }
@@ -602,14 +614,25 @@ pub fn setting(focus: usize, wifi_count: usize) -> Vec<Elem> {
     elems
 }
 
-/// SESSIONS:动态会话行(需关注的排前,由调用方排好序再传入)
+/// SESSIONS:动态会话行(需关注的排前,由调用方排好序再传入)。
+/// 与 setting() 同款:小屏滚动窗口跟随焦点,窗口外不渲染。
 pub fn sessions(rows: &[Row], focus: usize) -> Vec<Elem> {
     let mut elems = vec![Elem::Title {
         text: "Focus session".into(),
         center: false,
     }];
-    for (i, row) in rows.iter().enumerate() {
-        let y = LIST_TOP + i as i32 * ROW_STEP;
+
+    #[cfg(feature = "max2")]
+    let view = (0, rows.len());
+    #[cfg(not(feature = "max2"))]
+    let view = {
+        const VISIBLE: usize = 3;
+        (focus.saturating_sub(VISIBLE - 1), VISIBLE)
+    };
+    let (start, take) = view;
+
+    for (i, row) in rows.iter().enumerate().skip(start).take(take) {
+        let y = LIST_TOP + (i - start) as i32 * ROW_STEP;
         if i == focus {
             elems.push(Elem::FocusBar { y });
         }

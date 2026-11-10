@@ -714,7 +714,6 @@ impl Keyboard {
             .resolve_rpa();
 
         let server = device.get_server();
-        server.on_connect(|_server, _client| {});
         let mut hid = BLEHIDDevice::new(server);
 
         let input_keyboard = hid.input_report(KEYBOARD_ID);
@@ -837,7 +836,6 @@ impl KeyboardAndMouse {
             .resolve_rpa();
 
         let server = device.get_server();
-        server.on_connect(|_server, _client| {});
         let mut hid = BLEHIDDevice::new(server);
 
         let input_keyboard = hid.input_report(KEYBOARD_ID);

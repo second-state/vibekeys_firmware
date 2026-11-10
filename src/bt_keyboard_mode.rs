@@ -719,6 +719,17 @@ impl Keyboard {
         let input_keyboard = hid.input_report(KEYBOARD_ID);
         let output_keyboard = hid.output_report(KEYBOARD_ID);
 
+        // 特征值默认是空的:主机连接时会读取 Input Report,0 字节响应会让部分系统的
+        // HID 初始化失败并立即断开(按下任意按键后值才有内容,这就是"没按过按键
+        // 就连接不上"的原因)——用全零报告初始化所有输入/输出特征。
+        let zero_key = KeyReport {
+            modifiers: 0,
+            reserved: 0,
+            keys: [0; 6],
+        };
+        input_keyboard.lock().set_value(zero_key.as_bytes());
+        output_keyboard.lock().set_value(&[0u8; 1]);
+
         hid.manufacturer("VibeKeys-MAX");
         hid.pnp(0x02, 0x2E8A, 0x820a, 0x0210);
         hid.hid_info(0x00, 0x01);
@@ -842,6 +853,19 @@ impl KeyboardAndMouse {
         let output_keyboard = hid.output_report(KEYBOARD_ID);
         let input_media_keys = hid.input_report(MEDIA_KEYS_ID);
         let input_mouse = hid.input_report(MOUSE_ID);
+
+        // 特征值默认是空的:主机连接时会读取 Input Report,0 字节响应会让部分系统的
+        // HID 初始化失败并立即断开(按下任意按键后值才有内容,这就是"没按过按键
+        // 就连接不上"的原因)——用全零报告初始化所有输入/输出特征。
+        let zero_key = KeyReport {
+            modifiers: 0,
+            reserved: 0,
+            keys: [0; 6],
+        };
+        input_keyboard.lock().set_value(zero_key.as_bytes());
+        output_keyboard.lock().set_value(&[0u8; 1]);
+        input_media_keys.lock().set_value(&[0u8; 2]);
+        input_mouse.lock().set_value(&[0u8; 5]);
 
         hid.manufacturer("VibeKeys-MAX");
         hid.pnp(0x02, 0x2E8A, 0x820a, 0x0210);

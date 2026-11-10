@@ -167,3 +167,11 @@ Built on [Rust + ESP-IDF](https://github.com/esp-rs), target `xtensa-esp32s3-esp
 See `./build.sh` for the full list of targets. Feature flags: `max2` (max2 hardware variant), `i2c_oled` (I2C OLED).
 
 > The OTA partition layout is symmetric (`ota_0` / `ota_1`, each 4 MB). The `*_bin` images include the bootloader + partition table for first-time flashing; the bare `keys` / `max2` images are app-only for OTA updates.
+
+## Troubleshooting
+
+### Linux: keyboard HID suddenly disappears / BLE stops responding
+
+Known regression in **BlueZ 5.87**: bluetoothd intermittently segfaults during device discovery / connect-disconnect churn (upstream [bluez#2605](https://github.com/bluez/bluez/issues/2605)). When bluetoothd crashes, its BLE state is wiped — the HID device disappears, notifications stop, and new connections fail until the daemon restarts. VibeKeys firmware is not affected; any reconnect attempt just hits the freshly restarted (but empty) daemon.
+
+Workaround (verified upstream): downgrade and pin `bluez` / `bluez-libs` / `bluez-utils` to **5.86** until 5.88+ ships the fix. Check `coredumpctl list bluetoothd` to confirm the crashes are gone.

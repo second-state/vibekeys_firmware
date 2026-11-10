@@ -167,3 +167,11 @@ ESP32-S3 + PSRAM(octal)、SPI LCD、I2S 麦克风、自定义按键,可选 I2C O
 完整目标见 `./build.sh`。Feature flag:`max2`(max2 硬件变体)、`i2c_oled`(I2C OLED)。
 
 > OTA 分区布局为对称设计(`ota_0` / `ota_1` 各 4 MB)。`*_bin` 镜像含 bootloader + 分区表,用于首次刷写;`keys` / `max2` 镜像仅含 app,用于 OTA 更新。
+
+## 常见问题
+
+### Linux:键盘 HID 突然消失 / BLE 无响应
+
+**BlueZ 5.87** 的已知回归:bluetoothd 在设备发现、连接/断开过程中随机段错误(上游 [bluez#2605](https://github.com/bluez/bluez/issues/2605))。bluetoothd 一崩,BLE 状态全部清零——HID 设备消失、通知停发、新连接失败,直到守护进程重启。VibeKeys 固件不受影响;重连只是撞上重启后"空"的守护进程。
+
+解决办法(上游已验证):将 `bluez` / `bluez-libs` / `bluez-utils` **降级并锁定到 5.86**,等 5.88+ 带上修复。用 `coredumpctl list bluetoothd` 确认崩溃不再出现。
